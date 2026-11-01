@@ -203,6 +203,13 @@ func TestRunBoundsOutput(t *testing.T) {
 	if !strings.Contains(result.Output, "bytes of output cut") || len(result.Output) > 60 {
 		t.Fatalf("output %q has no cut marker", result.Output)
 	}
+	// The review's tiny limits: the marker alone exceeded them.
+	for limit := 1; limit <= 50; limit++ {
+		tiny, _ := newTestShell(t, nil, &Options{MaximumOutputBytes: limit})
+		if result := mustRun(t, tiny, "seq 1000; echo é"); len(result.Output) > limit || !result.Truncated {
+			t.Fatalf("MaximumOutputBytes %d: %q", limit, result.Output)
+		}
+	}
 	unbounded, _ := newTestShell(t, nil, &Options{MaximumOutputBytes: -1})
 	if result := mustRun(t, unbounded, "seq 10000"); result.Truncated || len(result.Output) != 48894 {
 		t.Fatalf("unbounded output: %d bytes, truncated %v", len(result.Output), result.Truncated)

@@ -215,8 +215,18 @@ func (o *boundedOutput) result() (string, bool) {
 		return string(o.head) + string(o.tail), false
 	}
 	// The marker counts against the limit; its length is bounded by the
-	// one for cutting everything.
-	budget := max(o.limit-len(cutMarker(o.total)), 0)
+	// one for cutting everything. A limit too small for it keeps only the
+	// first and the last bytes.
+	marker := len(cutMarker(o.total))
+	if marker > o.limit {
+		head := trimIncompleteRune(o.head)
+		tail := o.tail[max(len(o.tail)-(o.limit-len(head)), 0):]
+		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+			tail = tail[1:]
+		}
+		return string(head) + string(tail), true
+	}
+	budget := o.limit - marker
 	head := trimIncompleteRune(o.head[:min(len(o.head), budget/2)])
 	tail := o.tail[max(len(o.tail)-(budget-len(head)), 0):]
 	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
