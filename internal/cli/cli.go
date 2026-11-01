@@ -34,7 +34,8 @@ func NewApp(factory ClientFactory) *urfavecli.Command {
 		Description: "aikido is a thin CLI over the aikido Go library. Subcommands run\n" +
 			"completions or agent loops against OpenRouter; the API key is read from\n" +
 			"OPENROUTER_API_KEY (a .env in the working directory is loaded as a\n" +
-			"fallback before the env is consulted).",
+			"fallback before the env is consulted). OPENROUTER_BASE_URL replaces the\n" +
+			"API root https://openrouter.ai/api/v1, e.g. for a proxy or a test server.",
 		Commands: []*urfavecli.Command{
 			chatCommand(factory),
 			agentCommand(factory),
@@ -49,7 +50,8 @@ func NewApp(factory ClientFactory) *urfavecli.Command {
 
 // NewOpenRouterClient is the default ClientFactory: it reads the API key from
 // the environment and constructs an openrouter.Client. It returns an error if
-// OPENROUTER_API_KEY is unset.
+// OPENROUTER_API_KEY is unset. OPENROUTER_BASE_URL, when set, replaces
+// openrouter.DefaultBaseURL: a proxy, or the end-to-end suite's fake server.
 func NewOpenRouterClient() (llm.Client, error) {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -57,6 +59,7 @@ func NewOpenRouterClient() (llm.Client, error) {
 	}
 	client, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
+		BaseURL:     os.Getenv("OPENROUTER_BASE_URL"),
 		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido CLI",
 	})
