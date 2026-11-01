@@ -78,6 +78,7 @@ Every `Run` ends with one `EventDone`, also once `ctx` is over (`EndReason` `can
 - `Session(request)` resolves the `voice.Runner` per request (auth, tenant, conversation); an error answers 400. Check authentication in a middleware in front for a 401. The handler restores a JSON body, so `Session` can decode extra fields from it again.
 - `ToolResult` picks what of a tool result reaches the client; the default sends no content.
 - `MaximumAudioBytes` (default 8 MiB, larger is 413) and `Timeout` (default 5 minutes). The turn runs detached from the request context, so a closed tab does not lose it.
+- `WriteTimeout` (default 30 s) caps writing and flushing one line. A client that does not take a line within it counts as gone: the handler stops writing and drains the turn to its end. It needs a `ResponseWriter` that supports `http.ResponseController.SetWriteDeadline` (net/http's does); without one lines are written without a cap.
 - Input errors answer 4xx with `{"error": "..."}` before any line.
 
 Complete program: [examples/voicebot](../../examples/voicebot/main.go), a push-to-talk page over an embedded corpus.

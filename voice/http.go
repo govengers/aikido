@@ -19,6 +19,7 @@ import (
 const (
 	defaultMaximumAudioBytes = 8 << 20
 	defaultTurnTimeout       = 5 * time.Minute
+	defaultWriteTimeout      = 30 * time.Second
 )
 
 // HandlerOptions configure a Handler.
@@ -41,6 +42,12 @@ type HandlerOptions struct {
 	// Timeout caps the turn, which runs detached from the request context so
 	// a client that goes away does not lose it. Default 5 minutes.
 	Timeout time.Duration
+	// WriteTimeout caps writing and flushing one NDJSON line. A client that
+	// does not take a line within it counts as gone: the handler stops
+	// writing and drains the turn to its end. It is applied through
+	// http.ResponseController.SetWriteDeadline, so a ResponseWriter without
+	// deadline support writes without a cap. Default 30 seconds.
+	WriteTimeout time.Duration
 }
 
 // Handler serves one voice turn per POST and streams its events as NDJSON
@@ -90,6 +97,9 @@ func NewHandler(options *HandlerOptions) (*Handler, error) {
 	if configured.Timeout <= 0 {
 		configured.Timeout = defaultTurnTimeout
 	}
+	if configured.WriteTimeout <= 0 {
+		configured.WriteTimeout = defaultWriteTimeout
+	}
 	return &Handler{options: configured}, nil
 }
 
@@ -130,8 +140,8 @@ func runErrorStatus(err error) int {
 	return http.StatusInternalServerError
 }
 
-// writeEvents streams events as NDJSON. After the client is gone it keeps
-// draining, so the turn completes.
+// writeEvents streams events as NDJSON. After the client is gone (a failed
+// or timed out write) it keeps draining, so the turn completes.
 func (h *Handler) writeEvents(writer http.ResponseWriter, events <-chan Event) {
 	writer.Header().Set("Content-Type", "application/x-ndjson")
 	writer.Header().Set("Cache-Control", "no-store")
@@ -141,10 +151,20 @@ func (h *Handler) writeEvents(writer http.ResponseWriter, events <-chan Event) {
 	encoder := json.NewEncoder(writer)
 	connected := true
 	for event := range events {
-		if connected && (encoder.Encode(h.toWire(event)) != nil || controller.Flush() != nil) {
-			connected = false
+		if connected {
+			connected = h.writeLine(controller, encoder, event)
 		}
 	}
+}
+
+// writeLine writes and flushes one event under the write deadline and
+// reports whether the client is still connected.
+func (h *Handler) writeLine(controller *http.ResponseController, encoder *json.Encoder, event Event) bool {
+	err := controller.SetWriteDeadline(time.Now().Add(h.options.WriteTimeout))
+	if err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return false
+	}
+	return encoder.Encode(h.toWire(event)) == nil && controller.Flush() == nil
 }
 
 // writeError answers with a JSON error body. The status is already sent when

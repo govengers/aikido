@@ -112,6 +112,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | `vfs.ValidatePath` | allowed `.` segments and backslashes (`./a.md` and `a.md` were two keys in memory but one file in osfs) | both are `vfs.ErrPathInvalid` |
 | `vfs/embedfs` content type | unknown extensions were `text/plain` | `application/octet-stream`, like `osfs` |
 | `voice.Handler` | a broken multipart upload was taken as a text turn | 400 |
+| `voice.Handler` stream | a client that stopped reading blocked the handler (and its connection) until the client went away | each NDJSON line has a write deadline, `HandlerOptions.WriteTimeout` (default 30 s); after a failed or timed-out write the handler stops writing and drains the turn, so it still lands in History |
 
 ## Coming from v0.3.x (ASO Nexus Hub)
 
