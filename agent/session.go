@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/govengers/aikido/llm"
@@ -53,9 +52,6 @@ type SessionOptions struct {
 	// Thinking sets the reasoning effort or budget of every model call, e.g.
 	// llm.ThinkingByEffort(llm.ThinkingEffortLow). Nil leaves the model default.
 	Thinking *llm.ThinkingConfiguration
-
-	// Logger is optional. The session writes nothing to it today.
-	Logger *slog.Logger
 }
 
 // Session bundles a session ID, a model + system prompt, a tool registry, a
