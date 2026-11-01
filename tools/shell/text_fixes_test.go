@@ -14,6 +14,9 @@ var reviewCases = []scriptCase{
 	{name: "tr repeat of a high byte", script: `printf ab | tr ab '[\351*2]' | base64`, want: "6ek=\n"},
 	{name: "grep non-UTF-8 pattern", script: `echo x | grep -F $'\xe9'`, want: "grep: pattern is not valid UTF-8\n", status: 2},
 	{name: "grep interval above 255", script: `printf 'xxx\n' | grep -cE 'x{300}'; printf '%0300d\n' 0 | tr 0 x | grep -cE '^x{300}$'`, want: "0\n1\n", status: 0},
+	{name: "sed -E leading star", script: `echo a | sed -E 's/*a/x/'`, want: "sed: -e expression #1, char 7: Invalid preceding regular expression\n", status: 1},
+	{name: "sed -E leading plus in group", script: `echo a | sed -E 's/(+a)/x/'`, want: "sed: -e expression #1, char 9: Invalid preceding regular expression\n", status: 1},
+	{name: "grep -E leading star repeats nothing", script: `echo a | grep -E '*a'`, want: "a\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 

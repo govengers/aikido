@@ -104,8 +104,7 @@ func (t *posixTranslator) step() error {
 	case '[':
 		return t.bracket()
 	case '*':
-		t.repeat("*")
-		return nil
+		return t.repeat("*")
 	case '^':
 		if t.options.extended || t.atStart {
 			t.output.WriteString("^")
@@ -161,7 +160,7 @@ func (t *posixTranslator) extendedOperator(character byte) (bool, error) {
 	case '|':
 		t.alternate()
 	case '+', '?':
-		t.repeat(string(character))
+		return true, t.repeat(string(character))
 	case '{':
 		return true, t.interval(false)
 	default:
@@ -233,7 +232,7 @@ func (t *posixTranslator) basicOperator(character byte) (bool, error) {
 	case '|':
 		t.alternate()
 	case '+', '?':
-		t.repeat(string(character))
+		return true, t.repeat(string(character))
 	case '{':
 		return true, t.interval(true)
 	default:
@@ -274,14 +273,18 @@ func (t *posixTranslator) atom(text string) {
 }
 
 // repeat appends a repetition operator to the last atom. With nothing to
-// repeat, BRE reads "*" as an ordinary character; grep's ERE drops it.
-func (t *posixTranslator) repeat(operator string) {
+// repeat, BRE reads "*" as an ordinary character, grep's ERE drops it and
+// sed's ERE refuses it like GNU's regcomp.
+func (t *posixTranslator) repeat(operator string) error {
 	if t.atStart || t.atomStart < 0 {
-		if t.options.extended {
-			return
+		switch {
+		case t.options.extended && t.atStart && !t.options.grepQuirks:
+			return &regexError{"Invalid preceding regular expression"}
+		case t.options.extended:
+			return nil
 		}
 		t.atom(regexp.QuoteMeta(operator))
-		return
+		return nil
 	}
 	if t.quantified {
 		// a** is (a*)*: Go refuses stacked repetitions and reads *? as lazy.
@@ -292,6 +295,7 @@ func (t *posixTranslator) repeat(operator string) {
 	}
 	t.output.WriteString(operator)
 	t.quantified = true
+	return nil
 }
 
 // interval parses {m}, {m,}, {m,n} or {,n} after the opening brace. In a BRE
@@ -327,8 +331,7 @@ func (t *posixTranslator) interval(basic bool) error {
 	default:
 		bounds += "," + strconv.Itoa(maximum)
 	}
-	t.repeat("{" + bounds + "}")
-	return nil
+	return t.repeat("{" + bounds + "}")
 }
 
 func (t *posixTranslator) literalBrace() error {
