@@ -76,16 +76,25 @@ type runnerStart struct {
 	stderr      io.Writer
 }
 
+// scriptRunner is an interpreter with the redirect files it opened.
+type scriptRunner struct {
+	*interp.Runner
+	targets *redirectTargets
+}
+
 // newRunner returns an interpreter whose every file access and command goes
 // through the session.
-func (s *session) newRunner(start runnerStart) (*interp.Runner, error) {
+func (s *session) newRunner(start runnerStart) (*scriptRunner, error) {
+	targets := &redirectTargets{}
 	environ := &interpreterEnviron{Environ: expand.ListEnviron(start.environment...), resetting: true}
 	runnerOptions := []interp.RunnerOption{
 		interp.Env(environ),
 		interp.StdIO(stdinFile(start.stdin), start.stdout, start.stderr),
 		interp.ExecHandlers(func(interp.ExecHandlerFunc) interp.ExecHandlerFunc { return s.execute }),
 		interp.CallHandler(s.rewrite),
-		interp.OpenHandler(s.open),
+		interp.OpenHandler(func(ctx context.Context, name string, flag int, mode os.FileMode) (io.ReadWriteCloser, error) {
+			return s.open(ctx, name, flag, mode, targets)
+		}),
 		interp.StatHandler(s.stat),
 		interp.ReadDirHandler2(s.readDirectory),
 		interp.AccessHandler(s.access),
@@ -104,7 +113,7 @@ func (s *session) newRunner(start runnerStart) (*interp.Runner, error) {
 	runner.Dir = "/" + start.directory
 	runner.Reset()
 	environ.resetting = false
-	return runner, nil
+	return &scriptRunner{Runner: runner, targets: targets}, nil
 }
 
 // stdinFile turns a command's stdin into what the interpreter accepts
@@ -128,12 +137,13 @@ const jobCleanupTimeout = 5 * time.Second
 // final directory. Background jobs (&) end with the script, as they do when
 // bash -c returns: they are cancelled and awaited so none writes after
 // runFile returns (unless one ignores cancellation for jobCleanupTimeout).
-func runFile(ctx context.Context, runner *interp.Runner, file *syntax.File) (string, error) {
+func runFile(ctx context.Context, runner *scriptRunner, file *syntax.File) (string, error) {
 	jobs, stopJobs := context.WithCancel(ctx)
 	err := runner.Run(jobs, file)
 	stopJobs()
 	directory := runner.Dir
-	awaitJobs(ctx, runner)
+	awaitJobs(ctx, runner.Runner)
+	runner.targets.closeAll()
 	return directory, err
 }
 
@@ -423,7 +433,7 @@ func pathError(name string, err error) error {
 // open is the interpreter's open handler for redirects and source. Reads get
 // a pipe filled from the file; writes are buffered and stored with one
 // WriteFile when the redirect closes.
-func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode) (io.ReadWriteCloser, error) {
+func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (io.ReadWriteCloser, error) {
 	handler := interp.HandlerCtx(ctx)
 	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
 	if err != nil {
@@ -440,14 +450,22 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 		}
 		return pipeReader(content)
 	case os.O_WRONLY:
-		return s.openForWriting(ctx, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+		file, err := s.openForWriting(ctx, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+		if err != nil {
+			return nil, err
+		}
+		targets.add(file)
+		return file, nil
 	}
 	return nil, pathError(name, errUnsupported)
 }
 
-// openForWriting checks the target and returns a buffered file that writes
-// on Close, starting from the current content when appending.
-func (s *session) openForWriting(ctx context.Context, name, resolved string, appending bool, stderr io.Writer) (io.ReadWriteCloser, error) {
+// openForWriting opens a redirect target like bash: ">" truncates the file
+// and ">>" keeps it, both right away, so a target the Storage refuses (a
+// read-only mount) fails the redirect before the command runs and before
+// && or || decide. The returned file collects what is written and stores
+// it on Close.
+func (s *session) openForWriting(ctx context.Context, name, resolved string, appending bool, stderr io.Writer) (*bufferedFile, error) {
 	files := s.files()
 	if err := files.checkWritable(ctx, resolved); err != nil {
 		return nil, pathError(name, err)
@@ -462,12 +480,43 @@ func (s *session) openForWriting(ctx context.Context, name, resolved string, app
 			return nil, pathError(name, err)
 		}
 	}
+	contentType := contentTypeFor(resolved)
+	if err := files.storage.WriteFile(ctx, resolved, file.content, contentType); err != nil {
+		return nil, pathError(name, err)
+	}
 	// A script that timed out still stores what it wrote, as bash would have.
 	storeContext := context.WithoutCancel(ctx)
 	file.commit = func(content []byte) error {
-		return files.storage.WriteFile(storeContext, resolved, content, contentTypeFor(resolved))
+		return files.storage.WriteFile(storeContext, resolved, content, contentType)
 	}
 	return file, nil
+}
+
+// redirectTargets are the redirect files one interpreter (with its
+// subshells) opened. The interpreter closes each after its statement,
+// except the ones exec keeps open for the rest of the script (exec >file);
+// closeAll stores those when the interpreter is done.
+type redirectTargets struct {
+	mutex sync.Mutex
+	files []*bufferedFile
+}
+
+func (r *redirectTargets) add(file *bufferedFile) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.files = append(r.files, file)
+}
+
+// closeAll stores every file still open; Close is a no-op for closed ones,
+// and reports a failed store on stderr itself.
+func (r *redirectTargets) closeAll() {
+	r.mutex.Lock()
+	files := r.files
+	r.files = nil
+	r.mutex.Unlock()
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 // openDevice opens /dev/null, /dev/stdin, /dev/stdout or /dev/stderr.

@@ -364,6 +364,29 @@ func TestOverOverlayAndReadOnlyMount(t *testing.T) {
 	if result := mustRun(t, direct, "echo x > ref/new.md; rm ref/guide.md"); !strings.Contains(result.Output, "bash: ref/new.md: Read-only file system") || !strings.Contains(result.Output, "rm: cannot remove 'ref/guide.md': Read-only file system") {
 		t.Fatalf("read-only mount output = %q", result.Output)
 	}
+	// The review's S12: the store failed at close, after && had decided.
+	if result := mustRun(t, direct, "echo x > ref/new.md && echo stored || echo failed; echo y >> ref/guide.md; echo $?"); result.Output != "bash: ref/new.md: Read-only file system\nfailed\nbash: ref/guide.md: Read-only file system\n1\n" {
+		t.Fatalf("a refused redirect: %q", result.Output)
+	}
+}
+
+// TestRedirectsAreWrittenLikeBash covers the review's S11 (exec >out never
+// stored out) and bash's order: ">" truncates when it opens.
+func TestRedirectsAreWrittenLikeBash(t *testing.T) {
+	shell, storage := newTestShell(t, map[string]string{"f": "b\na\n"}, nil)
+	result := mustRun(t, shell, "exec > out; echo saved; echo more; exec 2> errors; ls nope")
+	if result.Output != "" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	if got := readStorage(t, storage, "out"); got != "saved\nmore\n" {
+		t.Fatalf("out = %q", got)
+	}
+	if got := readStorage(t, storage, "errors"); got != "ls: cannot access 'nope': No such file or directory\n" {
+		t.Fatalf("errors = %q", got)
+	}
+	if result := mustRun(t, shell, "sort f > f; wc -c < f; bash -c 'exec > nested; echo inner'; cat nested"); result.Output != "0\ninner\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
 }
 
 // TestMountPoint runs the same script with the workspace at "/" and at
