@@ -103,21 +103,24 @@ func TestStreamingStopsEarly(t *testing.T) {
 	}, &Options{Timeout: 20 * time.Second})
 }
 
-// TestRunawayCommandsStop: a sed branch loop without input is stopped by the
-// timeout, a growing pattern space by the input budget, awk output by the file cap.
+// TestRunawayCommandsStop: loops without input (a sed branch, diff's
+// search) are stopped by the timeout; growing spaces and output files by
+// the input budget and the file cap, well within a generous timeout.
 func TestRunawayCommandsStop(t *testing.T) {
 	runScriptCases(t, []scriptCase{
 		{name: "branch loop", script: `echo x | sed ':again;b again'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "substitute loop", script: `echo x | sed ':a;s/^/ /;ta'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+		{name: "diff of disjoint files", files: disjointFiles(), script: `diff a b > /dev/null`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+	}, &Options{Timeout: time.Second})
+	runScriptCases(t, []scriptCase{
 		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
 		{
 			name: "sed -i result cap", files: map[string]string{"f": "x\n"},
 			script: "sed -i '" + strings.Repeat("h;G;", 20) + strings.Repeat("p;", 40) + "' f; echo $?; cat f",
 			want:   "sed: couldn't edit f: File too large\n4\nx\n",
 		},
-		{name: "diff of disjoint files", files: disjointFiles(), script: `diff a b > /dev/null`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "awk output file cap", script: `env -i awk 'BEGIN{while(1) print "0123456789abcdef0123456789abcdef" > "f"}'; echo $?; ls`, want: "awk: File too large\n2\nf\n"},
-	}, &Options{Timeout: time.Second})
+	}, &Options{Timeout: time.Minute})
 }
 
 // TestJqSummaryNamesSortedKeys: jq reorders object keys, which the model
@@ -173,22 +176,24 @@ func TestCommandWritesFailLoudly(t *testing.T) {
 // their input, and lets the streaming ones run over the same pipe.
 func TestInputBudget(t *testing.T) {
 	if testing.Short() {
-		t.Skip("pipes 72 MB")
+		t.Skip("pipes 70 MB")
 	}
-	big := map[string]string{"big": strings.Repeat("x\n", 36_000_000) + "end\n"}
+	// 70000 lines of 1000 bytes: over the budget, with few lines to process.
+	line := strings.Repeat("x", 999) + "\n"
+	big := map[string]string{"big": strings.Repeat(line, 70_000) + "end\n"}
 	runScriptCases(t, []scriptCase{
 		{name: "sort refuses", files: big, script: `cat big | sort; echo $?`, want: "sort: input exceeds 67108864 bytes\n2\n"},
 		{name: "xargs refuses", files: big, script: `cat big | xargs echo; echo $?`, want: "xargs: input exceeds 67108864 bytes\n2\n"},
 		{name: "head -n -1 refuses", files: big, script: `cat big | head -n -1; echo $?`, want: "head: input exceeds 67108864 bytes\n2\n"},
 		{name: "jq refuses", files: big, script: `cat big | jq .; echo $?`, want: "jq: input exceeds 67108864 bytes\n2\n"},
-		{name: "tail streams lines", files: big, script: `cat big | tail -n 2`, want: "x\nend\n"},
+		{name: "tail streams lines", files: big, script: `cat big | tail -n 2 | cut -c1-3`, want: "xxx\nend\n"},
 		{name: "tail streams bytes", files: big, script: `cat big | tail -c 4`, want: "end\n"},
-		{name: "tail +N streams", files: big, script: `cat big | tail -n +36000000`, want: "x\nend\n"},
-		{name: "head -c streams", files: big, script: `cat big | head -c 4`, want: "x\nx\n"},
-		{name: "wc streams", files: big, script: `cat big | wc -l`, want: "36000001\n"},
+		{name: "tail +N streams", files: big, script: `cat big | tail -n +70000 | cut -c1-3`, want: "xxx\nend\n"},
+		{name: "head -c streams", files: big, script: `cat big | head -c 4`, want: "xxxx"},
+		{name: "wc streams", files: big, script: `cat big | wc -l`, want: "70001\n"},
 		{name: "cut streams", files: big, script: `cat big | cut -c1 | tail -n 1`, want: "e\n"},
 		{name: "sed streams", files: big, script: `cat big | sed -n '$p'`, want: "end\n"},
 		{name: "sed N across the stream", files: big, script: `cat big | sed -n '$!N;$p'`, want: "end\n"},
-		{name: "uniq streams", files: big, script: `cat big | uniq -c`, want: "36000000 x\n      1 end\n"},
+		{name: "uniq streams", files: big, script: `cat big | uniq -c | cut -c1-12`, want: "  70000 xxxx\n      1 end\n"},
 	}, nil)
 }
