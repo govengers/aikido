@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,45 +24,88 @@ const opencodeConfig = `{
 }
 `
 
-var goEnvOnce = sync.OnceValue(func() []string {
-	out, err := exec.Command("go", "env", "GOPATH", "GOCACHE", "GOMODCACHE").Output()
+var goEnvironmentOnce = sync.OnceValue(func() []string {
+	output, err := exec.Command("go", "env", "GOPATH", "GOCACHE", "GOMODCACHE").Output()
 	if err != nil {
 		return nil
 	}
-	v := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(v) != 3 {
+	values := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(values) != 3 {
 		return nil
 	}
-	return []string{"GOPATH=" + v[0], "GOCACHE=" + v[1], "GOMODCACHE=" + v[2]}
+	return []string{"GOPATH=" + values[0], "GOCACHE=" + values[1], "GOMODCACHE=" + values[2]}
 })
 
-// runOpencode runs `opencode run` non-interactively in the work dir with an
-// isolated HOME and XDG tree under j.Root, so its session database, config
-// and skills are per run, and parses its JSON event stream.
-func runOpencode(ctx context.Context, j *job, m *metrics) error {
-	home := filepath.Join(j.Root, "home")
-	cfgDir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+// runOpencode runs `opencode run` non-interactively in the work directory with
+// an isolated HOME and XDG tree under run.Root, so its session database,
+// config and skills are per run, and parses its JSON event stream.
+func runOpencode(ctx context.Context, run *job, observed *metrics) error {
+	home := filepath.Join(run.Root, "home")
+	configDirectory := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(configDirectory, directoryPermissions); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(cfgDir, "opencode.json"), []byte(opencodeConfig), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDirectory, "opencode.json"), []byte(opencodeConfig), filePermissions); err != nil {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, j.Opencode, "run", "--standalone", "--auto", "--format", "json",
-		"-m", "openrouter/"+j.Model, j.Task.Prompt)
-	cmd.Dir = j.WorkDir
-	var env []string
-	for _, kv := range childEnv(j.WorkDir) {
-		name := strings.SplitN(kv, "=", 2)[0]
+	//nolint:gosec // G204: the operator names the opencode binary (-opencode flag); the prompt is the task's task.md
+	command := exec.CommandContext(ctx, run.OpencodeBinary, "run", "--standalone", "--auto", "--format", "json",
+		"-m", "openrouter/"+run.Model, run.Task.Prompt)
+	command.Dir = run.WorkDirectory
+	command.Env = opencodeEnvironment(run, home)
+	killGroup(command)
+
+	stderr, err := os.Create(filepath.Join(run.LogDirectory, "stderr.log"))
+	if err != nil {
+		return err
+	}
+	defer stderr.Close()
+	transcript, err := os.Create(filepath.Join(run.LogDirectory, "transcript.jsonl"))
+	if err != nil {
+		return err
+	}
+	defer transcript.Close()
+	command.Stderr = stderr
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	eventError := parseOpencodeEvents(io.TeeReader(stdout, transcript), observed)
+	waitError := command.Wait()
+	switch {
+	case ctx.Err() != nil:
+		observed.EndReason = "timeout"
+		return fmt.Errorf("timeout after %s", run.Timeout)
+	case waitError != nil:
+		observed.EndReason = "error"
+		stderrText, _ := fs.ReadFile(os.DirFS(run.LogDirectory), "stderr.log")
+		return fmt.Errorf("opencode: %w: %s", waitError, tail(string(stderrText), 300))
+	case eventError != nil:
+		observed.EndReason = "error"
+		return eventError
+	}
+	observed.EndReason = "stop"
+	return nil
+}
+
+// opencodeEnvironment is childEnv without the user's HOME, XDG and OPENCODE
+// variables, plus the Go caches, the API key and the run's own home tree.
+func opencodeEnvironment(run *job, home string) []string {
+	var environment []string
+	for _, variable := range childEnv(run.WorkDirectory) {
+		name, _, _ := strings.Cut(variable, "=")
 		if name == "HOME" || strings.HasPrefix(name, "XDG_") || strings.HasPrefix(name, "OPENCODE") {
 			continue
 		}
-		env = append(env, kv)
+		environment = append(environment, variable)
 	}
-	cmd.Env = append(env, goEnvOnce()...)
-	cmd.Env = append(cmd.Env,
-		"OPENROUTER_API_KEY="+j.APIKey,
+	environment = append(environment, goEnvironmentOnce()...)
+	return append(environment,
+		"OPENROUTER_API_KEY="+run.APIKey,
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
@@ -70,41 +114,6 @@ func runOpencode(ctx context.Context, j *job, m *metrics) error {
 		"OPENCODE_DISABLE_CLAUDE_CODE=1",
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 	)
-	killGroup(cmd)
-
-	stderr, err := os.Create(filepath.Join(j.LogDir, "stderr.log"))
-	if err != nil {
-		return err
-	}
-	defer stderr.Close()
-	transcript, err := os.Create(filepath.Join(j.LogDir, "transcript.jsonl"))
-	if err != nil {
-		return err
-	}
-	defer transcript.Close()
-	cmd.Stderr = stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	eventErr := parseOpencodeEvents(io.TeeReader(stdout, transcript), m)
-	waitErr := cmd.Wait()
-	switch {
-	case ctx.Err() != nil:
-		m.EndReason = "timeout"
-		return fmt.Errorf("timeout after %s", j.Timeout)
-	case waitErr != nil:
-		m.EndReason = "error"
-		return fmt.Errorf("opencode: %w: %s", waitErr, tail(readFile(stderr.Name()), 300))
-	case eventErr != nil:
-		m.EndReason = "error"
-		return eventErr
-	}
-	m.EndReason = "stop"
-	return nil
 }
 
 type opencodeEvent struct {
@@ -131,43 +140,44 @@ type opencodeEvent struct {
 // parseOpencodeEvents reads the `--format json` stream. Tokens are normalized
 // to OpenRouter's shape: input includes cache reads and writes, output
 // includes reasoning. It returns the first error event.
-func parseOpencodeEvents(r io.Reader, m *metrics) error {
-	var firstErr error
-	br := bufio.NewReader(r)
+func parseOpencodeEvents(stream io.Reader, observed *metrics) error {
+	var firstError error
+	reader := bufio.NewReader(stream)
 	for {
-		line, err := br.ReadBytes('\n')
-		if len(strings.TrimSpace(string(line))) > 0 {
-			var ev opencodeEvent
-			if json.Unmarshal(line, &ev) == nil {
-				switch ev.Type {
-				case "tool_use":
-					m.tool(ev.Part.Tool, ev.Part.State.Status == "error")
-				case "step_finish":
-					t := ev.Part.Tokens
-					m.LLMCalls++
-					m.InputTokens += t.Input + t.Cache.Read + t.Cache.Write
-					m.OutputTokens += t.Output + t.Reasoning
-					m.CacheReadTokens += t.Cache.Read
-					m.CacheWriteTokens += t.Cache.Write
-					m.CostUSD += ev.Part.Cost
-				case "error":
-					if firstErr == nil {
-						b, _ := json.Marshal(ev.Error)
-						firstErr = errors.New("opencode error event: " + tail(string(b), 300))
-					}
-				}
+		line, err := reader.ReadBytes('\n')
+		var event opencodeEvent
+		if len(strings.TrimSpace(string(line))) > 0 && json.Unmarshal(line, &event) == nil {
+			eventError := recordOpencodeEvent(&event, observed)
+			if firstError == nil {
+				firstError = eventError
 			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return firstErr
+				return firstError
 			}
 			return err
 		}
 	}
 }
 
-func readFile(p string) string {
-	b, _ := os.ReadFile(p)
-	return string(b)
+// recordOpencodeEvent adds a tool_use or step_finish event to observed and
+// turns an error event into an error.
+func recordOpencodeEvent(event *opencodeEvent, observed *metrics) error {
+	switch event.Type {
+	case "tool_use":
+		observed.tool(event.Part.Tool, event.Part.State.Status == "error")
+	case "step_finish":
+		tokens := event.Part.Tokens
+		observed.LLMCalls++
+		observed.InputTokens += tokens.Input + tokens.Cache.Read + tokens.Cache.Write
+		observed.OutputTokens += tokens.Output + tokens.Reasoning
+		observed.CacheReadTokens += tokens.Cache.Read
+		observed.CacheWriteTokens += tokens.Cache.Write
+		observed.CostUSD += event.Part.Cost
+	case "error":
+		encoded, _ := json.Marshal(event.Error)
+		return errors.New("opencode error event: " + tail(string(encoded), 300))
+	}
+	return nil
 }

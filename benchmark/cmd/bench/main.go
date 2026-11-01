@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,37 +18,44 @@ import (
 	"time"
 )
 
-// harnessFunc runs one task in j.WorkDir and fills m with what it can observe.
-type harnessFunc func(ctx context.Context, j *job, m *metrics) error
+// Results and scratch files are only for the benchmark user.
+const (
+	directoryPermissions = 0o750
+	filePermissions      = 0o600
+)
 
-var harnesses = map[string]harnessFunc{
+// harnessRunner runs one task in run.WorkDirectory and fills observed with
+// what it can observe.
+type harnessRunner func(ctx context.Context, run *job, observed *metrics) error
+
+var harnesses = map[string]harnessRunner{
 	"aikido":      runAikido(false),
 	"aikido-bash": runAikido(true),
 	"opencode":    runOpencode,
 }
 
 type task struct {
-	Name     string
-	Dir      string
-	Category string
-	Prompt   string
+	Name      string
+	Directory string
+	Category  string
+	Prompt    string
 }
 
 type job struct {
-	Harness  string
-	Model    string
-	Task     task
-	Rep      int
-	Root     string // per-run scratch directory, outside the work dir
-	WorkDir  string // the fixture copy the agent works in
-	LogDir   string // transcript and logs, kept in the results dir
-	Timeout  time.Duration
-	APIKey   string
-	Opencode string
+	Harness        string
+	Model          string
+	Task           task
+	Repetition     int
+	Root           string // per-run scratch directory, outside the work directory
+	WorkDirectory  string // the fixture copy the agent works in
+	LogDirectory   string // transcript and logs, kept in the results directory
+	Timeout        time.Duration
+	APIKey         string
+	OpencodeBinary string
 }
 
 func (j *job) id() string {
-	return fmt.Sprintf("%s__%s__%s__%d", j.Harness, strings.ReplaceAll(j.Model, "/", "_"), j.Task.Name, j.Rep)
+	return fmt.Sprintf("%s__%s__%s__%d", j.Harness, strings.ReplaceAll(j.Model, "/", "_"), j.Task.Name, j.Repetition)
 }
 
 type metrics struct {
@@ -78,7 +86,7 @@ type Result struct {
 	Model            string         `json:"model"`
 	Task             string         `json:"task"`
 	Category         string         `json:"category"`
-	Rep              int            `json:"rep"`
+	Repetition       int            `json:"rep"`
 	Pass             bool           `json:"pass"`
 	WallSeconds      float64        `json:"wall_seconds"`
 	LLMCalls         int            `json:"llm_calls"`
@@ -98,109 +106,134 @@ type Result struct {
 
 func main() {
 	var (
-		harnessFlag = flag.String("harness", "aikido,aikido-bash,opencode", "comma-separated harnesses")
-		modelFlag   = flag.String("model", "anthropic/claude-haiku-5.5", "comma-separated OpenRouter model ids")
-		taskGlob    = flag.String("task", "*", "comma-separated globs over task names")
-		reps        = flag.Int("reps", 1, "repetitions per (harness, model, task)")
-		parallel    = flag.Int("parallel", 4, "concurrent runs")
-		timeout     = flag.Duration("timeout", 10*time.Minute, "wall-clock limit per run")
-		tasksDir    = flag.String("tasks", "tasks", "task directory")
-		resultsDir  = flag.String("results", "results", "results directory")
-		runID       = flag.String("run-id", time.Now().Format("20060102-150405"), "name of the results subdirectory")
-		opencodeBin = flag.String("opencode", "opencode", "opencode binary")
-		keep        = flag.Bool("keep", false, "keep the work directories (paths are logged)")
-		validate    = flag.Bool("validate", false, "check that every check.sh fails on the fixture and passes on solve.sh; no LLM calls")
-		summarize   = flag.String("summarize", "", "rewrite summary.md of an existing results directory and exit")
+		harnessFlag      = flag.String("harness", "aikido,aikido-bash,opencode", "comma-separated harnesses")
+		modelFlag        = flag.String("model", "anthropic/claude-haiku-5.5", "comma-separated OpenRouter model ids")
+		taskGlob         = flag.String("task", "*", "comma-separated globs over task names")
+		repetitions      = flag.Int("reps", 1, "repetitions per (harness, model, task)")
+		parallel         = flag.Int("parallel", 4, "concurrent runs")
+		timeout          = flag.Duration("timeout", 10*time.Minute, "wall-clock limit per run")
+		tasksDirectory   = flag.String("tasks", "tasks", "task directory")
+		resultsDirectory = flag.String("results", "results", "results directory")
+		runID            = flag.String("run-id", time.Now().Format("20060102-150405"), "name of the results subdirectory")
+		opencodeBinary   = flag.String("opencode", "opencode", "opencode binary")
+		keep             = flag.Bool("keep", false, "keep the work directories (paths are logged)")
+		validate         = flag.Bool("validate", false, "check that every check.sh fails on the fixture and passes on solve.sh; no LLM calls")
+		summarize        = flag.String("summarize", "", "rewrite summary.md of an existing results directory and exit")
 	)
 	flag.Parse()
+	ctx := context.Background()
 
 	if *summarize != "" {
 		exitOn(writeSummary(*summarize))
 		return
 	}
-	tasks, err := loadTasks(*tasksDir, *taskGlob)
+	tasks, err := loadTasks(*tasksDirectory, *taskGlob)
 	exitOn(err)
 	if *validate {
-		if !validateTasks(tasks) {
+		if !validateTasks(ctx, tasks) {
 			os.Exit(1)
 		}
 		return
 	}
 
-	hs := splitList(*harnessFlag)
-	for _, h := range hs {
-		if harnesses[h] == nil {
-			exitOn(fmt.Errorf("unknown harness %q", h))
+	harnessNames := splitList(*harnessFlag)
+	for _, name := range harnessNames {
+		if harnesses[name] == nil {
+			exitOn(fmt.Errorf("unknown harness %q", name))
 		}
 	}
-	key := os.Getenv("OPENROUTER_API_KEY")
-	if key == "" {
-		key = os.Getenv("CLAUDE_OPENROUTER_API_KEY")
-	}
-	if key == "" {
-		exitOn(errors.New("set OPENROUTER_API_KEY (or CLAUDE_OPENROUTER_API_KEY)"))
-	}
+	apiKey, err := openRouterKey()
+	exitOn(err)
 	if strings.Contains(*harnessFlag, "opencode") {
-		bin, err := exec.LookPath(*opencodeBin)
+		binary, err := exec.LookPath(*opencodeBinary)
 		exitOn(err)
-		*opencodeBin = bin
+		*opencodeBinary = binary
 	}
 
-	runDir := filepath.Join(*resultsDir, *runID)
-	exitOn(os.MkdirAll(filepath.Join(runDir, "runs"), 0o755))
-	exitOn(writeRunInfo(runDir, *opencodeBin))
+	runDirectory := filepath.Join(*resultsDirectory, *runID)
+	exitOn(os.MkdirAll(filepath.Join(runDirectory, "runs"), directoryPermissions))
+	exitOn(writeRunInfo(ctx, runDirectory, *opencodeBinary))
 
+	jobs := planJobs(tasks, harnessNames, splitList(*modelFlag), *repetitions, job{Timeout: *timeout, APIKey: apiKey, OpencodeBinary: *opencodeBinary})
+	exitOn(runJobs(ctx, runDirectory, jobs, *parallel, *keep))
+	exitOn(writeSummary(runDirectory))
+	fmt.Fprintf(os.Stderr, "results: %s\n", filepath.Join(runDirectory, "summary.md"))
+}
+
+func openRouterKey() (string, error) {
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		apiKey = os.Getenv("CLAUDE_OPENROUTER_API_KEY")
+	}
+	if apiKey == "" {
+		return "", errors.New("set OPENROUTER_API_KEY (or CLAUDE_OPENROUTER_API_KEY)")
+	}
+	return apiKey, nil
+}
+
+// planJobs builds one job per repetition, task, model and harness, in that
+// nesting order; template carries the fields every job shares.
+func planJobs(tasks []task, harnessNames, models []string, repetitions int, template job) []*job {
 	var jobs []*job
-	for rep := 1; rep <= *reps; rep++ {
-		for _, t := range tasks {
-			for _, model := range splitList(*modelFlag) {
-				for _, h := range hs {
-					jobs = append(jobs, &job{Harness: h, Model: model, Task: t, Rep: rep, Timeout: *timeout, APIKey: key, Opencode: *opencodeBin})
+	for repetition := 1; repetition <= repetitions; repetition++ {
+		for _, benchmarkTask := range tasks {
+			for _, model := range models {
+				for _, harness := range harnessNames {
+					planned := template
+					planned.Harness, planned.Model, planned.Task, planned.Repetition = harness, model, benchmarkTask, repetition
+					jobs = append(jobs, &planned)
 				}
 			}
 		}
 	}
+	return jobs
+}
 
-	out, err := os.OpenFile(filepath.Join(runDir, "results.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	exitOn(err)
-	defer out.Close()
+// runJobs executes the jobs with at most parallel at a time, appends each
+// result to results.jsonl and logs one progress line per finished job.
+func runJobs(ctx context.Context, runDirectory string, jobs []*job, parallel int, keep bool) error {
+	//nolint:gosec // G304: results.jsonl in the run directory main just created
+	resultsFile, err := os.OpenFile(filepath.Join(runDirectory, "results.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, filePermissions)
+	if err != nil {
+		return err
+	}
+	defer resultsFile.Close()
 
 	var (
-		mu   sync.Mutex
-		done int
-		wg   sync.WaitGroup
-		sem  = make(chan struct{}, max(1, *parallel))
+		mutex     sync.Mutex
+		done      int
+		waitGroup sync.WaitGroup
+		semaphore = make(chan struct{}, max(1, parallel))
 	)
-	for _, j := range jobs {
-		wg.Add(1)
-		sem <- struct{}{}
+	for _, run := range jobs {
+		waitGroup.Add(1)
+		semaphore <- struct{}{}
 		go func() {
-			defer func() { <-sem; wg.Done() }()
-			j.LogDir = filepath.Join(runDir, "runs", j.id())
-			r := execute(j, *keep)
-			line, _ := json.Marshal(r)
-			mu.Lock()
-			defer mu.Unlock()
+			defer func() { <-semaphore; waitGroup.Done() }()
+			run.LogDirectory = filepath.Join(runDirectory, "runs", run.id())
+			result := execute(ctx, run, keep)
+			line, _ := json.Marshal(result)
+			mutex.Lock()
+			defer mutex.Unlock()
 			done++
-			_, _ = out.Write(append(line, '\n'))
+			_, _ = resultsFile.Write(append(line, '\n'))
 			status := "FAIL"
-			if r.Pass {
+			if result.Pass {
 				status = "PASS"
 			}
 			fmt.Fprintf(os.Stderr, "[%d/%d] %-4s %-11s %-28s %-20s rep%d %6.1fs $%.4f %s\n",
-				done, len(jobs), status, j.Harness, j.Model, j.Task.Name, j.Rep, r.WallSeconds, r.CostUSD, r.Error)
+				done, len(jobs), status, run.Harness, run.Model, run.Task.Name, run.Repetition, result.WallSeconds, result.CostUSD, result.Error)
 		}()
 	}
-	wg.Wait()
-	exitOn(writeSummary(runDir))
-	fmt.Fprintf(os.Stderr, "results: %s\n", filepath.Join(runDir, "summary.md"))
+	waitGroup.Wait()
+	return nil
 }
 
 // execute runs one job end to end and never panics the whole run.
-func execute(j *job, keep bool) (r Result) {
-	r = Result{Harness: j.Harness, Model: j.Model, Task: j.Task.Name, Category: j.Task.Category, Rep: j.Rep}
-	fail := func(err error) Result { r.Error = err.Error(); return r }
-	if err := os.MkdirAll(j.LogDir, 0o755); err != nil {
+func execute(ctx context.Context, run *job, keep bool) (result Result) {
+	result = Result{Harness: run.Harness, Model: run.Model, Task: run.Task.Name, Category: run.Task.Category, Repetition: run.Repetition}
+	fail := func(err error) Result { result.Error = err.Error(); return result }
+	if err := os.MkdirAll(run.LogDirectory, directoryPermissions); err != nil {
 		return fail(err)
 	}
 	root, err := os.MkdirTemp("", "aikido-bench-")
@@ -208,192 +241,216 @@ func execute(j *job, keep bool) (r Result) {
 		return fail(err)
 	}
 	if keep {
-		_ = os.WriteFile(filepath.Join(j.LogDir, "workdir.txt"), []byte(root+"\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(run.LogDirectory, "workdir.txt"), []byte(root+"\n"), filePermissions)
 	} else {
 		defer os.RemoveAll(root)
 	}
-	j.Root = root
-	j.WorkDir = filepath.Join(root, "work")
-	fixture := filepath.Join(j.Task.Dir, "fixture")
-	if err := os.CopyFS(j.WorkDir, os.DirFS(fixture)); err != nil {
+	run.Root = root
+	run.WorkDirectory = filepath.Join(root, "work")
+	fixture := filepath.Join(run.Task.Directory, "fixture")
+	if err := os.CopyFS(run.WorkDirectory, os.DirFS(fixture)); err != nil {
 		return fail(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), j.Timeout)
+	runContext, cancel := context.WithTimeout(ctx, run.Timeout)
 	defer cancel()
-	var m metrics
+	var observed metrics
 	start := time.Now()
-	runErr := harnesses[j.Harness](ctx, j, &m)
-	r.WallSeconds = time.Since(start).Seconds()
-	if runErr == nil && ctx.Err() != nil {
-		runErr = fmt.Errorf("timeout after %s", j.Timeout)
+	runError := harnesses[run.Harness](runContext, run, &observed)
+	result.WallSeconds = time.Since(start).Seconds()
+	if runError == nil && runContext.Err() != nil {
+		runError = fmt.Errorf("timeout after %s", run.Timeout)
 	}
-	if p := modifiedSince(j.Task.Dir, start); p != "" {
-		// The agent escaped its work dir (absolute paths); fail loudly.
-		runErr = fmt.Errorf("task directory modified during the run: %s (restore it with git)", p)
+	if path := modifiedSince(run.Task.Directory, start); path != "" {
+		// The agent escaped its work directory (absolute paths); fail loudly.
+		runError = fmt.Errorf("task directory modified during the run: %s (restore it with git)", path)
 	}
-	if runErr != nil {
-		r.Error = runErr.Error()
+	if runError != nil {
+		result.Error = runError.Error()
 	}
-	r.LLMCalls, r.InputTokens, r.OutputTokens = m.LLMCalls, m.InputTokens, m.OutputTokens
-	r.CacheReadTokens, r.CacheWriteTokens, r.CostUSD = m.CacheReadTokens, m.CacheWriteTokens, m.CostUSD
-	r.ToolCalls, r.ToolErrors, r.EndReason = m.ToolCalls, m.ToolErrors, m.EndReason
+	result.LLMCalls, result.InputTokens, result.OutputTokens = observed.LLMCalls, observed.InputTokens, observed.OutputTokens
+	result.CacheReadTokens, result.CacheWriteTokens, result.CostUSD = observed.CacheReadTokens, observed.CacheWriteTokens, observed.CostUSD
+	result.ToolCalls, result.ToolErrors, result.EndReason = observed.ToolCalls, observed.ToolErrors, observed.EndReason
 
 	// Measure the agent's edits before check.sh adds hidden tests.
-	r.FilesChanged, r.BytesChanged, err = diffTrees(fixture, j.WorkDir)
-	if err != nil && r.Error == "" {
-		r.Error = err.Error()
+	result.FilesChanged, result.BytesChanged, err = diffTrees(fixture, run.WorkDirectory)
+	if err != nil && result.Error == "" {
+		result.Error = err.Error()
 	}
-	pass, output := runScript(j.Task, "check.sh", j.WorkDir)
-	_ = os.WriteFile(filepath.Join(j.LogDir, "check.log"), []byte(output), 0o644)
-	r.Pass = pass
+	// The check gets its own timeout, not what is left of the run's.
+	pass, output := runScript(ctx, run.Task, "check.sh", run.WorkDirectory)
+	_ = os.WriteFile(filepath.Join(run.LogDirectory, "check.log"), []byte(output), filePermissions)
+	result.Pass = pass
 	if !pass {
-		r.Check = tail(output, 600)
+		result.Check = tail(output, 600)
 	}
-	return r
+	return result
 }
 
-func loadTasks(dir, glob string) ([]task, error) {
-	abs, err := filepath.Abs(dir)
+func loadTasks(directory, glob string) ([]task, error) {
+	absolute, err := filepath.Abs(directory)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(abs)
+	entries, err := os.ReadDir(absolute)
 	if err != nil {
 		return nil, err
 	}
 	var tasks []task
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		matched := false
-		for _, g := range splitList(glob) {
-			ok, err := filepath.Match(g, e.Name())
-			if err != nil {
-				return nil, err
-			}
-			matched = matched || ok
+		matched, err := matchesAny(entry.Name(), splitList(glob))
+		if err != nil {
+			return nil, err
 		}
 		if !matched {
 			continue
 		}
-		d := filepath.Join(abs, e.Name())
-		prompt, err := os.ReadFile(filepath.Join(d, "task.md"))
+		taskDirectory := filepath.Join(absolute, entry.Name())
+		taskFiles := os.DirFS(taskDirectory)
+		prompt, err := fs.ReadFile(taskFiles, "task.md")
 		if err != nil {
-			return nil, fmt.Errorf("task %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("task %s: %w", entry.Name(), err)
 		}
-		cat, err := os.ReadFile(filepath.Join(d, "category"))
+		category, err := fs.ReadFile(taskFiles, "category")
 		if err != nil {
-			return nil, fmt.Errorf("task %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("task %s: %w", entry.Name(), err)
 		}
-		tasks = append(tasks, task{Name: e.Name(), Dir: d, Category: strings.TrimSpace(string(cat)), Prompt: string(prompt)})
+		tasks = append(tasks, task{Name: entry.Name(), Directory: taskDirectory, Category: strings.TrimSpace(string(category)), Prompt: string(prompt)})
 	}
 	if len(tasks) == 0 {
-		return nil, fmt.Errorf("no task in %s matches %q", dir, glob)
+		return nil, fmt.Errorf("no task in %s matches %q", directory, glob)
 	}
-	sort.Slice(tasks, func(a, b int) bool { return tasks[a].Name < tasks[b].Name })
+	sort.Slice(tasks, func(left, right int) bool { return tasks[left].Name < tasks[right].Name })
 	return tasks, nil
 }
 
-// runScript runs a task script (check.sh or solve.sh) in dir.
-func runScript(t task, script, dir string) (bool, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", filepath.Join(t.Dir, script))
-	cmd.Dir = dir
-	cmd.Env = append(childEnv(dir), "TASK_DIR="+t.Dir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		out = append(out, []byte("\nexit: "+err.Error()+"\n")...)
+// matchesAny reports whether name matches one of the globs. Every glob is
+// checked, so a malformed one is an error even after an earlier match.
+func matchesAny(name string, globs []string) (bool, error) {
+	matched := false
+	for _, glob := range globs {
+		ok, err := filepath.Match(glob, name)
+		if err != nil {
+			return false, err
+		}
+		matched = matched || ok
 	}
-	return err == nil, string(out)
+	return matched, nil
+}
+
+// runScript runs a task script (check.sh or solve.sh) in directory.
+func runScript(ctx context.Context, benchmarkTask task, script, directory string) (bool, string) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	//nolint:gosec // G204: the script is a file of the benchmark's own task directory
+	command := exec.CommandContext(ctx, "bash", filepath.Join(benchmarkTask.Directory, script))
+	command.Dir = directory
+	command.Env = append(childEnv(directory), "TASK_DIR="+benchmarkTask.Directory)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		output = append(output, []byte("\nexit: "+err.Error()+"\n")...)
+	}
+	return err == nil, string(output)
 }
 
 // validateTasks proves each checker rejects the untouched fixture and accepts
 // the reference solution.
-func validateTasks(tasks []task) bool {
-	ok := true
-	for _, t := range tasks {
-		var fixtureFail string
-		res := func() string {
-			for _, solve := range []bool{false, true} {
-				dir, err := os.MkdirTemp("", "aikido-bench-validate-")
-				if err != nil {
-					return err.Error()
-				}
-				defer os.RemoveAll(dir)
-				if err := os.CopyFS(dir, os.DirFS(filepath.Join(t.Dir, "fixture"))); err != nil {
-					return err.Error()
-				}
-				if solve {
-					if passed, out := runScript(t, "solve.sh", dir); !passed {
-						return "solve.sh failed: " + tail(out, 400)
-					}
-				}
-				passed, out := runScript(t, "check.sh", dir)
-				if !solve {
-					fixtureFail = firstFailLine(out)
-				}
-				if passed != solve {
-					return fmt.Sprintf("check.sh pass=%v on %s: %s", passed, map[bool]string{false: "fixture", true: "solution"}[solve], tail(out, 400))
-				}
-			}
-			return ""
-		}()
-		status := "ok  "
-		if res != "" {
-			status, ok = "BAD ", false
-		} else {
-			res = "fixture: " + oneLine(fixtureFail)
+func validateTasks(ctx context.Context, tasks []task) bool {
+	allValid := true
+	for _, benchmarkTask := range tasks {
+		fixtureFailure, problem := validateTask(ctx, benchmarkTask)
+		status, detail := "ok  ", "fixture: "+oneLine(fixtureFailure)
+		if problem != "" {
+			status, detail, allValid = "BAD ", problem, false
 		}
-		fmt.Printf("%s %-22s %s\n", status, t.Name, res)
+		fmt.Printf("%s %-22s %s\n", status, benchmarkTask.Name, detail)
 	}
-	return ok
+	return allValid
 }
 
-func writeRunInfo(runDir, opencodeBin string) error {
+// validateTask returns the first failure line of check.sh on the fixture, and
+// a problem when check.sh passes the fixture or fails the solution.
+func validateTask(ctx context.Context, benchmarkTask task) (fixtureFailure, problem string) {
+	for _, solve := range []bool{false, true} {
+		passed, output, err := checkFreshCopy(ctx, benchmarkTask, solve)
+		if err != nil {
+			return fixtureFailure, err.Error()
+		}
+		if !solve {
+			fixtureFailure = firstFailLine(output)
+		}
+		if passed != solve {
+			return fixtureFailure, fmt.Sprintf("check.sh pass=%v on %s: %s", passed, map[bool]string{false: "fixture", true: "solution"}[solve], tail(output, 400))
+		}
+	}
+	return fixtureFailure, ""
+}
+
+// checkFreshCopy runs check.sh on a fresh copy of the fixture, after solve.sh
+// when solve is set.
+func checkFreshCopy(ctx context.Context, benchmarkTask task, solve bool) (passed bool, output string, err error) {
+	directory, err := os.MkdirTemp("", "aikido-bench-validate-")
+	if err != nil {
+		return false, "", err
+	}
+	defer os.RemoveAll(directory)
+	if err := os.CopyFS(directory, os.DirFS(filepath.Join(benchmarkTask.Directory, "fixture"))); err != nil {
+		return false, "", err
+	}
+	if solve {
+		if solved, solveOutput := runScript(ctx, benchmarkTask, "solve.sh", directory); !solved {
+			return false, "", errors.New("solve.sh failed: " + tail(solveOutput, 400))
+		}
+	}
+	passed, output = runScript(ctx, benchmarkTask, "check.sh", directory)
+	return passed, output, nil
+}
+
+func writeRunInfo(ctx context.Context, runDirectory, opencodeBinary string) error {
 	info := map[string]any{"args": os.Args[1:], "started": time.Now().Format(time.RFC3339), "system_prompt": systemPrompt}
-	if out, err := exec.Command(opencodeBin, "--version").Output(); err == nil {
-		info["opencode_version"] = strings.TrimSpace(string(out))
+	if version, err := exec.CommandContext(ctx, opencodeBinary, "--version").Output(); err == nil {
+		info["opencode_version"] = strings.TrimSpace(string(version))
 	}
-	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
-		info["aikido_commit"] = strings.TrimSpace(string(out))
+	if commit, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
+		info["aikido_commit"] = strings.TrimSpace(string(commit))
 	}
-	b, _ := json.MarshalIndent(info, "", "  ")
-	return os.WriteFile(filepath.Join(runDir, "run.json"), append(b, '\n'), 0o644)
+	encoded, _ := json.MarshalIndent(info, "", "  ")
+	return os.WriteFile(filepath.Join(runDirectory, "run.json"), append(encoded, '\n'), filePermissions)
 }
 
-// childEnv is the environment for a process running in dir: no OpenRouter
-// keys, and PWD pointing at dir. opencode resolves its project from $PWD, so
-// an inherited PWD would send it into the benchmark checkout.
-func childEnv(dir string) []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		name := strings.SplitN(kv, "=", 2)[0]
+// childEnv is the environment for a process running in directory: no
+// OpenRouter keys, and PWD pointing at directory. opencode resolves its project
+// from $PWD, so an inherited PWD would send it into the benchmark checkout.
+func childEnv(directory string) []string {
+	var environment []string
+	for _, variable := range os.Environ() {
+		name, _, _ := strings.Cut(variable, "=")
 		if !strings.Contains(name, "OPENROUTER") && name != "PWD" {
-			env = append(env, kv)
+			environment = append(environment, variable)
 		}
 	}
-	return append(env, "PWD="+dir)
+	return append(environment, "PWD="+directory)
 }
 
-func splitList(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
+func splitList(list string) []string {
+	var items []string
+	for _, item := range strings.Split(list, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
 		}
 	}
-	return out
+	return items
 }
 
-func tail(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return "..." + s[len(s)-n:]
+func tail(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if len(text) > limit {
+		return "..." + text[len(text)-limit:]
 	}
-	return s
+	return text
 }
 
 func exitOn(err error) {

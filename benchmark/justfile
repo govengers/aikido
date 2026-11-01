@@ -21,6 +21,10 @@ bench reps="3" *args:
 summarize dir:
     go run ./cmd/bench -summarize {{dir}}
 
-check:
+# Lint with the repo's govengers baseline; this module has no config of its own.
+lint:
+    golangci-lint run --config ../.golangci.yml ./...
+
+check: lint
     go vet ./...
     go test ./...

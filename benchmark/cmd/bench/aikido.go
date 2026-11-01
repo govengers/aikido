@@ -22,105 +22,130 @@ const systemPrompt = `You are a coding agent working in a software project. The 
 const aikidoMaximumTurns = 60
 
 // runAikido drives the library in-process: openrouter client, osfs storage on
-// the work dir, all VFS tools, todo_write, and optionally the prototype bash
-// tool. Library defaults stay on (prompt caching, tool result cap, tool timeout).
-func runAikido(withBash bool) harnessFunc {
-	return func(ctx context.Context, j *job, m *metrics) error {
-		client, err := openrouter.NewClient(&openrouter.Options{APIKey: j.APIKey, XTitle: "aikido-bench"})
-		if err != nil {
-			return err
-		}
-		storage, err := osfs.New(&osfs.Options{Directory: j.WorkDir})
-		if err != nil {
-			return err
-		}
-		defer storage.Close()
-		registry := tools.NewRegistry()
-		if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage}); err != nil {
-			return err
-		}
-		if err := agent.RegisterPlanTool(registry); err != nil {
-			return err
-		}
-		if withBash {
-			if err := registry.Register(bashToolDefinition(), bashHandler(j.WorkDir)); err != nil {
-				return err
-			}
-		}
-		session, err := agent.NewLocalSession(&agent.SessionOptions{
-			ID:           j.id(),
-			Client:       client,
-			Tools:        registry,
-			Model:        j.Model,
-			SystemPrompt: systemPrompt,
-			MaximumTurns: aikidoMaximumTurns,
-			RunTimeout:   j.Timeout,
-		})
-		if err != nil {
-			return err
-		}
-		transcript, err := os.Create(filepath.Join(j.LogDir, "transcript.jsonl"))
-		if err != nil {
-			return err
-		}
-		defer transcript.Close()
-		enc := json.NewEncoder(transcript)
+// the work directory, all VFS tools, todo_write, and optionally the prototype
+// bash tool. Library defaults stay on (prompt caching, tool result cap, tool
+// timeout).
+func runAikido(withBash bool) harnessRunner {
+	return func(ctx context.Context, run *job, observed *metrics) error {
+		return runAikidoJob(ctx, run, observed, withBash)
+	}
+}
 
-		events, err := session.Run(ctx, j.Task.Prompt)
-		if err != nil {
-			return err
+func runAikidoJob(ctx context.Context, run *job, observed *metrics, withBash bool) error {
+	client, err := openrouter.NewClient(&openrouter.Options{APIKey: run.APIKey, XTitle: "aikido-bench"})
+	if err != nil {
+		return err
+	}
+	storage, err := osfs.New(&osfs.Options{Directory: run.WorkDirectory})
+	if err != nil {
+		return err
+	}
+	defer storage.Close()
+	registry, err := aikidoTools(storage, run.WorkDirectory, withBash)
+	if err != nil {
+		return err
+	}
+	session, err := agent.NewLocalSession(&agent.SessionOptions{
+		ID:           run.id(),
+		Client:       client,
+		Tools:        registry,
+		Model:        run.Model,
+		SystemPrompt: systemPrompt,
+		MaximumTurns: aikidoMaximumTurns,
+		RunTimeout:   run.Timeout,
+	})
+	if err != nil {
+		return err
+	}
+	transcript, err := os.Create(filepath.Join(run.LogDirectory, "transcript.jsonl"))
+	if err != nil {
+		return err
+	}
+	defer transcript.Close()
+
+	events, err := session.Run(ctx, run.Task.Prompt)
+	if err != nil {
+		return err
+	}
+	recorder := &aikidoRecorder{encoder: json.NewEncoder(transcript), observed: observed}
+	for event := range events {
+		recorder.record(event)
+	}
+	recorder.flushText()
+	if recorder.runError != nil {
+		return recorder.runError
+	}
+	if observed.EndReason != string(agent.EndReasonStop) {
+		return fmt.Errorf("run ended with %s", observed.EndReason)
+	}
+	if ctx.Err() != nil {
+		return errors.New("timeout")
+	}
+	return nil
+}
+
+func aikidoTools(storage *osfs.Storage, workDirectory string, withBash bool) (*tools.Registry, error) {
+	registry := tools.NewRegistry()
+	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage}); err != nil {
+		return nil, err
+	}
+	if err := agent.RegisterPlanTool(registry); err != nil {
+		return nil, err
+	}
+	if withBash {
+		if err := registry.Register(bashToolDefinition(), bashHandler(workDirectory)); err != nil {
+			return nil, err
 		}
-		var (
-			runErr error
-			text   strings.Builder
-		)
-		flush := func() {
-			if text.Len() > 0 {
-				_ = enc.Encode(map[string]any{"kind": "text", "text": text.String()})
-				text.Reset()
-			}
-		}
-		for ev := range events {
-			if ev.Kind == agent.EventText {
-				text.WriteString(ev.Text)
-				continue
-			}
-			flush()
-			switch ev.Kind {
-			case agent.EventUsage:
-				u := ev.Usage
-				m.LLMCalls++
-				m.InputTokens += u.PromptTokens
-				m.OutputTokens += u.CompletionTokens
-				m.CacheReadTokens += u.CacheReadTokens
-				m.CacheWriteTokens += u.CacheWriteTokens
-				m.CostUSD += u.CostUSD
-				_ = enc.Encode(map[string]any{"kind": "usage", "usage": u})
-			case agent.EventToolCall:
-				_ = enc.Encode(map[string]any{"kind": "tool_call", "name": ev.ToolCall.Name, "arguments": tail(ev.ToolCall.Arguments, 4000)})
-			case agent.EventToolResult:
-				tr := ev.ToolResult
-				m.tool(tr.Name, !tr.OK)
-				content, _ := json.Marshal(tr.Content)
-				_ = enc.Encode(map[string]any{"kind": "tool_result", "name": tr.Name, "ok": tr.OK, "error": tr.Error, "content": tail(string(content), 2000)})
-			case agent.EventError:
-				runErr = ev.Err
-				_ = enc.Encode(map[string]any{"kind": "error", "error": ev.Err.Error()})
-			case agent.EventEnd:
-				m.EndReason = string(ev.EndReason)
-				_ = enc.Encode(map[string]any{"kind": "end", "reason": ev.EndReason})
-			}
-		}
-		flush()
-		if runErr != nil {
-			return runErr
-		}
-		if m.EndReason != string(agent.EndReasonStop) {
-			return fmt.Errorf("run ended with %s", m.EndReason)
-		}
-		if ctx.Err() != nil {
-			return errors.New("timeout")
-		}
-		return nil
+	}
+	return registry, nil
+}
+
+// aikidoRecorder writes a run's events to transcript.jsonl, merging streamed
+// text deltas into one line, and adds usage and tool calls to observed.
+type aikidoRecorder struct {
+	encoder  *json.Encoder
+	text     strings.Builder
+	observed *metrics
+	runError error
+}
+
+func (r *aikidoRecorder) record(event agent.Event) {
+	if event.Kind != agent.EventText {
+		r.flushText()
+	}
+	switch event.Kind {
+	case agent.EventText:
+		r.text.WriteString(event.Text)
+	case agent.EventUsage:
+		usage := event.Usage
+		r.observed.LLMCalls++
+		r.observed.InputTokens += usage.PromptTokens
+		r.observed.OutputTokens += usage.CompletionTokens
+		r.observed.CacheReadTokens += usage.CacheReadTokens
+		r.observed.CacheWriteTokens += usage.CacheWriteTokens
+		r.observed.CostUSD += usage.CostUSD
+		_ = r.encoder.Encode(map[string]any{"kind": "usage", "usage": usage})
+	case agent.EventToolCall:
+		_ = r.encoder.Encode(map[string]any{"kind": "tool_call", "name": event.ToolCall.Name, "arguments": tail(event.ToolCall.Arguments, 4000)})
+	case agent.EventToolResult:
+		toolResult := event.ToolResult
+		r.observed.tool(toolResult.Name, !toolResult.OK)
+		content, _ := json.Marshal(toolResult.Content)
+		_ = r.encoder.Encode(map[string]any{"kind": "tool_result", "name": toolResult.Name, "ok": toolResult.OK, "error": toolResult.Error, "content": tail(string(content), 2000)})
+	case agent.EventError:
+		r.runError = event.Err
+		_ = r.encoder.Encode(map[string]any{"kind": "error", "error": event.Err.Error()})
+	case agent.EventEnd:
+		r.observed.EndReason = string(event.EndReason)
+		_ = r.encoder.Encode(map[string]any{"kind": "end", "reason": event.EndReason})
+	case agent.EventThinking, agent.EventImage:
+		// Not part of the transcript.
+	}
+}
+
+func (r *aikidoRecorder) flushText() {
+	if r.text.Len() > 0 {
+		_ = r.encoder.Encode(map[string]any{"kind": "text", "text": r.text.String()})
+		r.text.Reset()
 	}
 }

@@ -34,66 +34,67 @@ func bashToolDefinition() llm.ToolDefinition {
 	}
 }
 
-func bashHandler(dir string) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
-		var v struct {
+func bashHandler(directory string) tools.Handler {
+	return func(ctx context.Context, arguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
+		var input struct {
 			Command string `json:"command"`
 		}
-		if err := json.Unmarshal(args, &v); err != nil {
+		if err := json.Unmarshal(arguments, &input); err != nil {
 			return tools.Result{}, fmt.Errorf("bash args: %w", err)
 		}
-		if v.Command == "" {
+		if input.Command == "" {
 			return tools.Result{}, errors.New("bash: command is empty")
 		}
 		ctx, cancel := context.WithTimeout(ctx, bashTimeout)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "bash", "-c", v.Command)
-		cmd.Dir = dir
-		cmd.Env = childEnv(dir)
-		killGroup(cmd)
-		out := &cappedBuffer{limit: bashOutputLimit}
-		cmd.Stdout, cmd.Stderr = out, out
-		err := cmd.Run()
+		//nolint:gosec // G204: running the model's command line is what this tool is for (see the ponytail note above)
+		command := exec.CommandContext(ctx, "bash", "-c", input.Command)
+		command.Dir = directory
+		command.Env = childEnv(directory)
+		killGroup(command)
+		output := &cappedBuffer{limit: bashOutputLimit}
+		command.Stdout, command.Stderr = output, output
+		err := command.Run()
 
 		exitCode := 0
-		var exitErr *exec.ExitError
+		var exitError *exec.ExitError
 		switch {
-		case errors.As(err, &exitErr):
-			exitCode = exitErr.ExitCode()
+		case errors.As(err, &exitError):
+			exitCode = exitError.ExitCode()
 		case err != nil:
 			return tools.Result{}, fmt.Errorf("bash: %w", err)
 		}
-		output := string(out.buf)
-		if out.total > len(out.buf) {
-			output += fmt.Sprintf("\n[output truncated: first %d of %d bytes shown]", len(out.buf), out.total)
+		text := string(output.buffer)
+		if output.total > len(output.buffer) {
+			text += fmt.Sprintf("\n[output truncated: first %d of %d bytes shown]", len(output.buffer), output.total)
 		}
-		res := map[string]any{"output": output, "exit_code": exitCode}
+		result := map[string]any{"output": text, "exit_code": exitCode}
 		if ctx.Err() != nil {
-			res["timed_out"] = true
+			result["timed_out"] = true
 		}
-		return tools.Result{Content: res}, nil
+		return tools.Result{Content: result}, nil
 	}
 }
 
 // killGroup puts the command in its own process group and kills the whole
 // group on cancel, so `go test` children or background jobs do not linger.
-func killGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 5 * time.Second
+func killGroup(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
+	command.WaitDelay = 5 * time.Second
 }
 
 // cappedBuffer keeps the first limit bytes and counts the rest.
 type cappedBuffer struct {
-	limit int
-	buf   []byte
-	total int
+	limit  int
+	buffer []byte
+	total  int
 }
 
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	b.total += len(p)
-	if room := b.limit - len(b.buf); room > 0 {
-		b.buf = append(b.buf, p[:min(room, len(p))]...)
+func (b *cappedBuffer) Write(data []byte) (int, error) {
+	b.total += len(data)
+	if room := b.limit - len(b.buffer); room > 0 {
+		b.buffer = append(b.buffer, data[:min(room, len(data))]...)
 	}
-	return len(p), nil
+	return len(data), nil
 }
