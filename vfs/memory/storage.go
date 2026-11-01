@@ -36,8 +36,8 @@ var (
 	_ vfs.Searchable = (*Storage)(nil)
 )
 
-// NewStorage returns an empty in-memory Storage.
-func NewStorage() *Storage {
+// New returns an empty in-memory Storage.
+func New() *Storage {
 	return &Storage{
 		files: make(map[string]fileEntry),
 		now:   time.Now,

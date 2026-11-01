@@ -301,7 +301,7 @@ factory can decode extra JSON request fields from `r.Body` again.
 ### Agent over a writable VFS
 
 ```go
-storage := vfsmem.NewStorage()
+storage := vfsmem.New()
 registry := tools.NewRegistry()
 _ = agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage})
 

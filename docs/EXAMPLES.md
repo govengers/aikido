@@ -85,7 +85,7 @@ func main() {
         log.Fatal(err)
     }
 
-    storage := vfsmem.NewStorage()
+    storage := vfsmem.New()
     registry := tools.NewRegistry()
     if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
         Storage:         storage,
@@ -208,7 +208,7 @@ A typical webapp builds a fresh `*Session` per HTTP request. That works correctl
 ```go
 // app startup — once
 locker := agent.NewLocalLocker()
-history := historymem.NewHistory()   // or your persistent History impl
+history := historymem.New()   // or your persistent History impl
 
 // per request
 session, _ := agent.NewSession(&agent.SessionOptions{

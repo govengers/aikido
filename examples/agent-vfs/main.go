@@ -45,7 +45,7 @@ func run() error {
 		return err
 	}
 
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	session, err := newSession(client, storage)
 	if err != nil {
 		return err

@@ -26,7 +26,7 @@ func ExamplePipeline_Run() {
 		{Kind: llm.EventEnd, FinishReason: "stop"},
 	}})
 	session, err := agent.NewSession(&agent.SessionOptions{
-		ID: "kitchen-42", Client: model, History: memory.NewHistory(), Locker: agent.NewLocalLocker(), Model: "any/model",
+		ID: "kitchen-42", Client: model, History: memory.New(), Locker: agent.NewLocalLocker(), Model: "any/model",
 	})
 	if err != nil {
 		fmt.Println(err)

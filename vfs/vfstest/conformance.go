@@ -2,7 +2,7 @@
 // its tests:
 //
 //	func TestConformance(t *testing.T) {
-//		vfstest.RunConformance(t, func() vfs.Storage { return memory.NewStorage() })
+//		vfstest.RunConformance(t, func() vfs.Storage { return memory.New() })
 //	}
 package vfstest
 

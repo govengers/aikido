@@ -13,7 +13,7 @@ import (
 )
 
 func TestConformance(t *testing.T) {
-	vfstest.RunConformance(t, func() vfs.Storage { return NewStorage() })
+	vfstest.RunConformance(t, func() vfs.Storage { return New() })
 }
 
 func writeFile(t *testing.T, storage *Storage, path, content string) {
@@ -24,7 +24,7 @@ func writeFile(t *testing.T, storage *Storage, path, content string) {
 }
 
 func TestSearch_EmptyQueryMatchesEveryFile(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	writeFile(t, storage, "b.md", "world")
 	writeFile(t, storage, "a.md", "hello")
 
@@ -38,7 +38,7 @@ func TestSearch_EmptyQueryMatchesEveryFile(t *testing.T) {
 }
 
 func TestSearch_CaseInsensitive(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	writeFile(t, storage, "a.md", "Hello WORLD")
 	paths, err := storage.Search(context.Background(), "world")
 	if err != nil {
@@ -50,7 +50,7 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 }
 
 func TestWrite_DefenseInDepthValidation(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	err := storage.WriteFile(context.Background(), "../escape", []byte("x"), "text/plain")
 	if !errors.Is(err, vfs.ErrPathInvalid) {
 		t.Fatalf("err = %v; want ErrPathInvalid", err)
@@ -58,7 +58,7 @@ func TestWrite_DefenseInDepthValidation(t *testing.T) {
 }
 
 func TestReadFile_ReturnsACopy(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	writeFile(t, storage, "a.md", "original")
 	content, _, err := storage.ReadFile(context.Background(), "a.md")
 	if err != nil {
@@ -75,7 +75,7 @@ func TestReadFile_ReturnsACopy(t *testing.T) {
 }
 
 func TestCanceledContext(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := storage.ListFiles(ctx); !errors.Is(err, context.Canceled) {
@@ -96,7 +96,7 @@ func TestCanceledContext(t *testing.T) {
 }
 
 func TestStorage_Concurrency(t *testing.T) {
-	storage := NewStorage()
+	storage := New()
 	ctx := context.Background()
 	const writers = 50
 	var waitGroup sync.WaitGroup

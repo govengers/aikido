@@ -15,11 +15,11 @@ import (
 var _ agent.History = (*memory.History)(nil)
 
 func TestConformance(t *testing.T) {
-	historytest.RunConformance(t, func() agent.History { return memory.NewHistory() })
+	historytest.RunConformance(t, func() agent.History { return memory.New() })
 }
 
 func TestHistory_RejectsEmptySessionID(t *testing.T) {
-	history := memory.NewHistory()
+	history := memory.New()
 	if err := history.Append(context.Background(), "", llm.Message{Content: "x"}); !errors.Is(err, memory.ErrEmptySessionID) {
 		t.Errorf("Append = %v; want ErrEmptySessionID", err)
 	}
@@ -29,7 +29,7 @@ func TestHistory_RejectsEmptySessionID(t *testing.T) {
 }
 
 func TestHistory_HonoursCancelledContext(t *testing.T) {
-	history := memory.NewHistory()
+	history := memory.New()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := history.Append(ctx, "s", llm.Message{Content: "x"}); !errors.Is(err, context.Canceled) {
@@ -41,7 +41,7 @@ func TestHistory_HonoursCancelledContext(t *testing.T) {
 }
 
 func ExampleHistory() {
-	history := memory.NewHistory()
+	history := memory.New()
 	ctx := context.Background()
 	err := history.Append(ctx, "conversation-1",
 		llm.Message{Role: llm.RoleUser, Content: "Hi"},

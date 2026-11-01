@@ -228,7 +228,7 @@ aikido uses **per-package Options structs** with no global state.
 
 ```go
 client, _   := openrouter.NewClient(&openrouter.Options{APIKey: "sk-..."})
-storage     := vfsmem.NewStorage()
+storage     := vfsmem.New()
 registry    := tools.NewRegistry()
 _ = agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage})
 

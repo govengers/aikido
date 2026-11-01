@@ -13,7 +13,7 @@ import (
 
 func seeded(t *testing.T, options VFSToolOptions, files map[string]string) *VFSToolOptions {
 	t.Helper()
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	for filePath, content := range files {
 		if err := storage.WriteFile(context.Background(), filePath, []byte(content), ""); err != nil {
 			t.Fatal(err)
@@ -57,17 +57,17 @@ func TestGlobToRegexp(t *testing.T) {
 }
 
 func TestRegisterVFSTools_Extended(t *testing.T) {
-	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage()})
+	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New()})
 	for _, name := range []string{"grep", "glob", "edit_file"} {
 		if !registry.Has(name) {
 			t.Errorf("%s should be registered by default", name)
 		}
 	}
-	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage(), ReadOnly: true})
+	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), ReadOnly: true})
 	if !registry.Has("grep") || !registry.Has("glob") || registry.Has("edit_file") {
 		t.Error("read-only: want grep and glob, no edit_file")
 	}
-	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage(), DisableExtended: true})
+	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), DisableExtended: true})
 	for _, name := range []string{"grep", "glob", "edit_file"} {
 		if registry.Has(name) {
 			t.Errorf("%s must not be registered with DisableExtended", name)
@@ -275,8 +275,8 @@ func TestGrep_ScanBudgetTruncates(t *testing.T) {
 }
 
 func TestRegisterVFSTools_DuplicateName(t *testing.T) {
-	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage()})
-	err := RegisterVFSTools(registry, &VFSToolOptions{Storage: vfsmem.NewStorage()})
+	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New()})
+	err := RegisterVFSTools(registry, &VFSToolOptions{Storage: vfsmem.New()})
 	if !errors.Is(err, tools.ErrDuplicateTool) {
 		t.Errorf("err = %v; want tools.ErrDuplicateTool", err)
 	}

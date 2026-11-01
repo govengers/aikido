@@ -20,7 +20,7 @@ func NewLocalSession(options *SessionOptions) (*Session, error) {
 	}
 	withPlugins := *options
 	if withPlugins.History == nil {
-		withPlugins.History = historymemory.NewHistory()
+		withPlugins.History = historymemory.New()
 	}
 	if withPlugins.Locker == nil {
 		withPlugins.Locker = NewLocalLocker()

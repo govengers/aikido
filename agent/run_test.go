@@ -22,7 +22,7 @@ const testTimeout = 5 * time.Second
 func newTestSession(t *testing.T, client llm.Client, registry *tools.Registry, history History, configure ...func(*SessionOptions)) *Session {
 	t.Helper()
 	if history == nil {
-		history = memory.NewHistory()
+		history = memory.New()
 	}
 	options := &SessionOptions{
 		ID:           "s-test",
@@ -117,7 +117,7 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 5, CompletionTokens: 3}},
 		{Kind: llm.EventEnd},
 	}})
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, nil, history)
 
 	events := runToEnd(t, session, "say hi")
@@ -173,7 +173,7 @@ func TestRun_ToolCallThenEnd(t *testing.T) {
 		}},
 		textTurn("done"),
 	)
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, registry, history)
 
 	events := runToEnd(t, session, "do it")
@@ -266,7 +266,7 @@ func TestRun_MidStreamErrorSkipsHistoryAppend(t *testing.T) {
 		{Kind: llm.EventError, Err: providerError},
 		{Kind: llm.EventEnd},
 	}})
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, nil, history)
 
 	events := runToEnd(t, session, "go")
@@ -293,7 +293,7 @@ func TestRun_MaximumTurnsHitsCap(t *testing.T) {
 		turns[index] = toolCallTurn("c", "loop", "")
 	}
 	stub := llmtest.NewStubClient(turns...)
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, registry, history, func(options *SessionOptions) { options.MaximumTurns = 3 })
 
 	events := runToEnd(t, session, "go")
@@ -391,7 +391,7 @@ func TestRun_StrictLockerError(t *testing.T) {
 
 func TestRun_StreamDialError(t *testing.T) {
 	sentinel := errors.New("dial fail")
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, dialErrorClient{err: sentinel}, nil, history)
 
 	events := runToEnd(t, session, "go")
@@ -415,7 +415,7 @@ func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
 		panic("tool bug")
 	})
 	stub := llmtest.NewStubClient(toolCallTurn("c1", "explode", "{}"), textTurn("after the panic"))
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, registry, history)
 
 	events := runToEnd(t, session, "go")
@@ -464,7 +464,7 @@ func TestRun_AbandonedRunReleasesTheLock(t *testing.T) {
 
 func TestRun_LocalLockerSerializesSameIDAcrossSessions(t *testing.T) {
 	locker := NewLocalLocker()
-	history := memory.NewHistory()
+	history := memory.New()
 	newSharedSession := func(client llm.Client) *Session {
 		return newTestSession(t, client, nil, history, func(options *SessionOptions) {
 			options.ID = "shared"
@@ -550,7 +550,7 @@ func TestNewLocalSession_AutoSuppliesDefaults(t *testing.T) {
 }
 
 func TestNewLocalSession_RespectsProvided(t *testing.T) {
-	customHistory := memory.NewHistory()
+	customHistory := memory.New()
 	customLocker := NewLocalLocker()
 	stub := llmtest.NewStubClient()
 	session, err := NewLocalSession(&SessionOptions{
@@ -576,7 +576,7 @@ func TestNewLocalSession_NilOptions(t *testing.T) {
 
 func TestRunWithOptions_SystemSuffixIsPerRun(t *testing.T) {
 	stub := llmtest.NewStubClient(textTurn("ok"), textTurn("ok"))
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, nil, history)
 
 	events, _ := session.RunWithOptions(context.Background(), "one", &RunOptions{SystemSuffix: "Answer briefly."})
@@ -634,7 +634,7 @@ func TestRun_ForwardsThinkingAndImages(t *testing.T) {
 		{Kind: llm.EventToolCall},
 		{Kind: llm.EventEnd},
 	}})
-	history := memory.NewHistory()
+	history := memory.New()
 	session := newTestSession(t, stub, nil, history)
 
 	events := runToEnd(t, session, "draw")

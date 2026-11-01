@@ -45,7 +45,7 @@ func main() {
         APIKey: os.Getenv("OPENROUTER_API_KEY"),
     })
 
-    storage := vfsmem.NewStorage()                  // unscoped knowledge base
+    storage := vfsmem.New()                  // unscoped knowledge base
     registry := tools.NewRegistry()
     _ = agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage})
 

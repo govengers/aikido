@@ -64,7 +64,7 @@ func transcriptTurn(text string) llmtest.TurnScript {
 
 func newSession(t *testing.T, client llm.Client) (*agent.Session, *memory.History) {
 	t.Helper()
-	history := memory.NewHistory()
+	history := memory.New()
 	session, err := agent.NewSession(&agent.SessionOptions{
 		ID: "voice-test", Client: client, History: history, Locker: agent.NewLocalLocker(),
 		Model: "test/model", SystemPrompt: "You are a bathroom planner.",

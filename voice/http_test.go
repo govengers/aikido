@@ -325,7 +325,7 @@ func TestHandler_ToolResultContentAndExtraFields(t *testing.T) {
 		replyTurn(0, "Da ist die Dusche."),
 	)
 	session, err := agent.NewSession(&agent.SessionOptions{
-		ID: "voice-test", Client: chat, History: memory.NewHistory(), Locker: agent.NewLocalLocker(),
+		ID: "voice-test", Client: chat, History: memory.New(), Locker: agent.NewLocalLocker(),
 		Model: "test/model", Tools: registry,
 	})
 	if err != nil {

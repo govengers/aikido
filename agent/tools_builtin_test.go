@@ -51,7 +51,7 @@ func mustWriteFile(t *testing.T, storage vfs.Storage, filePath, content string) 
 }
 
 func TestRegisterVFSTools_Defaults(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 
 	for _, name := range []string{"read_file", "write_file", "list_files", "delete_file", "search"} {
@@ -62,7 +62,7 @@ func TestRegisterVFSTools_Defaults(t *testing.T) {
 }
 
 func TestRegisterVFSTools_ReadOnly(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage, ReadOnly: true})
 
 	for _, name := range []string{"read_file", "list_files", "search"} {
@@ -91,7 +91,7 @@ func TestRegisterVFSTools_NoSearchWhenNotSearchable(t *testing.T) {
 }
 
 func TestRegisterVFSTools_NilArgsRejected(t *testing.T) {
-	if err := RegisterVFSTools(nil, &VFSToolOptions{Storage: vfsmem.NewStorage()}); err == nil {
+	if err := RegisterVFSTools(nil, &VFSToolOptions{Storage: vfsmem.New()}); err == nil {
 		t.Error("expected error for nil registry")
 	}
 	if err := RegisterVFSTools(tools.NewRegistry(), nil); err == nil {
@@ -103,7 +103,7 @@ func TestRegisterVFSTools_NilArgsRejected(t *testing.T) {
 }
 
 func TestWriteFile_HappyPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 
 	result, err := dispatch(t, registry, "write_file", `{"path":"notes.md","content":"# hi"}`)
@@ -117,7 +117,7 @@ func TestWriteFile_HappyPath(t *testing.T) {
 }
 
 func TestReadFile_HappyPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "x.md", "# hello")
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	result, err := dispatch(t, registry, "read_file", `{"path":"x.md"}`)
@@ -134,7 +134,7 @@ func TestReadFile_HappyPath(t *testing.T) {
 }
 
 func TestReadFile_NotFound(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	_, err := dispatch(t, registry, "read_file", `{"path":"missing.md"}`)
 	if !errors.Is(err, vfs.ErrFileNotFound) {
@@ -143,7 +143,7 @@ func TestReadFile_NotFound(t *testing.T) {
 }
 
 func TestReadFile_InvalidPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	_, err := dispatch(t, registry, "read_file", `{"path":"../escape.md"}`)
 	if !errors.Is(err, vfs.ErrPathInvalid) {
@@ -152,7 +152,7 @@ func TestReadFile_InvalidPath(t *testing.T) {
 }
 
 func TestListFiles_HappyPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "a.md", "x")
 	mustWriteFile(t, storage, "b.md", "y")
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
@@ -168,7 +168,7 @@ func TestListFiles_HappyPath(t *testing.T) {
 }
 
 func TestListFiles_HideHiddenPaths(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "_internal/secret.md", "x")
 	mustWriteFile(t, storage, "notes.md", "y")
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage, HideHiddenPaths: true})
@@ -179,7 +179,7 @@ func TestListFiles_HideHiddenPaths(t *testing.T) {
 }
 
 func TestDeleteFile_HappyPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "a.md", "x")
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	if _, err := dispatch(t, registry, "delete_file", `{"path":"a.md"}`); err != nil {
@@ -191,7 +191,7 @@ func TestDeleteFile_HappyPath(t *testing.T) {
 }
 
 func TestDeleteFile_NotFound(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	_, err := dispatch(t, registry, "delete_file", `{"path":"missing.md"}`)
 	if !errors.Is(err, vfs.ErrFileNotFound) {
@@ -200,7 +200,7 @@ func TestDeleteFile_NotFound(t *testing.T) {
 }
 
 func TestWriteFile_AllowedExtensions(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{
 		Storage:           storage,
 		AllowedExtensions: []string{".md"},
@@ -215,7 +215,7 @@ func TestWriteFile_AllowedExtensions(t *testing.T) {
 }
 
 func TestWriteFile_MaximumFileBytes(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{
 		Storage: storage, MaximumFileBytes: 8,
 	})
@@ -226,7 +226,7 @@ func TestWriteFile_MaximumFileBytes(t *testing.T) {
 }
 
 func TestSearch_HappyPath(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "a.md", "hello world")
 	mustWriteFile(t, storage, "b.md", "hello there")
 	mustWriteFile(t, storage, "c.md", "nothing")
@@ -243,7 +243,7 @@ func TestSearch_HappyPath(t *testing.T) {
 }
 
 func TestSearch_HidesHidden(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	mustWriteFile(t, storage, "_internal/x.md", "hello")
 	mustWriteFile(t, storage, "notes.md", "hello")
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage, HideHiddenPaths: true})
@@ -254,7 +254,7 @@ func TestSearch_HidesHidden(t *testing.T) {
 }
 
 func TestSearch_DescriptionEmbedsSyntax(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
 	definitions := registry.Definitions()
 	var searchDefinition llm.ToolDefinition
@@ -269,7 +269,7 @@ func TestSearch_DescriptionEmbedsSyntax(t *testing.T) {
 }
 
 func TestVFSToolsViaSession_RoundTrip(t *testing.T) {
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	registry := tools.NewRegistry()
 	if err := RegisterVFSTools(registry, &VFSToolOptions{Storage: storage}); err != nil {
 		t.Fatalf("register: %v", err)

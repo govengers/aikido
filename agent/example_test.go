@@ -90,7 +90,7 @@ func ExampleSession_RunWithMessages() {
 func ExampleRegisterVFSTools() {
 	registry := tools.NewRegistry()
 	err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
-		Storage:  vfsmemory.NewStorage(),
+		Storage:  vfsmemory.New(),
 		ReadOnly: true,
 	})
 	if err != nil {

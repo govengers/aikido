@@ -71,7 +71,7 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 	if options.prompt == "" {
 		return errors.New("missing prompt: aikido agent [flags] <prompt...>")
 	}
-	storage := vfsmem.NewStorage()
+	storage := vfsmem.New()
 	session, err := newAgentSession(options, storage, client)
 	if err != nil {
 		return err

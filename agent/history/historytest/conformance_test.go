@@ -11,5 +11,5 @@ import (
 // The suite runs against the reference backend, so a broken check fails here
 // and not only in a backend's own tests.
 func TestRunConformance_PassesForTheMemoryBackend(t *testing.T) {
-	historytest.RunConformance(t, func() agent.History { return memory.NewHistory() })
+	historytest.RunConformance(t, func() agent.History { return memory.New() })
 }

@@ -87,7 +87,7 @@ func validateSessionOptions(options *SessionOptions) error {
 	case options.Model == "":
 		return errors.New("aikido/agent: SessionOptions.Model is required")
 	case options.History == nil:
-		return errors.New("aikido/agent: SessionOptions.History is required (use agent/history/memory.NewHistory or NewLocalSession)")
+		return errors.New("aikido/agent: SessionOptions.History is required (use agent/history/memory.New or NewLocalSession)")
 	case options.Locker == nil:
 		return errors.New("aikido/agent: SessionOptions.Locker is required (use agent.NewLocalLocker or NewLocalSession)")
 	case options.RunTimeout < 0:

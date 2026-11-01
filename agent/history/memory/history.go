@@ -13,14 +13,14 @@ import (
 )
 
 // History is the in-memory implementation of agent.History. It is safe for
-// concurrent use; the zero value is not usable, use NewHistory.
+// concurrent use; the zero value is not usable, use New.
 type History struct {
 	mutex    sync.RWMutex
 	sessions map[string][]llm.Message
 }
 
-// NewHistory returns an empty in-memory History.
-func NewHistory() *History {
+// New returns an empty in-memory History.
+func New() *History {
 	return &History{sessions: make(map[string][]llm.Message)}
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 func ExampleStorage_Search() {
-	storage := memory.NewStorage()
+	storage := memory.New()
 	ctx := context.Background()
 	files := map[string]string{
 		"notes/release.md": "Release notes for v1",
