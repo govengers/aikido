@@ -194,6 +194,10 @@ aikido image --ref logo.png --quality high "The same logo on a matte black mug."
 
 Guarantees and known limits (no shell, path validation, `os.Root` confinement, overlay dry runs, no spending cap, among others): [docs/wiki/Security.md](docs/wiki/Security.md).
 
+## Benchmark
+
+[benchmark/](benchmark/) compares the agent with opencode on 12 coding tasks (precise edits, renames, bug fixes, mass replace, config edits, refactors, a multi-step spec) with the same models through OpenRouter. On 01.11.2026 (Claude Haiku 5.5 and GLM 5.3, 144 runs) aikido's file tools solved 47 of 48 runs, opencode 46 of 48, at a lower median time; a shell tool only paid off on shell-shaped tasks ([results](benchmark/RESULTS-2026-11-01.md), [ADR-041](docs/DECISIONS.md#adr-041---shell-access-for-agents)).
+
 ## Standards
 
 Code follows the [govengers standards](https://github.com/govengers/standards) with the `library` profile. `.govengers.yml` lists the waived rules with their reasons: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`. `just check` runs lint, unit tests with `-race` and an 80 % coverage gate, the end-to-end suite in [test/e2e](test/e2e) (the CLI binary and the library against a fake OpenRouter) and `govulncheck`; `just smoke` runs the live tests (spends money). `docs/wiki` is the source of the GitHub wiki; CI mirrors it for every release (`just wiki` by hand). v1 follows semver: changes within v1 are additive. Releases: push a `vX.Y.Z` tag.

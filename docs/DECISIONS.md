@@ -990,4 +990,27 @@ metrics.
 
 ## ADR-041 - Shell access for agents
 
-Pending: decided after the opencode benchmark (see benchmark/).
+**Status:** Accepted for v1.0.0 (no shell tool in the library); a v1.x opt-in package is proposed and needs the maintainer's decision.
+
+**Context.** Coding harnesses (Claude Code, opencode) do much of their editing through a shell: sed, grep, wc, python. aikido's agent sees only `vfs.Storage` through its file tools. The question was whether aikido should give agents a shell. The benchmark in `benchmark/` (12 tasks, 3 harnesses, Claude Haiku 5.5 and GLM 5.3 via OpenRouter, 2 repetitions, 144 runs, 01.11.2026, [RESULTS-2026-11-01.md](../benchmark/RESULTS-2026-11-01.md)) compared aikido's file tools, the same plus a benchmark-only `bash` tool, and opencode.
+
+**Evidence.**
+
+| harness | pass | median wall | tool calls | cost (USD) |
+|---|---|---|---|---|
+| aikido (file tools only) | 47/48 | 10.7 s | 646 | 0.49 |
+| aikido + bash | 47/48 | 8.6 s | 313 | 0.34 |
+| opencode | 46/48 | 13.3 s | 450 | 0.24 (its own estimate) |
+
+- The shell does not change the pass rate: every harness solves the same tasks (the tasks saturate on these models).
+- Its effect sits almost entirely in shell-shaped work: on the two shell-like tasks (count lines of many files, replace a hostname across 40 files) aikido needed 300 tool calls and 23.9 s median, with bash 37 calls and 10.8 s. On the other ten tasks the difference is small (346 vs 276 calls, 8.5 s vs 8.4 s).
+- aikido's file tools alone are on par with opencode: same pass rate, faster median (opencode's cost is its own computation, aikido's is OpenRouter's bill, so costs are not comparable across harnesses).
+
+**Decision.** v1.0.0 ships no shell or exec tool. Reasons:
+- A shell bypasses `vfs.Storage`: it acts on the real filesystem, so overlays, dry runs, mounts, path policy, hidden paths and per-tenant scoping stop meaning anything. The in-memory harness model and a shell are at odds.
+- Embedded hosts (the ASO Nexus Hub: multi-tenant, anonymous WhatsApp guests) must never get one by accident; library-not-framework (ADR-021) keeps such capabilities with the caller, who can register any tool through `tools.Registry` today.
+- The measured gain is speed and turn count on shell-shaped tasks, not correctness.
+
+**Proposed for v1.x (additive, needs the maintainer's decision).** An opt-in package (for example `tools/shell`) with an explicit runner interface (`Run(ctx, command) (output, exitCode, error)`), a local runner with working directory, per-call timeout, output cap, scrubbed environment and process-group kill (the benchmark prototype in `benchmark/cmd/bench` is that shape), and a CLI flag that is only allowed with `--dir` and that runs on the real directory instead of the overlay (documented: no dry run then). Containers or VMs as runners belong to the caller.
+
+
