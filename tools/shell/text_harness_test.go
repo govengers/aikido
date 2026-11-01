@@ -43,7 +43,7 @@ type textCase struct {
 
 // allTextCases gathers the case tables of every text command.
 func allTextCases() []textCase {
-	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases, grepCases, sedCases, diffCases, jqCases)
+	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases, grepCases, sedCases, diffCases, jqCases, awkCases)
 }
 
 func TestTextCases(t *testing.T) {
