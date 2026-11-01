@@ -98,6 +98,10 @@ func New(options *Options) (*Storage, error) {
 // the deleted ones, plus the overlay's writes. Errors of the base's ListFiles
 // are returned wrapped.
 func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
+	// The lock spans the base listing, so a concurrent Commit cannot move a
+	// file from the overlay to the base between the two snapshots.
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
 	baseFiles, err := s.base.ListFiles(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("aikido/vfs/overlay: list base: %w", err)
@@ -106,7 +110,6 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 	for _, file := range baseFiles {
 		merged[file.Path] = file
 	}
-	s.mutex.RLock()
 	for path, current := range s.entries {
 		if current.deleted {
 			delete(merged, path)
@@ -114,7 +117,6 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 			merged[path] = current.metadata(path)
 		}
 	}
-	s.mutex.RUnlock()
 	files := slices.Collect(maps.Values(merged))
 	slices.SortFunc(files, func(left, right vfs.FileMetadata) int { return strings.Compare(left.Path, right.Path) })
 	return files, nil

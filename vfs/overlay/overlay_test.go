@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/govengers/aikido/vfs"
 	"github.com/govengers/aikido/vfs/embedfs"
@@ -305,6 +306,47 @@ func TestConcurrentUse(t *testing.T) {
 	if err := storage.Commit(ctx); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
+}
+
+func TestListFiles_ConcurrentCommitKeepsTheFile(t *testing.T) {
+	ctx := context.Background()
+	base := &pausingStorage{Storage: memory.New()}
+	storage := newOverlay(t, base)
+	write(t, storage, "new.md", "created in the overlay")
+	committed := make(chan error, 1)
+	base.afterList = func() {
+		go func() { committed <- storage.Commit(ctx) }()
+		// Give a Commit that is not held off by the overlay's lock the time to
+		// move new.md to the base; with the lock held it waits for ListFiles.
+		select {
+		case err := <-committed:
+			committed <- err
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	listed := paths(t, storage)
+	if err := <-committed; err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !slices.Equal(listed, []string{"new.md"}) {
+		t.Errorf("ListFiles during Commit = %v; want [new.md]", listed)
+	}
+}
+
+// pausingStorage runs afterList once, after its base listing and before
+// ListFiles returns it.
+type pausingStorage struct {
+	vfs.Storage
+	afterList func()
+}
+
+func (s *pausingStorage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
+	files, err := s.Storage.ListFiles(ctx)
+	if hook := s.afterList; hook != nil {
+		s.afterList = nil
+		hook()
+	}
+	return files, err
 }
 
 var errInjected = errors.New("injected failure")
