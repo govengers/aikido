@@ -20,6 +20,7 @@ const (
 // about one state. A decision model returns calibrated, structured answers to
 // branch on instead of prose, and bills input tokens only.
 type DecisionRequest struct {
+	// Model is the decision model's id ("typesafe/jev-1.14").
 	Model string
 	// State is the content to judge: a string, or any JSON-marshalable map or
 	// slice of related context. Images go into a []any state as ImagePart
@@ -34,7 +35,8 @@ type DecisionRequest struct {
 // DecisionQuestion is one typed question. Build it with NoulQuestion,
 // ChoiceQuestion, ScoreQuestion or BoxQuestion.
 type DecisionQuestion struct {
-	Kind         DecisionKind
+	Kind DecisionKind
+	// Instructions is the question in plain language.
 	Instructions string
 	// Options are the criteria of a choice (option name to description,
 	// required) or of a noul (optional, keys "true" and "false" together).
@@ -109,5 +111,6 @@ type DecisionBoxArea struct {
 // Implementations map provider errors onto the same Err* sentinels Complete
 // uses.
 type Decider interface {
+	// Decide answers every question of the request in one call.
 	Decide(ctx context.Context, req DecisionRequest) (DecisionResponse, error)
 }

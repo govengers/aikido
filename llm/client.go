@@ -5,17 +5,30 @@ import (
 	"encoding/json"
 )
 
+// Request is one model call, the same for Client.Stream and Client.Complete.
+// Zero and nil fields leave the provider's default.
 type Request struct {
-	Model         string
-	Messages      []Message
-	Tools         []ToolDefinition
+	// Model is the provider's model id ("anthropic/claude-sonnet-4.6"). Empty
+	// leaves the client's default model, where the client has one.
+	Model string
+	// Messages is the conversation in order, system prompt first.
+	Messages []Message
+	// Tools are the tools the model may call; calls come back as
+	// EventToolCall or Response.ToolCalls.
+	Tools []ToolDefinition
+	// MaximumTokens caps the completion tokens. 0 leaves the provider default.
 	MaximumTokens int
-	Temperature   *float32
-	Thinking      *ThinkingConfiguration
+	// Temperature is the sampling temperature. Nil leaves the provider
+	// default; new(float32(0)) asks for deterministic decoding.
+	Temperature *float32
+	// Thinking configures provider-side reasoning. Nil leaves the provider
+	// default.
+	Thinking *ThinkingConfiguration
+	// StopSequences end the generation when the model emits one of them.
 	StopSequences []string
 
 	// Modalities lists the output modalities the caller wants the model to
-	// emit. For image-capable models, set ["image", "text"] — otherwise the
+	// emit. For image-capable models, set ["image", "text"]; otherwise the
 	// model defaults to text-only and image generation silently fails or
 	// returns a provider error. Empty leaves the provider default.
 	Modalities []string
@@ -64,24 +77,41 @@ type ImageConfiguration struct {
 // EventKind identifies the kind of a streaming event.
 type EventKind string
 
+// The kinds of Event, each naming the Event field that carries its payload.
 const (
+	// EventTextDelta carries the next piece of the answer in Text.
 	EventTextDelta EventKind = "text_delta"
-	EventToolCall  EventKind = "tool_call"
-	EventThinking  EventKind = "thinking"
-	EventImage     EventKind = "image"
-	EventUsage     EventKind = "usage"
-	EventError     EventKind = "error"
-	EventEnd       EventKind = "end"
+	// EventToolCall carries one complete tool call in Tool.
+	EventToolCall EventKind = "tool_call"
+	// EventThinking carries the next piece of the model's reasoning in Text.
+	EventThinking EventKind = "thinking"
+	// EventImage carries one generated image in Image.
+	EventImage EventKind = "image"
+	// EventUsage carries the call's accounting in Usage.
+	EventUsage EventKind = "usage"
+	// EventError carries the failure that ended the generation in Err,
+	// wrapping one of the Err* sentinels of this package.
+	EventError EventKind = "error"
+	// EventEnd closes the generation; FinishReason is set when the provider
+	// reported one.
+	EventEnd EventKind = "end"
 )
 
-// Event is one streaming event emitted by a Client. Channel closes after EventEnd.
+// Event is one streaming event emitted by a Client. Only the field its Kind
+// names is set. The channel closes after EventEnd.
 type Event struct {
-	Kind  EventKind
-	Text  string
-	Tool  *ToolCall
+	// Kind says which of the other fields is set.
+	Kind EventKind
+	// Text is the delta of EventTextDelta and EventThinking.
+	Text string
+	// Tool is the complete call of EventToolCall.
+	Tool *ToolCall
+	// Image is the image of EventImage.
 	Image *ImagePart
+	// Usage is the accounting of EventUsage.
 	Usage *Usage
-	Err   error
+	// Err is the failure of EventError.
+	Err error
 
 	// FinishReason carries the provider's reported finish_reason on the chunk
 	// that closes a generation. Set on EventEnd (and on the EventError that
@@ -93,28 +123,41 @@ type Event struct {
 
 // Response is the fully-assembled result of a non-streaming completion.
 //
-// Returned by Client.Complete in one shot — no event channel, no SSE framing.
+// Returned by Client.Complete in one shot: no event channel, no SSE framing.
 // Use this for image generation and any other workload where progressive token
 // delivery has no UX value: the SSE path imposes a per-line buffer cap that
 // can't accommodate the multi-MB single-chunk responses image-capable models
 // emit.
-//
-// FinishReason mirrors the provider's reported value ("stop", "tool_calls",
-// "length", "content_filter", ...) — empty when the provider didn't surface one.
 type Response struct {
-	Text         string
-	ToolCalls    []ToolCall
-	Images       []ImagePart
-	Usage        *Usage
+	// Text is the whole answer, without the model's reasoning.
+	Text string
+	// ToolCalls are the complete tool calls, in the order the model made them.
+	ToolCalls []ToolCall
+	// Images are the generated images.
+	Images []ImagePart
+	// Usage is nil when the provider reported none.
+	Usage *Usage
+	// FinishReason mirrors the provider's finish_reason ("stop", "tool_calls",
+	// "length", "content_filter", ...), empty when it reported none.
 	FinishReason string
 }
 
+// Client is a model provider: llm/openrouter and llm/codex implement it,
+// llmtest.StubClient fakes it in tests. Optional capabilities (ImageGenerator,
+// SpeechGenerator, VideoGenerator, Decider) are separate interfaces callers
+// type-assert on.
 type Client interface {
+	// Stream sends a request and returns its events as they arrive. An error
+	// before the first byte (authentication, invalid request, exhausted
+	// retries) is returned directly; later failures arrive as EventError. The
+	// channel ends with EventEnd and is closed by the client; it is closed
+	// early when ctx ends, so the caller stops reading on ctx.Done() or on
+	// close and needs no other cleanup.
 	Stream(ctx context.Context, req Request) (<-chan Event, error)
 
 	// Complete sends a non-streaming completion request and returns the full
 	// response in one shot. Implementations should map provider errors onto the
-	// same Err* sentinels Stream uses (ErrAuth, ErrRateLimited, ErrServerError,
+	// same Err* sentinels Stream uses (ErrAuthentication, ErrRateLimited, ErrServerError,
 	// ErrInvalidRequest, ErrContentFiltered).
 	//
 	// Complete is the right choice for image generation: image-capable models

@@ -8,16 +8,18 @@ import "context"
 // take a single prompt and no system role. Empty fields are omitted from the
 // wire body, leaving the provider default per-field.
 type ImageRequest struct {
-	Model  string
+	// Model is the provider's model id ("openai/gpt-image-2.5-flare").
+	Model string
+	// Prompt describes the image, or the edit when References are set.
 	Prompt string
 
-	// AspectRatio takes the same values as ImageConfig.AspectRatio. OpenAI
+	// AspectRatio takes the same values as ImageConfiguration.AspectRatio. OpenAI
 	// images-API models accept 1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16, 21:9 and
 	// "auto"; 4:5 is rejected with a 400.
 	AspectRatio string
 
 	// ImageSize is the resolution tier: "1K", "2K" or "4K", same values as
-	// ImageConfig.ImageSize. Sent as the endpoint's `resolution` field.
+	// ImageConfiguration.ImageSize. Sent as the endpoint's `resolution` field.
 	ImageSize string
 
 	// Size is an explicit "WIDTHxHEIGHT" in pixels, sent as the endpoint's
@@ -42,8 +44,10 @@ type ImageRequest struct {
 // Images carries inline bytes when the provider returned base64, or a URL
 // when it returned a link. Usage is nil when the provider reported none.
 type ImageResponse struct {
+	// Images are the generated images, in the provider's order.
 	Images []ImagePart
-	Usage  *Usage
+	// Usage is nil when the provider reported none.
+	Usage *Usage
 }
 
 // ImageGenerator is implemented by clients that speak a dedicated images
@@ -52,8 +56,10 @@ type ImageResponse struct {
 // Modalities: []string{"image", "text"} when the assertion fails.
 //
 // Implementations map provider errors onto the same Err* sentinels Complete
-// uses (ErrAuth, ErrRateLimited, ErrServerError, ErrInvalidRequest,
+// uses (ErrAuthentication, ErrRateLimited, ErrServerError, ErrInvalidRequest,
 // ErrContentFiltered).
 type ImageGenerator interface {
+	// GenerateImage sends one request to the images endpoint and returns the
+	// images once they are complete.
 	GenerateImage(ctx context.Context, req ImageRequest) (ImageResponse, error)
 }
