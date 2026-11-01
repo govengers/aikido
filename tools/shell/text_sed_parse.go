@@ -107,6 +107,9 @@ type sedScriptParser struct {
 	program  []sedInstruction
 	// openBlocks are the indexes of the "{" commands not yet closed.
 	openBlocks []int
+	// textContinues says the last command's a, i or c text ended in a
+	// backslash and goes on in the next source.
+	textContinues bool
 }
 
 // parseSedProgram compiles the sources; errors are *sedScriptError.
@@ -114,6 +117,11 @@ func parseSedProgram(sources []sedSource, extended bool) ([]sedInstruction, erro
 	parser := &sedScriptParser{extended: extended}
 	for _, source := range sources {
 		parser.source, parser.text, parser.position = source, source.text, 0
+		if parser.textContinues {
+			parser.textContinues = false
+			last := &parser.program[len(parser.program)-1]
+			last.text = parser.readText(last.text)
+		}
 		for {
 			done, err := parser.parseCommand()
 			if err != nil {
@@ -123,6 +131,9 @@ func parseSedProgram(sources []sedSource, extended bool) ([]sedInstruction, erro
 				break
 			}
 		}
+	}
+	if parser.textContinues && parser.program[len(parser.program)-1].text == "" {
+		return nil, parser.fail("expected \\ after `a', `c' or `i'")
 	}
 	if len(parser.openBlocks) > 0 {
 		parser.position = 0
@@ -533,26 +544,41 @@ func (p *sedScriptParser) parseText(command *sedInstruction) error {
 		// "a\" then the text on the next line, or GNU's "a\text" keeping
 		// the blanks after the backslash.
 		if character = p.next(); character == sedEOF {
-			return p.fail("expected \\ after `a', `c' or `i'")
+			// The text is the first line of the next -e, which GNU joins
+			// to this one with a newline.
+			p.textContinues = true
+			return nil
 		}
 		if character == '\n' {
 			character = p.next()
 		}
 	}
-	var text strings.Builder
-	for ; character != sedEOF && character != '\n'; character = p.next() {
+	p.back(character)
+	command.text = p.readText("")
+	return nil
+}
+
+// readText continues text up to an unescaped newline and returns it with a
+// final newline. A backslash at the end of the source escapes the newline
+// that joins the next source, so textContinues is set and the text goes on
+// there.
+func (p *sedScriptParser) readText(text string) string {
+	var builder strings.Builder
+	builder.WriteString(text)
+	for character := p.next(); character != sedEOF && character != '\n'; character = p.next() {
 		if character == '\\' {
 			if character = p.next(); character == sedEOF {
-				break
+				p.textContinues = true
+				builder.WriteByte('\n')
+				return builder.String()
 			}
 			if control, ok := sedControlEscapes[charByte(character)]; ok && character != 'n' {
 				character = int(control)
 			}
 		}
-		text.WriteByte(charByte(character))
+		builder.WriteByte(charByte(character))
 	}
-	command.text = text.String() + "\n"
-	return nil
+	return builder.String() + "\n"
 }
 
 // parseSubstitution reads s/regex/replacement/flags.

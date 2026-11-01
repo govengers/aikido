@@ -53,6 +53,9 @@ var reviewCases = []scriptCase{
 	{name: "sed empty regex reuses the last one", script: `echo abc | sed '/b/s//X/'`, want: "aXc\n"},
 	{name: "sed Q drops queued text", script: `printf 'x\n' | sed -e '1a foo' -e '1Q'`, want: ""},
 	{name: "sed q prints queued text", script: `printf 'x\n' | sed -e '1a foo' -e '1q'`, want: "x\nfoo\n"},
+	{name: "sed a backslash continues into the next -e", script: `seq 3 | sed -e '2a\' -e hello`, want: "1\n2\nhello\n3\n"},
+	{name: "sed a text continues into the next -e", script: `seq 2 | sed -e '1a foo\' -e bar`, want: "1\nfoo\nbar\n2\n"},
+	{name: "sed a backslash at the very end", script: `seq 1 | sed -e '1a\'`, want: "sed: -e expression #1, char 3: expected \\ after `a', `c' or `i'\n", status: 1},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
