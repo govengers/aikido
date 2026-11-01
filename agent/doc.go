@@ -5,7 +5,12 @@
 // tool calls it asks for and feeds the results back, until the model replies
 // without tool calls or MaximumTurns is reached. Run streams the run as Events
 // on a channel; Drain turns such a channel into messages. RegisterVFSTools
-// adds file tools over a vfs.Storage.
+// adds file tools over a vfs.Storage, RegisterPlanTool a todo list.
+//
+// Every run is bounded by default: MaximumTurns, RunTimeout, LLMCallTimeout,
+// ToolCallTimeout and MaximumToolResultBytes. A failing, panicking or
+// timed-out tool is reported to the model and the run continues. Model
+// requests carry prompt-cache breakpoints unless DisablePromptCaching is set.
 //
 // The library never sees a scope parameter. Multi-tenant callers bind scope at
 // VFS-tool registration time via vfs.ScopedStorage.Scope (ADR-013).

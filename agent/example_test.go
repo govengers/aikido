@@ -107,3 +107,27 @@ func ExampleRegisterVFSTools() {
 	// glob
 	// search
 }
+
+func ExampleRegisterPlanTool() {
+	registry := tools.NewRegistry()
+	if err := agent.RegisterPlanTool(registry); err != nil {
+		fmt.Println(err)
+		return
+	}
+	result, err := registry.Dispatch(context.Background(), llm.ToolCall{
+		ID:        "call-1",
+		Name:      "todo_write",
+		Arguments: `{"todos":[{"content":"Read the spec","status":"completed"},{"content":"Write the summary","status":"in_progress"}]}`,
+	}, tools.Environment{SessionID: "conversation-3"})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	encoded, err := json.Marshal(result.Content)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(string(encoded))
+	// Output: {"todos":[{"content":"Read the spec","status":"completed"},{"content":"Write the summary","status":"in_progress"}]}
+}
