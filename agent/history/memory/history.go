@@ -6,54 +6,62 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/govengers/aikido/llm"
 )
 
-// History is the in-memory implementation.
+// History is the in-memory implementation of agent.History. It is safe for
+// concurrent use; the zero value is not usable, use NewHistory.
 type History struct {
-	mu   sync.RWMutex
-	data map[string][]llm.Message
+	mutex    sync.RWMutex
+	sessions map[string][]llm.Message
 }
 
 // NewHistory returns an empty in-memory History.
 func NewHistory() *History {
-	return &History{data: make(map[string][]llm.Message)}
+	return &History{sessions: make(map[string][]llm.Message)}
 }
 
-func (h *History) Append(ctx context.Context, sessionID string, msgs ...llm.Message) error {
+// Append stores copies of messages after the session's earlier messages.
+// Appending no messages is a no-op. It returns ErrEmptySessionID for an empty
+// sessionID and the context's error if ctx is already done.
+func (h *History) Append(ctx context.Context, sessionID string, messages ...llm.Message) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return fmt.Errorf("aikido/agent/history/memory: append to %s: %w", sessionID, err)
 	}
 	if sessionID == "" {
 		return ErrEmptySessionID
 	}
-	if len(msgs) == 0 {
+	if len(messages) == 0 {
 		return nil
 	}
-	clone := make([]llm.Message, len(msgs))
-	copy(clone, msgs)
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.data[sessionID] = append(h.data[sessionID], clone...)
+	stored := make([]llm.Message, len(messages))
+	copy(stored, messages)
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.sessions[sessionID] = append(h.sessions[sessionID], stored...)
 	return nil
 }
 
+// Read returns a copy of the session's messages in append order, nil for an
+// unknown session. It returns ErrEmptySessionID for an empty sessionID and
+// the context's error if ctx is already done.
 func (h *History) Read(ctx context.Context, sessionID string) ([]llm.Message, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("aikido/agent/history/memory: read %s: %w", sessionID, err)
 	}
 	if sessionID == "" {
 		return nil, ErrEmptySessionID
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	cur := h.data[sessionID]
-	if cur == nil {
+	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+	stored := h.sessions[sessionID]
+	if stored == nil {
 		return nil, nil
 	}
-	out := make([]llm.Message, len(cur))
-	copy(out, cur)
-	return out, nil
+	messages := make([]llm.Message, len(stored))
+	copy(messages, stored)
+	return messages, nil
 }
