@@ -131,6 +131,18 @@ func TestExternalFollowsTheWorkingDirectory(t *testing.T) {
 	if result.ExitCode != 1 || !strings.Contains(result.Output, "does not exist on disk") {
 		t.Fatalf("a shell-only directory: exit %d, output %q; want exit 1 and the reason", result.ExitCode, result.Output)
 	}
+	// The review's S24: /tmp mapped onto <Directory>/tmp.
+	if result := mustRun(t, shell, "cd /tmp && hostpwd"); result.ExitCode != 1 || !strings.Contains(result.Output, "hostpwd: cannot run in /tmp: it is not a directory of the workspace") {
+		t.Fatalf("in /tmp: exit %d, output %q", result.ExitCode, result.Output)
+	}
+	// The review's S8: a symbolic link on disk led the program out of Directory.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "out")); err != nil {
+		t.Fatal(err)
+	}
+	if result := mustRun(t, shell, "cd /; mkdir -p out; cd out && hostpwd -P"); result.ExitCode != 1 || !strings.Contains(result.Output, "a symbolic link on disk leads out of the workspace") {
+		t.Fatalf("through a symlink: exit %d, output %q", result.ExitCode, result.Output)
+	}
 }
 
 func TestExternalGitInATempDirectory(t *testing.T) {

@@ -149,7 +149,26 @@ func hostDirectory(options ExternalOptions, workingDirectory, root string) (stri
 	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("cannot run in /%s: the directory does not exist on disk", workingDirectory)
 	}
+	if !staysInside(options.Directory, directory) {
+		return "", fmt.Errorf("cannot run in /%s: a symbolic link on disk leads out of the workspace", workingDirectory)
+	}
 	return directory, nil
+}
+
+// staysInside reports whether directory, with its symbolic links resolved,
+// still lies in base: a link in the workspace on disk (repo/out -> /etc)
+// must not move the program out of Directory.
+func staysInside(base, directory string) bool {
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(resolvedBase, resolved)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 // externalStatus turns the end of a host program into the command's result.

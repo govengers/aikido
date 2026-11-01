@@ -109,6 +109,7 @@ The interpreter itself provides the shell builtins: `cd`, `pwd`, `echo`, `printf
 | `Name` | the command name in scripts, one word |
 | `Path` | absolute path of the binary; checked to exist at `External` |
 | `Directory` | absolute host working directory, required. The program sees the host there, not the workspace; the script's `cd` does not move it |
+| `FollowWorkingDirectory` | declares `Directory` the host path of the workspace root (an `osfs` over it, the shell's `MountPoint` usually set to it): the program runs in the host directory the script `cd`'d to. It refuses to run in `/tmp`, in a directory that exists only in the shell (`mkdir`), and where a symbolic link on disk leads out of `Directory` |
 | `Environment` | the program's complete environment; nil means none. Neither the host's nor the script's variables are passed |
 | `Allow` | asked with the arguments before every run; an error is printed as `name: error`, exit 1, and the program does not start |
 | `Timeout` | per run; the program is killed (exit 124, `name: killed after the 10s timeout`) |
