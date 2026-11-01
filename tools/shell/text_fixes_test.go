@@ -96,6 +96,8 @@ func TestStreamingStopsEarly(t *testing.T) {
 		{name: "grep -m", script: `seq 1 1000000000000 | grep -m2 1`, want: "1\n10\n"},
 		{name: "grep -l", script: `seq 1 1000000000000 | grep -l 5`, want: "(standard input)\n"},
 		{name: "grep -m with context", script: `seq 1 1000000000000 | grep -m1 -B1 -A1 5`, want: "4\n5\n6\n"},
+		{name: "jq endless filter", script: `jq -n 'repeat(1)' | head -n 2`, want: "1\n1\n"},
+		{name: "jq endless range", script: `jq -n 'range(1000000000000)' | head -n 2; echo done`, want: "0\n1\ndone\n"},
 		{name: "sed q", script: `seq 1 1000000000000 | sed 3q`, want: "1\n2\n3\n"},
 		{name: "sed Q with address", script: `seq 1 1000000000000 | sed -n '/^12$/{p;Q}'`, want: "12\n"},
 	}, &Options{Timeout: 20 * time.Second})
