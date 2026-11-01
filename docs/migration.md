@@ -90,7 +90,6 @@ Additive; nothing to migrate, listed so you know it exists.
 - `agent.RegisterPlanTool` (`todo_write`). [Tools](wiki/Tools.md#plan-tool)
 - `tools.ErrInvalidArguments`, `tools.ErrToolPanicked`. [Tools](wiki/Tools.md#what-dispatch-checks)
 - `codex.ErrRefreshInterrupted`. [Models](wiki/Models.md#codex-chatgpt-subscription)
-- `openrouter.APIError`. [Errors-and-Retry](wiki/Errors-and-Retry.md)
 - `openrouter.APIError`, `llm.ErrInvalidResponse`. [Errors-and-Retry](wiki/Errors-and-Retry.md)
 - CLI: `aikido agent --dir`, `--apply`, `--mount`; `OPENROUTER_BASE_URL`. [CLI](wiki/CLI.md#agent)
 
