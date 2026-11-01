@@ -151,6 +151,8 @@ Known limits:
 - An `External` program sees whatever its `Directory` and its user can reach; `Allow` sees arguments only, not what a program does with them. Register only programs whose arguments you can judge, and give them no secrets in `Environment` that the model should not be able to print.
 - The variables `UID`, `EUID`, `GID` and `$$` are the host process's.
 - A process file a function gets (`f <(list)`) is gone after the first command inside it that names it: `f() { wc -l "$1"; cat "$1"; }` makes `cat` report `No such file or directory` (bash's pipe reads empty the second time).
+- A redirect whose store fails fails its simple command only when that command is a registered command or `echo`/`printf`. The interpreter's other output builtins (`pwd`, `declare -p`, `set`, `export -p`, `read -p`, `getopts`, `times`, `jobs`), compound statements (`{ ...; } > f`, `done > f`) and redirects in text the interpreter parses itself (`eval`, `source`, `trap`) keep status 0: a Storage that refuses the content prints `bash: f: <reason>` on stderr, and with the memory budget spent an output builtin's text is lost without a message (the target stays empty). Check the target (`[ -s f ]`) when it matters.
+- `\<` and `\>` are checked after RE2 picked a match: when a boundary fails there, the line is matched again with that boundary given up, so a match that needs the same boundary at another place in the line is missed (`echo 'a b' | sed 's/.*\<.*/X/'` prints `Xb`, GNU `X`).
 - Directories created by `mkdir` live in memory per Shell.
 - The whole Storage is listed for `ls`, `find`, globs and directory checks; a very large store makes those calls slow.
 - `awk`'s `print > "out/"` creates `out`: GoAWK cleans the name before the shell sees it. Readers other than `cp`, `mv` and `ls` (`cat f/`, `grep x f/`) read a file `f` given as `f/` where GNU says `Not a directory`.
@@ -161,7 +163,7 @@ Known limits:
 - Variables do not persist between calls; write `cd dir && make-something` in one call or keep values in files.
 - `echo $x` in a later call is empty; the working directory is not.
 - A redirect target is written when the statement ends, so `cmd > f &` stores `f` when the background job finishes.
-- A store that fails only at close (the Storage accepted the target at open, then refused the content) prints `bash: f: <reason>` but does not change the exit status; a target refused at open fails like in bash.
+- A store that fails only at close (the Storage accepted the target at open, then refused the content) prints `bash: f: <reason>` and fails the command that owns the redirect, except for the cases under Known limits; a target refused at open fails like in bash.
 - Messages say `bash: line N:` like `bash -c`; redirect errors omit the line.
 - `seq` takes integers only, `date` is always UTC, `ls -l` owners are `user`.
 
