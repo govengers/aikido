@@ -215,6 +215,7 @@ func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSetti
 		names = []string{"-"}
 	}
 	var content bytes.Buffer
+	var budget inputBudget
 	for _, name := range names {
 		data, err := readOperand(ctx, invocation, name)
 		if reason, ok := operandReason(err); ok {
@@ -222,6 +223,9 @@ func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSetti
 			return nil, ExitError(2)
 		}
 		if err != nil {
+			return nil, err
+		}
+		if err := budget.charge(len(data)); err != nil {
 			return nil, err
 		}
 		content.Write(data)

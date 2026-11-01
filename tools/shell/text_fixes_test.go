@@ -1,6 +1,9 @@
 package shell
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // reviewCases reproduce the scripts of the review findings on the text
 // commands through Shell.Run, with GNU's output and status.
@@ -64,4 +67,23 @@ var reviewCases = []scriptCase{
 
 func TestReviewFixes(t *testing.T) {
 	runScriptCases(t, reviewCases, nil)
+}
+
+// TestInputBudget pipes more than maximumInputBytes to commands that hold
+// their input, and lets the streaming ones run over the same pipe.
+func TestInputBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("pipes 72 MB")
+	}
+	big := map[string]string{"big": strings.Repeat("x\n", 36_000_000) + "end\n"}
+	runScriptCases(t, []scriptCase{
+		{name: "sort refuses", files: big, script: `cat big | sort; echo $?`, want: "sort: input exceeds 67108864 bytes\n2\n"},
+		{name: "xargs refuses", files: big, script: `cat big | xargs echo; echo $?`, want: "xargs: input exceeds 67108864 bytes\n2\n"},
+		{name: "head -n -1 refuses", files: big, script: `cat big | head -n -1; echo $?`, want: "head: input exceeds 67108864 bytes\n2\n"},
+		{name: "jq refuses", files: big, script: `cat big | jq .; echo $?`, want: "jq: input exceeds 67108864 bytes\n2\n"},
+		{name: "tail streams lines", files: big, script: `cat big | tail -n 2`, want: "x\nend\n"},
+		{name: "tail streams bytes", files: big, script: `cat big | tail -c 4`, want: "end\n"},
+		{name: "tail +N streams", files: big, script: `cat big | tail -n +36000000`, want: "x\nend\n"},
+		{name: "head -c streams", files: big, script: `cat big | head -c 4`, want: "x\nx\n"},
+	}, nil)
 }

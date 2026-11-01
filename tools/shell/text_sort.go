@@ -81,6 +81,7 @@ func runSort(ctx context.Context, invocation *Invocation) error {
 		return err
 	}
 	var lines []string
+	var budget inputBudget
 	for _, name := range operandsOrStdin(line.operands) {
 		content, readErr := readOperand(ctx, invocation, name)
 		if reason, ok := operandReason(readErr); ok {
@@ -91,6 +92,9 @@ func runSort(ctx context.Context, invocation *Invocation) error {
 		}
 		if readErr != nil {
 			return readErr
+		}
+		if err := budget.charge(len(content)); err != nil {
+			return err
 		}
 		fileLines, _ := splitLines(string(content))
 		lines = append(lines, fileLines...)
