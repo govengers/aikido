@@ -39,7 +39,10 @@ type Options struct {
 	// with "." or "_" (.env, .git/hooks, _private), the rule of
 	// agent.VFSToolOptions.HideHiddenPaths: listings, globs, ls, find and
 	// grep -r leave them out, and reading, writing or deleting one fails
-	// with "No such file or directory". /tmp is not affected.
+	// with "No such file or directory". /tmp is not affected. The rule
+	// checks the path as spelled: over a Storage that follows symbolic
+	// links, a visible link (public -> .env) reaches a hidden file, so pair
+	// it with osfs.Options.RefuseSymlinks (the CLI does).
 	HideHiddenPaths bool
 	// Commands are added to the built-in commands (Builtins); a Command with
 	// the name of a built-in replaces it. Names must be unique, and must not

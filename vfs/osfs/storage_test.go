@@ -72,6 +72,49 @@ func TestSymlinkEscapeRejected(t *testing.T) {
 	}
 }
 
+// TestRefuseSymlinks covers links inside the root, which os.Root follows: a
+// visible public -> .env or pub -> .git reached the hidden target under a
+// hidden-path policy that checks the spelled path.
+func TestRefuseSymlinks(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(directory, ".git", "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".env"), []byte("SECRET=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".env", filepath.Join(directory, "public")); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := os.Symlink(".git", filepath.Join(directory, "pub")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if content, _, err := newStorage(t, directory).ReadFile(ctx, "public"); err != nil || string(content) != "SECRET=1" {
+		t.Fatalf("without RefuseSymlinks the link is followed: %q, %v", content, err)
+	}
+	storage, err := New(&Options{Directory: directory, RefuseSymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if _, _, err := storage.ReadFile(ctx, "public"); !errors.Is(err, vfs.ErrFileNotFound) {
+		t.Errorf("ReadFile(public) err = %v; want ErrFileNotFound", err)
+	}
+	if err := storage.WriteFile(ctx, "pub/hooks/pre-commit", []byte("x"), ""); !errors.Is(err, vfs.ErrPathInvalid) {
+		t.Errorf("WriteFile(pub/hooks/pre-commit) err = %v; want ErrPathInvalid", err)
+	}
+	if err := storage.DeleteFile(ctx, "public"); !errors.Is(err, vfs.ErrFileNotFound) {
+		t.Errorf("DeleteFile(public) err = %v; want ErrFileNotFound", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, ".git", "hooks", "pre-commit")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the write reached .git/hooks: %v", err)
+	}
+	if err := storage.WriteFile(ctx, "new/file.txt", []byte("x"), ""); err != nil {
+		t.Errorf("WriteFile(new/file.txt): %v", err)
+	}
+}
+
 func TestListSkipsGitAndCreatesDirs(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(directory, ".git"), 0o750); err != nil {

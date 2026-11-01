@@ -53,7 +53,7 @@ A `.env` in the working directory is loaded first; variables already set in the 
 | `--temperature`, `-t` | -1 |
 | `--provider` (repeatable) | none |
 | `--max-turns` | 20 |
-| `--hide-hidden` | on; hides paths with a segment starting with `_` or `.` from the file tools and from `bash` (`--hide-hidden=false` shows them) |
+| `--hide-hidden` | on; hides paths with a segment starting with `_` or `.` from the file tools and from `bash` (`--hide-hidden=false` shows them); symbolic links in the directories are not followed then, since a visible link could point at a hidden file |
 | `--dir` | none |
 | `--apply` | off |
 | `--mount` (repeatable) | none |

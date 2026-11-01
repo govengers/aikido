@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/govengers/aikido/vfs"
 	"github.com/govengers/aikido/vfs/memory"
+	"github.com/govengers/aikido/vfs/osfs"
 )
 
 // isolatedScriptVariable carries the script runIsolated runs in a child
@@ -90,6 +92,42 @@ func TestHandlerPanicsDoNotCrash(t *testing.T) {
 	result := runIsolated(t, "cat <panic | cat", isolatedPanicVariable+"=1")
 	if result.ExitCode == 0 || !strings.Contains(result.Output, "internal error: storage bug") {
 		t.Errorf("pipeline: %+v", result)
+	}
+}
+
+// TestHiddenTargetsOfLinks replays the review's "public -> .env": with
+// HideHiddenPaths over an osfs that follows links, cat public read .env and a
+// link into .git took writes. RefuseSymlinks closes both.
+func TestHiddenTargetsOfLinks(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(directory, ".git", "hooks"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".env"), []byte("SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".env", filepath.Join(directory, "public")); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	if err := os.Symlink(".git", filepath.Join(directory, "pub")); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := osfs.New(&osfs.Options{Directory: directory, RefuseSymlinks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	shell, err := New(&Options{Storage: storage, HideHiddenPaths: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := mustRun(t, shell, "cat public; echo hook > pub/hooks/pre-commit; ls")
+	want := "cat: public: No such file or directory\nbash: line 1: pub/hooks/pre-commit: No such file or directory\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+	if _, err := os.Stat(filepath.Join(directory, ".git", "hooks", "pre-commit")); err == nil {
+		t.Fatal("the script wrote .git/hooks/pre-commit through pub")
 	}
 }
 
