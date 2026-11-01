@@ -123,7 +123,8 @@ func NewClient(options *Options) (*Client, error) {
 // Retry happens only at stream-start (RES-005): if the HTTP response is 429
 // or 5xx before any SSE bytes have been read, aikido closes the body and
 // retries per Options.MaximumAttempts. Mid-stream errors do NOT retry; they
-// propagate as EventError.
+// propagate as EventError. A cancelled ctx surfaces as an error matching
+// context.Canceled or context.DeadlineExceeded, never as llm.ErrServerError.
 func (c *Client) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
 	start := time.Now()
 	body, err := c.buildBody(ctx, request, true)
@@ -284,9 +285,14 @@ func (c *Client) setHeaders(request *http.Request, accept string) {
 	}
 }
 
-// transportError maps a failed round trip or body read onto a transient
-// ErrServerError. The transport's error is kept as text only (LIB-010).
-func transportError(_ context.Context, operation string, err error) error {
+// transportError maps a failed round trip or body read. The caller's own
+// cancellation stays a context error, which is never retried (RES-002);
+// anything else is a transient network failure, mapped onto ErrServerError.
+// The transport's error is kept as text only (LIB-010).
+func transportError(ctx context.Context, operation string, err error) error {
+	if contextError := ctx.Err(); contextError != nil {
+		return fmt.Errorf("openrouter: %s: %w", operation, contextError)
+	}
 	// A wrapped client timeout would match context.DeadlineExceeded and pass
 	// for the caller's own deadline; the sentinel is the contract.
 	return fmt.Errorf("openrouter: %s: %v: %w", operation, err, llm.ErrServerError) //nolint:errorlint // LIB-010: the transport error is kept as text on purpose

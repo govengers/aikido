@@ -79,6 +79,9 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 		}
 		decoder.handlePayload(payload)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	decoder.handleReadError(scanner.Err())
 }
 

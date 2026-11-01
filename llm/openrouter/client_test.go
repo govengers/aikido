@@ -894,3 +894,76 @@ func TestStream_ImageInlineContent(t *testing.T) {
 
 // quiet a "fmt unused" warning if the package later doesn't need it
 var _ = fmt.Sprintf
+
+// TestComplete_CancelledContextIsNotServerError pins RES-002: the caller's
+// cancellation is a context error, not a transient ErrServerError that a
+// retry wrapper would retry.
+func TestComplete_CancelledContextIsNotServerError(t *testing.T) {
+	t.Parallel()
+	requestArrived := make(chan struct{})
+	var hits int32
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		// Only a fully read body lets the server notice the client hanging up.
+		_, _ = io.Copy(io.Discard, request.Body)
+		atomic.AddInt32(&hits, 1)
+		close(requestArrived)
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	// One attempt: with retry the backoff wait would answer the cancellation
+	// itself and hide the mapping of the failed round trip.
+	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: server.URL, MaximumAttempts: 1})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-requestArrived
+		cancel()
+	}()
+	_, err = client.Complete(ctx, llm.Request{Model: "any"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want errors.Is(context.Canceled)", err)
+	}
+	if errors.Is(err, llm.ErrServerError) {
+		t.Errorf("err = %v matches ErrServerError; a cancelled call is not a server error", err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("hits = %d, want 1 (no retry after cancellation)", got)
+	}
+}
+
+// TestStream_CancelledMidStreamEmitsNoError pins that cancelling a running
+// stream ends it without an EventError: the body read fails because of the
+// cancellation, not because the provider dropped the connection.
+func TestStream_CancelledMidStreamEmitsNoError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	client := newTestClient(t, server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events, err := client.Stream(ctx, llm.Request{Model: "x"})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	first := <-events
+	if first.Kind != llm.EventTextDelta {
+		t.Fatalf("first event = %s, want text_delta", first.Kind)
+	}
+	cancel()
+	for event := range events {
+		if event.Kind == llm.EventError {
+			t.Errorf("EventError after cancellation: %v", event.Err)
+		}
+	}
+}
