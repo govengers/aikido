@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -102,6 +103,23 @@ func TestClassifyHTTPError_RetryAfterWrapsAPIError(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*APIError](err); !ok || !errors.Is(err, llm.ErrRateLimited) {
 		t.Errorf("err = %v, want an *APIError matching ErrRateLimited", err)
+	}
+}
+
+// TestClassifyHTTPError_ReadsAtMostTheErrorBodyCap pins that an error page of
+// any size costs at most maximumErrorBodyBytes of memory per attempt.
+func TestClassifyHTTPError_ReadsAtMostTheErrorBodyCap(t *testing.T) {
+	t.Parallel()
+	body := &trackedBody{data: bytes.Repeat([]byte("x"), 4*maximumErrorBodyBytes), failAt: -1}
+	err := classifyHTTPError(&http.Response{StatusCode: http.StatusBadGateway, Body: body})
+	if !errors.Is(err, llm.ErrServerError) {
+		t.Errorf("err = %v, want ErrServerError", err)
+	}
+	if body.position > maximumErrorBodyBytes {
+		t.Errorf("read %d bytes, want at most %d", body.position, maximumErrorBodyBytes)
+	}
+	if !body.closed {
+		t.Error("body not closed")
 	}
 }
 

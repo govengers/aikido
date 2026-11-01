@@ -32,6 +32,14 @@ const (
 	// eventBufferSize lets the stream producer run a few events ahead of a
 	// slow consumer.
 	eventBufferSize = 16
+
+	// maximumResponseBytes caps a non-streaming answer read into memory: a
+	// Complete with several inline base64 images, a model list, audio. Far
+	// above any legitimate answer; a body above it is llm.ErrInvalidResponse.
+	maximumResponseBytes = 64 << 20
+
+	// maximumVideoBytes caps a downloaded clip, which is read into memory too.
+	maximumVideoBytes = 512 << 20
 )
 
 // Options configure the OpenRouter Client.
@@ -231,6 +239,8 @@ type httpCall struct {
 	body       []byte
 	accept     string
 	wantStatus int
+	// maximumBytes caps the answer's body; 0 means maximumResponseBytes.
+	maximumBytes int64
 }
 
 // postJSON sends one JSON body to path (relative to baseURL) and returns the
@@ -250,7 +260,8 @@ func (c *Client) postJSON(ctx context.Context, path string, body []byte) ([]byte
 // do sends call with retry and returns the body and headers of the answer.
 // Every non-streaming endpoint shares it, so retry, headers and error
 // classification stay in one place. The body is read and closed inside the
-// attempt, so a body that dies mid-read retries like a 5xx.
+// attempt, so a body that dies mid-read retries like a 5xx; a body above
+// call.maximumBytes is llm.ErrInvalidResponse and is not retried.
 func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, error) {
 	var (
 		raw    []byte
@@ -262,9 +273,9 @@ func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, er
 			return err
 		}
 		defer response.Body.Close()
-		raw, err = io.ReadAll(response.Body)
+		raw, err = readBounded(ctx, response, call.maximumBytes)
 		if err != nil {
-			return transportError(ctx, "read body", err)
+			return err
 		}
 		header = response.Header
 		return nil
@@ -273,6 +284,30 @@ func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, er
 		return nil, nil, err
 	}
 	return raw, header, nil
+}
+
+// readBounded reads the body of response, at most limit bytes (0 means
+// maximumResponseBytes). A declared or actual length above limit is
+// llm.ErrInvalidResponse; a failed read is a transportError.
+func readBounded(ctx context.Context, response *http.Response, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = maximumResponseBytes
+	}
+	if response.ContentLength > limit {
+		return nil, bodyTooLarge(limit)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, transportError(ctx, "read body", err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, bodyTooLarge(limit)
+	}
+	return raw, nil
+}
+
+func bodyTooLarge(limit int64) error {
+	return fmt.Errorf("openrouter: response body above %d bytes: %w", limit, llm.ErrInvalidResponse)
 }
 
 // send makes one HTTP attempt. It returns the response with its body open

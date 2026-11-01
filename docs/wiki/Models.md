@@ -73,6 +73,8 @@ Use `Complete` instead of `Stream` for image output: a base64 image in one SSE l
 
 Every chat request asks OpenRouter for usage accounting, so `CostUSD` is set on streamed and non-streamed calls alike.
 
+Size caps (fixed, not options): a non-streaming answer (`Complete`, images, speech, decisions, model lists, video jobs) is read up to 64 MiB, a video clip up to 512 MiB; a larger answer fails with `llm.ErrInvalidResponse` and is not retried. Of an error answer at most 64 KiB is read, its message keeps 256 bytes. A stream line may be 1 MiB.
+
 ### Provider routing
 
 `openrouter.ProviderPreferences` is OpenRouter's `provider` block: `Order`, `AllowFallbacks` (`*bool`), `Only`, `Ignore`, `Sort` (`"price"`, `"throughput"`, `"latency"`), `Quantizations`, `RequireParameters`, `DataCollection` (`"deny"`), `MaximumPrice` (`*openrouter.MaximumPrice{Prompt, Completion}` in USD per million tokens). `openrouter.WithProvider(ctx, preferences)` replaces the client's preferences (no merge) for every call made with that context: agent runs, voice turns and `Transcribe` included. From `ExampleWithProvider`:

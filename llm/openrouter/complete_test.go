@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -687,6 +688,58 @@ func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
 	}
 	if !second.closed {
 		t.Error("last response body was not closed")
+	}
+}
+
+// TestComplete_OversizedBodyIsNotRead pins the response cap: a declared
+// length above maximumResponseBytes is refused before reading, as
+// ErrInvalidResponse, and not retried.
+func TestComplete_OversizedBodyIsNotRead(t *testing.T) {
+	t.Parallel()
+	transport := &recordingTransport{respond: func(int) *http.Response {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: maximumResponseBytes + 1,
+			Body:          io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}
+	}}
+	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: "https://example.invalid", HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.Complete(context.Background(), llm.Request{Model: "any"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Errorf("err = %v, want ErrInvalidResponse", err)
+	}
+	if transport.attempts != 1 {
+		t.Errorf("attempts = %d, want 1", transport.attempts)
+	}
+}
+
+// TestReadBounded pins the cap on bodies without a declared length.
+func TestReadBounded(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		body    string
+		wantErr error
+	}{
+		{name: "below the cap", body: "1234567"},
+		{name: "at the cap", body: "12345678"},
+		{name: "above the cap", body: "123456789", wantErr: llm.ErrInvalidResponse},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response := &http.Response{ContentLength: -1, Body: io.NopCloser(strings.NewReader(testCase.body))}
+			raw, err := readBounded(context.Background(), response, 8)
+			if !errors.Is(err, testCase.wantErr) {
+				t.Fatalf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if testCase.wantErr == nil && string(raw) != testCase.body {
+				t.Errorf("raw = %q, want %q", raw, testCase.body)
+			}
+		})
 	}
 }
 

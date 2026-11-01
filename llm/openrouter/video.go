@@ -48,10 +48,11 @@ func (c *Client) GenerateVideo(ctx context.Context, request llm.VideoRequest) (l
 		response.Usage.CostUSD = job.Usage.Cost
 	}
 	response.Video, _, err = c.do(ctx, httpCall{
-		method:     http.MethodGet,
-		url:        c.baseURL + "/videos/" + escapedID + "/content?index=0",
-		accept:     "video/*",
-		wantStatus: http.StatusOK,
+		method:       http.MethodGet,
+		url:          c.baseURL + "/videos/" + escapedID + "/content?index=0",
+		accept:       "video/*",
+		wantStatus:   http.StatusOK,
+		maximumBytes: maximumVideoBytes,
 	})
 	if err != nil {
 		return response, err

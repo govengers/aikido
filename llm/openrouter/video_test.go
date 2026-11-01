@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,11 +21,12 @@ var fakeMP4 = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 // fakeVideoAPI serves the three video endpoints. Polls answer statuses in
 // order, the last one repeating; a completed poll lists a URL unless noURL.
 type fakeVideoAPI struct {
-	statuses []string
-	failWith any
-	noURL    bool
-	polls    atomic.Int32
-	submit   map[string]any
+	statuses  []string
+	failWith  any
+	noURL     bool
+	clipBytes int64 // declared Content-Length of the clip; 0 sends fakeMP4 as is
+	polls     atomic.Int32
+	submit    map[string]any
 }
 
 func (api *fakeVideoAPI) client(t *testing.T) *Client {
@@ -57,6 +59,9 @@ func (api *fakeVideoAPI) client(t *testing.T) *Client {
 			t.Errorf("index = %q", request.URL.Query().Get("index"))
 		}
 		writer.Header().Set("Content-Type", "application/octet-stream")
+		if api.clipBytes > 0 {
+			writer.Header().Set("Content-Length", strconv.FormatInt(api.clipBytes, 10))
+		}
 		_, _ = writer.Write(fakeMP4)
 	})
 	server := httptest.NewServer(mux)
@@ -177,6 +182,20 @@ func TestGenerateVideo_SubmitErrors(t *testing.T) {
 		if !errors.Is(err, testCase.want) {
 			t.Errorf("%d %s: err = %v, want %v", testCase.status, testCase.body, err, testCase.want)
 		}
+	}
+}
+
+// TestGenerateVideo_ClipAboveTheCap pins maximumVideoBytes: a clip declared
+// larger is refused before it is read, with the JobID kept.
+func TestGenerateVideo_ClipAboveTheCap(t *testing.T) {
+	t.Parallel()
+	api := &fakeVideoAPI{statuses: []string{"completed"}, clipBytes: maximumVideoBytes + 1}
+	response, err := api.client(t).GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Fatalf("err = %v, want ErrInvalidResponse", err)
+	}
+	if response.JobID != "job1" {
+		t.Errorf("JobID = %q, want job1", response.JobID)
 	}
 }
 

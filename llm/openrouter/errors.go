@@ -11,9 +11,15 @@ import (
 	"github.com/govengers/aikido/retry"
 )
 
-// maximumErrorMessageLength trims a provider's error body to what is useful
-// inside an error string.
-const maximumErrorMessageLength = 256
+const (
+	// maximumErrorMessageLength trims a provider's error body to what is
+	// useful inside an error string.
+	maximumErrorMessageLength = 256
+
+	// maximumErrorBodyBytes is how much of an error answer's body is read for
+	// its message; a longer body (an HTML error page) is cut, not an error.
+	maximumErrorBodyBytes = 64 << 10
+)
 
 // APIError is an answer of OpenRouter with an unexpected HTTP status (any
 // non-2xx, and a 2xx other than the one the endpoint answers with). Callers
@@ -53,7 +59,7 @@ func (e *APIError) Unwrap() error {
 // retry helper honors the server's hint.
 func classifyHTTPError(response *http.Response) error {
 	// Best effort: a body that cannot be read only costs the message.
-	body, _ := io.ReadAll(response.Body)
+	body, _ := io.ReadAll(io.LimitReader(response.Body, maximumErrorBodyBytes))
 	_ = response.Body.Close()
 
 	apiError := newAPIError(response.StatusCode, body)
