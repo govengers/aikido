@@ -182,6 +182,51 @@ func TestUnroutablePaths(t *testing.T) {
 	}
 }
 
+func TestAliasPathsAreRejectedBeforeRouting(t *testing.T) {
+	ctx := context.Background()
+	root, docs := &permissiveStorage{}, &permissiveStorage{}
+	storage := newMount(t, mount.Mount{Prefix: "", Storage: root}, mount.Mount{Prefix: "docs", Storage: docs, ReadOnly: true})
+	// Each spells a path under the read-only docs mount that routing by prefix
+	// alone would hand to the writable root, or to docs with an alias inside.
+	for _, path := range []string{"./docs/a.md", "docs/./a.md", "docs\\a.md", "x/../docs/a.md"} {
+		if _, _, err := storage.ReadFile(ctx, path); !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("ReadFile(%q) err = %v; want vfs.ErrPathInvalid", path, err)
+		}
+		if err := storage.WriteFile(ctx, path, []byte("x"), ""); !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("WriteFile(%q) err = %v; want vfs.ErrPathInvalid", path, err)
+		}
+		if err := storage.DeleteFile(ctx, path); !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("DeleteFile(%q) err = %v; want vfs.ErrPathInvalid", path, err)
+		}
+	}
+	if root.calls+docs.calls != 0 {
+		t.Errorf("mounted storages were called %d times; want 0", root.calls+docs.calls)
+	}
+}
+
+// permissiveStorage accepts any path without validating it and counts the
+// calls that reach it.
+type permissiveStorage struct{ calls int }
+
+func (s *permissiveStorage) ListFiles(context.Context) ([]vfs.FileMetadata, error) {
+	return []vfs.FileMetadata{}, nil
+}
+
+func (s *permissiveStorage) ReadFile(_ context.Context, path string) ([]byte, vfs.FileMetadata, error) {
+	s.calls++
+	return []byte{}, vfs.FileMetadata{Path: path}, nil
+}
+
+func (s *permissiveStorage) WriteFile(context.Context, string, []byte, string) error {
+	s.calls++
+	return nil
+}
+
+func (s *permissiveStorage) DeleteFile(context.Context, string) error {
+	s.calls++
+	return nil
+}
+
 func TestSearchSkipsMountsWithoutSearch(t *testing.T) {
 	ctx := context.Background()
 	disk, err := osfs.New(&osfs.Options{Directory: t.TempDir()})

@@ -122,7 +122,8 @@ Complete program: [examples/agent-overlay](../../examples/agent-overlay/main.go)
 
 - The longest matching prefix owns a path (`docs/a.md` goes to `docs`, `docsy.md` to the root); the mounted storage sees the path without its prefix. Files of an outer mount under an inner prefix are hidden, so every path has one owner.
 - `ReadOnly` mounts refuse writes and deletes with `vfs.ErrReadOnly`, whatever their storage supports.
-- A path no mount owns, or a path equal to a prefix, is `vfs.ErrPathInvalid`. Duplicate prefixes, a nil storage or an invalid prefix fail in `New`.
+- Every path passes `vfs.ValidatePath` before routing, so `./docs/a.md` cannot slip past a `docs` mount to the root. A path no mount owns, or a path equal to a prefix, is `vfs.ErrPathInvalid`. Duplicate prefixes, a nil storage or an invalid prefix fail in `New`.
+- Mount disjoint directories: storages that overlap on disk alias each other by case (case-insensitive filesystems) and through symlinks, which defeats `ReadOnly` ([Security](Security.md#known-limits)).
 - `New` returns a `vfs.Storage` that is `Searchable` exactly when at least one mount is, so the `search` tool appears only when it can find something.
 
 ## Writing your own backend

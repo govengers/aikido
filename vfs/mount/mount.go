@@ -11,7 +11,16 @@
 // followed by a slash in it ("docs/a.md" goes to "docs", "docsy.md" to the
 // root mount); the mount's storage sees the path without its prefix. Files of
 // an outer mount that fall under an inner mount's prefix are hidden, so
-// every path has exactly one owner.
+// every path has exactly one owner. Every path passes vfs.ValidatePath before
+// it is routed, so a spelling such as "./docs/a.md" cannot reach the root
+// mount.
+//
+// Known limit: routing compares strings, the mounted storages resolve files.
+// Mounts whose storages overlap on disk alias each other: with a writable
+// root over a directory and a read-only "docs" mount over its docs
+// subdirectory, "Docs/a.md" on a case-insensitive filesystem (macOS and
+// Windows defaults), or a symlink in the root pointing into docs, writes the
+// files the read-only mount protects. Mount disjoint directories.
 package mount
 
 import (
