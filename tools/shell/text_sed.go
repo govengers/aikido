@@ -328,10 +328,13 @@ func (e *sedEditor) editInPlace(ctx context.Context, operands []string) error {
 	}
 	for _, name := range operands {
 		var result strings.Builder
-		e.output = &sedOutput{writer: &result}
+		e.output = &sedOutput{writer: &limitedBuilder{builder: &result}}
 		e.input, e.lineNumber = sedInput{names: []string{name}}, 0
 		if err := e.run(ctx); err != nil {
 			return err
+		}
+		if e.output.err != nil {
+			return sedTool.fatal(e.invocation, 4, "couldn't edit %s: %v", name, describe(e.output.err))
 		}
 		if !e.input.opened {
 			continue
@@ -346,28 +349,20 @@ func (e *sedEditor) editInPlace(ctx context.Context, operands []string) error {
 	return e.finish(nil)
 }
 
-// writeBack stores the edited content and the optional backup.
+// writeBack stores the optional backup and the edited content through the
+// redirect's write path; a failure stops sed with status 4 like GNU's.
 func (e *sedEditor) writeBack(ctx context.Context, name, original, edited string) error {
-	resolved, err := Resolve(e.invocation.Directory, name)
-	if err != nil {
-		return fmt.Errorf("resolve %s: %w", name, err)
-	}
-	storage := e.invocation.Storage
 	if e.settings.suffix != "" {
 		backup := name + e.settings.suffix
 		if strings.Contains(e.settings.suffix, "*") {
 			backup = path.Join(path.Dir(name), strings.ReplaceAll(e.settings.suffix, "*", path.Base(name)))
 		}
-		backupPath, err := Resolve(e.invocation.Directory, backup)
-		if err != nil {
-			return fmt.Errorf("resolve %s: %w", backup, err)
-		}
-		if err := storage.WriteFile(ctx, backupPath, []byte(original), "text/plain"); err != nil {
-			return fmt.Errorf("write %s: %w", backup, err)
+		if err := storeOutput(ctx, e.invocation, backup, []byte(original)); err != nil {
+			return sedTool.fatal(e.invocation, 4, "couldn't edit %s: %s: %v", name, backup, err)
 		}
 	}
-	if err := storage.WriteFile(ctx, resolved, []byte(edited), "text/plain"); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
+	if err := storeOutput(ctx, e.invocation, name, []byte(edited)); err != nil {
+		return sedTool.fatal(e.invocation, 4, "couldn't edit %s: %v", name, err)
 	}
 	return nil
 }

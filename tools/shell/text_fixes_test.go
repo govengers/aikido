@@ -107,6 +107,11 @@ func TestRunawayCommandsStop(t *testing.T) {
 		{name: "branch loop", script: `echo x | sed ':again;b again'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "substitute loop", script: `echo x | sed ':a;s/^/ /;ta'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
+		{
+			name: "sed -i result cap", files: map[string]string{"f": "x\n"},
+			script: "sed -i '" + strings.Repeat("h;G;", 20) + strings.Repeat("p;", 40) + "' f; echo $?; cat f",
+			want:   "sed: couldn't edit f: File too large\n4\nx\n",
+		},
 		{name: "awk output file cap", script: `env -i awk 'BEGIN{while(1) print "0123456789abcdef0123456789abcdef" > "f"}'; echo $?; ls`, want: "awk: File too large\n2\nf\n"},
 	}, &Options{Timeout: time.Second})
 }
@@ -131,6 +136,7 @@ func TestCommandWritesFailLoudly(t *testing.T) {
 	}
 	for script, want := range map[string]string{
 		`env -i awk 'BEGIN {print "x" > "ro/file"}' && echo stored; echo $?`: "awk: can't redirect to `ro/file' (Read-only file system)\n2\n",
+		`sed -i s/a/b/ ro/f.txt && echo stored; echo $?; cat ro/f.txt`:       "sed: couldn't edit ro/f.txt: Read-only file system\n4\na\n",
 	} {
 		if result := mustRun(t, shell, script); result.Output != want {
 			t.Errorf("Run(%q) = %q, want %q", script, result.Output, want)
