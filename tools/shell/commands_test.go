@@ -75,8 +75,8 @@ func TestFileCommandCases(t *testing.T) {
 		},
 		// The review's C15: only the immediate parent was checked, so dst/src/a/b/f landed beneath the file dst/src/a.
 		{
-			name: "cp -r checks every ancestor of a destination",
-			files: map[string]string{"src/a/b/f": "1\n", "src/a/b/g": "2\n", "src/e/x": "3\n", "dst/src/a": "file\n", "dst/src/e": "file\n"},
+			name:   "cp -r checks every ancestor of a destination",
+			files:  map[string]string{"src/a/b/f": "1\n", "src/a/b/g": "2\n", "src/e/x": "3\n", "dst/src/a": "file\n", "dst/src/e": "file\n"},
 			script: "mkdir -p src/e/empty; rm src/e/x; cp -r src dst; echo $?; cat dst/src/a; find dst | sort",
 			want: "cp: cannot overwrite non-directory 'dst/src/a' with directory 'src/a'\n" +
 				"cp: cannot overwrite non-directory 'dst/src/e' with directory 'src/e'\n1\nfile\ndst\ndst/src\ndst/src/a\ndst/src/e\n",

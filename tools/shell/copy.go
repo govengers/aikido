@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -109,8 +110,7 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 		return nil, err
 	}
 	intoDirectory := lastEntry.kind == entryDirectory
-	switch {
-	case len(sources) > 1 && !intoDirectory:
+	if len(sources) > 1 && !intoDirectory {
 		// GNU's "target 'x': " with why x cannot be opened as a directory.
 		reason := errNotDirectory
 		if lastEntry.kind == entryMissing {
@@ -203,21 +203,35 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	if err := m.checkDirectoryTarget(ctx, files, planned); err != nil {
 		return err
 	}
-	below, err := files.filesBelow(ctx, planned.source)
+	subdirectories, err := m.transferContents(ctx, files, planned)
 	if err != nil {
 		return err
 	}
+	for _, rest := range subdirectories {
+		files.directories.add(path.Join(planned.target, rest))
+	}
+	files.directories.add(planned.target)
+	if m.move {
+		files.directories.removeTree(planned.source)
+	}
+	return nil
+}
+
+// transferContents transfers the files below a directory source and
+// returns its subdirectories (relative paths) for the caller to create once
+// everything went well. A failure is every problem, each reported once:
+// all files below a directory that clashes with a target file share one.
+func (m transferMode) transferContents(ctx context.Context, files workspace, planned transfer) ([]string, error) {
+	below, err := files.filesBelow(ctx, planned.source)
+	if err != nil {
+		return nil, err
+	}
 	clashes := directoryClashes{planned: planned, checked: map[string]bool{}}
 	var problems []error
-	// report collects one problem per message: every file below a
-	// directory that clashes with a target file reports the same one.
 	report := func(err error) {
-		for _, known := range problems {
-			if known.Error() == err.Error() {
-				return
-			}
+		if !slices.ContainsFunc(problems, func(known error) bool { return known.Error() == err.Error() }) {
+			problems = append(problems, err)
 		}
-		problems = append(problems, err)
 	}
 	for _, file := range below {
 		relative := strings.TrimPrefix(file.Path, planned.source+"/")
@@ -242,17 +256,7 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 			subdirectories = append(subdirectories, rest)
 		}
 	}
-	if len(problems) > 0 {
-		return errors.Join(problems...)
-	}
-	for _, rest := range subdirectories {
-		files.directories.add(path.Join(planned.target, rest))
-	}
-	files.directories.add(planned.target)
-	if m.move {
-		files.directories.removeTree(planned.source)
-	}
-	return nil
+	return subdirectories, errors.Join(problems...)
 }
 
 // transferBelow copies or moves one file of a recursive transfer whose
