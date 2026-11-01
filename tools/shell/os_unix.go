@@ -24,6 +24,15 @@ func killProcessGroup(command *exec.Cmd) {
 	}
 }
 
+// endProcessGroup kills what is left of the program's process group after
+// the program ended: children it started in the background must not outlive
+// the invocation.
+func endProcessGroup(command *exec.Cmd) {
+	if command.Process != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL) // ESRCH: nothing left
+	}
+}
+
 // signalOf returns the number of the signal that ended the program.
 func signalOf(exitErr *exec.ExitError) uint8 {
 	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {

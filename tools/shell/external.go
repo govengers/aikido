@@ -127,6 +127,7 @@ func runExternal(ctx context.Context, options ExternalOptions, invocation *Invoc
 	command.WaitDelay = externalWaitDelay
 	killProcessGroup(command)
 	err = command.Run()
+	endProcessGroup(command)
 	return externalStatus(ctx, runContext, options, invocation, err)
 }
 

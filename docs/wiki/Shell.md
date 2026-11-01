@@ -115,7 +115,7 @@ The interpreter itself provides the shell builtins: `cd`, `pwd`, `echo`, `printf
 | `Timeout` | per run; the program is killed (exit 124, `name: killed after the 10s timeout`) |
 | `Summary` | the line in the tool description; default `host program <Path>` |
 
-stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl get pods -o json | jq` work. On Unix the program runs in its own process group and the whole group is killed when the call ends or times out. Exit codes pass through; a signal is 128 + its number.
+stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl get pods -o json | jq` work. On Unix the program runs in its own process group, and the whole group is killed when the program ends (children it left in the background included), times out, or the call is cancelled. Exit codes pass through; a signal is 128 + its number.
 
 ## Filesystem semantics
 
