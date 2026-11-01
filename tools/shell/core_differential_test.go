@@ -60,6 +60,17 @@ func TestDifferentialShellSemantics(t *testing.T) {
 	})
 }
 
+// catFiles hold what cat's display options show: control bytes, high
+// bytes, tabs, CRLF line ends and runs of blank lines.
+func catFiles() map[string]string {
+	return map[string]string{
+		"show.txt":  "a\tb\x01\x7f\n\xe9\x89\x80\xff\x89\r\n",
+		"crlf.txt":  "x\r\ny\rz\r\n",
+		"blank.txt": "\n\nfirst\n\n\n\nsecond\n\n",
+		"part.txt":  "no newline",
+	}
+}
+
 func TestDifferentialFileCommands(t *testing.T) {
 	files := coreFiles()
 	runDifferential(t, []differentialCase{
@@ -67,6 +78,10 @@ func TestDifferentialFileCommands(t *testing.T) {
 		{name: "cat missing file", files: files, script: "cat nope a.txt; echo $?"},
 		{name: "cat directory", files: files, script: "cat sub; echo $?"},
 		{name: "cat unknown option", files: files, script: "cat --nope; echo $?; cat -z; echo $?"},
+		{name: "cat -A", files: catFiles(), script: "cat -A show.txt; cat -e show.txt; cat -t show.txt; cat -vET show.txt"},
+		{name: "cat -E and -T alone", files: catFiles(), script: "cat -E show.txt; cat -T show.txt; cat --show-ends --show-tabs crlf.txt"},
+		{name: "cat -s -b -n", files: catFiles(), script: "cat -s blank.txt; cat -b blank.txt; cat -sn blank.txt; cat -bn blank.txt; cat -sb blank.txt"},
+		{name: "cat state across files", files: catFiles(), script: "cat -n part.txt blank.txt; cat -s blank.txt blank.txt; cat -u part.txt"},
 		{name: "mkdir -p and cp into it", files: files, script: "mkdir -p out/deep && cp a.txt out/deep/ && ls -R out"},
 		{name: "mkdir existing", files: files, script: "mkdir sub; echo $?; mkdir a.txt; echo $?"},
 		{name: "mkdir missing parent", files: files, script: "mkdir x/y; echo $?; mkdir -p x/y && ls x"},

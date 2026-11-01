@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,69 +8,6 @@ import (
 	"path"
 	"strings"
 )
-
-func catCommand() Command {
-	return Command{Name: "cat", Summary: "print files (-n numbers lines; - is stdin)", Run: runCat}
-}
-
-func runCat(ctx context.Context, invocation *Invocation) error {
-	parsed, operands, err := (optionSet{flags: "n", long: map[string]longOption{"number": {name: "n"}}}).parse(invocation.Arguments)
-	if err != nil {
-		return usage(invocation, "cat", err, errFailed)
-	}
-	if len(operands) == 0 {
-		operands = []string{"-"}
-	}
-	numbering := &lineNumbering{enabled: parsed.has("n"), atLineStart: true}
-	var status error
-	for _, operand := range operands {
-		reader, err := openInput(ctx, invocation, operand)
-		if err != nil {
-			complain(invocation, "cat", "%s: %v", operand, err)
-			status = errFailed
-			continue
-		}
-		if err := numbering.copy(invocation.Stdout, reader); err != nil {
-			return err
-		}
-	}
-	return status
-}
-
-// lineNumbering is cat's output: a plain copy, or with -n every line
-// prefixed by its number, counted across all files as one stream.
-type lineNumbering struct {
-	enabled     bool
-	atLineStart bool
-	line        int
-}
-
-func (n *lineNumbering) copy(output io.Writer, input io.Reader) error {
-	if !n.enabled {
-		_, err := io.Copy(output, input)
-		return err
-	}
-	reader := bufio.NewReader(input)
-	for {
-		text, readErr := reader.ReadString('\n')
-		if text != "" {
-			if n.atLineStart {
-				n.line++
-				text = fmt.Sprintf("%6d\t%s", n.line, text)
-			}
-			if _, err := io.WriteString(output, text); err != nil {
-				return err
-			}
-			n.atLineStart = strings.HasSuffix(text, "\n")
-		}
-		if errors.Is(readErr, io.EOF) {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
-}
 
 func mkdirCommand() Command {
 	return Command{Name: "mkdir", Summary: "create directories (-p parents, -v)", Run: runMkdir}

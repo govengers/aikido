@@ -90,6 +90,6 @@ func ExampleBuiltins() {
 		}
 	}
 	// Output:
-	// cat: print files (-n numbers lines; - is stdin)
+	// cat: print files (-n -b number lines, -s squeeze blanks, -A -E -T -v -e -t show ends, tabs, control bytes; - is stdin)
 	// mkdir: create directories (-p parents, -v)
 }

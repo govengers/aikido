@@ -115,6 +115,26 @@ func TestBenchmarkCommands(t *testing.T) {
 			script: `grep -rlZ 'api\.acme-legacy\.io' . | xargs -0 sed -i 's/api\.acme-legacy\.io/api.acme.dev/g' && grep -rn 'api\.acme' . | sort`,
 			want:   "./a.go:1:api.acme.dev\n./my docs/b.md:1:x api.acme.dev\n",
 		},
+		{
+			name: "cat -A to check indentation", files: map[string]string{"top.go": "package top\n\nfunc f() {\n\treturn\n}\n"},
+			script: "cat -A top.go | tail -2", want: "^Ireturn$\n}$\n",
+		},
+	}, nil)
+}
+
+// TestCatDisplayOptions pins GNU cat's notation; the differential cases
+// over the same files compare it with GNU when a reference is available.
+func TestCatDisplayOptions(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "-A", files: catFiles(), script: "cat -A show.txt", want: "a^Ib^A^?$\nM-iM-^IM-^@M-^?M-^I^M$\n"},
+		{name: "-E shows CRLF", files: catFiles(), script: "cat -E crlf.txt; cat -T crlf.txt", want: "x^M$\ny\rz^M$\nx\r\ny\rz\r\n"},
+		{name: "-t keeps line ends", files: catFiles(), script: "cat -t show.txt", want: "a^Ib^A^?\nM-iM-^IM-^@M-^?M-^I^M\n"},
+		{name: "-s", files: catFiles(), script: "cat -s blank.txt", want: "\nfirst\n\nsecond\n\n"},
+		{name: "-b", files: catFiles(), script: "cat -b blank.txt", want: "\n\n     1\tfirst\n\n\n\n     2\tsecond\n\n"},
+		{name: "-sn", files: catFiles(), script: "cat -sn blank.txt", want: "     1\t\n     2\tfirst\n     3\t\n     4\tsecond\n     5\t\n"},
+		{name: "-n continues a line across files", files: catFiles(), script: "cat -n part.txt crlf.txt", want: "     1\tno newlinex\r\n     2\ty\rz\r\n"},
+		{name: "-s across files", files: map[string]string{"a": "a\n\n", "b": "\n\nb\n"}, script: "cat -s a b", want: "a\n\nb\n"},
+		{name: "long options", files: catFiles(), script: "cat --number-nonblank --squeeze-blank --show-ends blank.txt", want: "$\n     1\tfirst$\n$\n     2\tsecond$\n$\n"},
 	}, nil)
 }
 

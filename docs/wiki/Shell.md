@@ -55,7 +55,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 
 | Command | Flags and forms |
 |---|---|
-| `cat` | `-n` (numbering runs across files); `-` is stdin |
+| `cat` | `-n -b -s -E -T -v -A -e -t -u` and their long forms, with GNU's notation (`^I`, `$`, `^M$` for CRLF, `M-`); numbering and squeezing run across files; `-` is stdin |
 | `ls` | one entry per line; `-1 -a -A -l -h -R -d -t -S -r -F -p`; sorted by byte order. `-l` shows `user user` as owner and the Storage's modification time; files are `-rw-r--r--`, directories `drwxr-xr-x` |
 | `find` | start paths, then `-name -iname -path -ipath -wholename -type f/d/c (l b p s never match) -empty -maxdepth -mindepth -true -false ! -not -a -and -o -or ( ) -prune -print -print0 -delete -exec cmd {} ;` and `-exec cmd {} +`; `-H -L -P` are accepted. Walks in sorted order |
 | `mkdir` | `-p -v` |
