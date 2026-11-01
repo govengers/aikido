@@ -41,6 +41,9 @@ var reviewCases = []scriptCase{
 	{name: "grep -w keeps the line start", script: `printf 'ab c\n' | grep -w '^.'`, want: "", status: 1},
 	{name: "grep -w keeps the word boundary", script: `printf 'xa a\n' | grep -ow '\ba'`, want: "a\n"},
 	{name: "grep -w later word", script: `printf 'foobar foo\n' | grep -w foo`, want: "foobar foo\n"},
+	{name: "grep include after exclude wins", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -r --exclude='*' --include='*.go' x .`, want: "./a.go:x\n"},
+	{name: "grep exclude after include wins", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -rl --include='*.go' --exclude='a*' x .; echo $?`, want: "1\n"},
+	{name: "grep unmatched file with leading exclude", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -rl --exclude='*.go' --include='*.md' x .`, want: "./b.txt\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 

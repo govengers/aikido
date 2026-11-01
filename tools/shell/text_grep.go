@@ -129,13 +129,21 @@ type grepSettings struct {
 	quiet, noMessages          bool
 	lineNumbers                bool
 	// filenames: 0 automatic, 1 -H, -1 -h.
-	filenames                      int
-	listing                        grepListing
-	maximum                        int
-	before, after                  int
-	recursive                      bool
-	includes, excludes, excludeDir []string
-	text, skipBinary               bool
+	filenames     int
+	listing       grepListing
+	maximum       int
+	before, after int
+	recursive     bool
+	excludeDir    []string
+	// fileRules are --include and --exclude in command-line order.
+	fileRules        []grepFileRule
+	text, skipBinary bool
+}
+
+// grepFileRule is one --include (include) or --exclude glob.
+type grepFileRule struct {
+	pattern string
+	include bool
 }
 
 func runGrep(ctx context.Context, invocation *Invocation) error {
@@ -213,9 +221,9 @@ func parseGrepSettings(invocation *Invocation, options []parsedOption) (grepSett
 				contextLines = value
 			}
 		case "include":
-			settings.includes = append(settings.includes, option.value)
+			settings.fileRules = append(settings.fileRules, grepFileRule{pattern: option.value, include: true})
 		case "exclude":
-			settings.excludes = append(settings.excludes, option.value)
+			settings.fileRules = append(settings.fileRules, grepFileRule{pattern: option.value})
 		case "exclude-dir":
 			settings.excludeDir = append(settings.excludeDir, option.value)
 		}
@@ -544,23 +552,20 @@ func (g *grepSearcher) expandOperand(ctx context.Context, operand string, implic
 	return inputs, isDirectory, nil
 }
 
-// excluded applies --include and --exclude to a file's base name.
+// excluded applies --include and --exclude to a file's base name like GNU:
+// the last matching option decides; when none matches, the file is skipped
+// only if the first option is an --include.
 func (g *grepSearcher) excluded(name string) bool {
-	base := path.Base(name)
-	for _, pattern := range g.settings.excludes {
-		if matched, _ := path.Match(pattern, base); matched {
-			return true
+	return excludedByRules(g.settings.fileRules, path.Base(name))
+}
+
+func excludedByRules(rules []grepFileRule, base string) bool {
+	for index := len(rules) - 1; index >= 0; index-- {
+		if matched, _ := path.Match(rules[index].pattern, base); matched {
+			return !rules[index].include
 		}
 	}
-	if len(g.settings.includes) == 0 {
-		return false
-	}
-	for _, pattern := range g.settings.includes {
-		if matched, _ := path.Match(pattern, base); matched {
-			return false
-		}
-	}
-	return true
+	return len(rules) > 0 && rules[0].include
 }
 
 // excludedDirectory applies --exclude-dir to every directory of a path
