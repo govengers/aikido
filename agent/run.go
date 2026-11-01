@@ -297,12 +297,13 @@ func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runSt
 	for _, call := range calls {
 		result, err := s.dispatch(ctx, call, environment)
 		toolResult := buildToolResult(call, result, err)
+		toolResult.ModelContent = boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes)
 		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
 		sink.send(Event{Kind: EventToolResult, ToolResult: &toolResult})
 		state.record(llm.Message{
 			Role:       llm.RoleTool,
 			ToolCallID: call.ID,
-			Content:    boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes),
+			Content:    toolResult.ModelContent,
 		})
 	}
 }
