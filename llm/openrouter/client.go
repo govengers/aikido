@@ -77,7 +77,9 @@ type Options struct {
 }
 
 // Client is an OpenRouter implementation of llm.Client. It is safe for
-// concurrent use; its configuration is fixed at construction.
+// concurrent use; its configuration is fixed at construction. Every call
+// that gets an answer with an unexpected HTTP status fails with an
+// *APIError, which also matches the llm sentinel for that status.
 type Client struct {
 	apiKey            string
 	baseURL           string
