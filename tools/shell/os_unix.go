@@ -3,9 +3,17 @@
 package shell
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
+
+// ownerStat is fileInfo.Sys: the interpreter's test -O and -G read the
+// owner from a *syscall.Stat_t (and panic on anything else). Every workspace
+// file belongs to the user the shell runs as.
+func ownerStat() any {
+	return &syscall.Stat_t{Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())} //nolint:gosec // G115: ids fit in uint32 on unix
+}
 
 // killProcessGroup starts the program in its own process group and makes
 // cancellation kill the whole group, so children it started die with it.

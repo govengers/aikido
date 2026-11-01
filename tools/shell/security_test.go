@@ -3,6 +3,7 @@ package shell
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +151,19 @@ func TestJobCleanupRunsNoScriptCode(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Run took %v", elapsed)
+	}
+}
+
+// TestOwnerTestsDoNotPanic replays the review's [ -O f ]: the interpreter
+// read the owner from fileInfo.Sys() as a *syscall.Stat_t and panicked on
+// nil, in a pipeline goroutine fatally.
+func TestOwnerTestsDoNotPanic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("-O and -G read no owner on windows")
+	}
+	shell, _ := newTestShell(t, map[string]string{"f": "x"}, nil)
+	result := mustRun(t, shell, "[ -O f ] && echo own; [ -G f ] | cat; ( [ -G f ] ) && echo group; [ -O nope ] || echo missing")
+	if result.Output != "own\ngroup\nmissing\n" {
+		t.Fatalf("output = %q", result.Output)
 	}
 }

@@ -438,4 +438,4 @@ func (i fileInfo) ModTime() time.Time { return i.metadata.UpdatedAt }
 
 func (i fileInfo) IsDir() bool { return i.kind == entryDirectory }
 
-func (i fileInfo) Sys() any { return nil }
+func (i fileInfo) Sys() any { return ownerStat() }
