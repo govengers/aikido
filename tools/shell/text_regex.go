@@ -50,14 +50,7 @@ func compileGo(pattern string, options regexOptions) (*regexp.Regexp, error) {
 	if !utf8.ValidString(pattern) {
 		return nil, &regexError{"pattern is not valid UTF-8"}
 	}
-	flags := "s"
-	if options.multiline {
-		flags = "m"
-	}
-	if options.ignoreCase {
-		flags += "i"
-	}
-	compiled, err := regexp.Compile("(?" + flags + ")" + pattern)
+	compiled, err := regexp.Compile(goFlags(options) + pattern)
 	if err != nil {
 		return nil, &regexError{"Invalid regular expression"}
 	}
@@ -65,6 +58,19 @@ func compileGo(pattern string, options regexOptions) (*regexp.Regexp, error) {
 		compiled.Longest()
 	}
 	return compiled, nil
+}
+
+// goFlags is the flag group that gives a Go pattern the semantics of
+// options.
+func goFlags(options regexOptions) string {
+	flags := "s"
+	if options.multiline {
+		flags = "m"
+	}
+	if options.ignoreCase {
+		flags += "i"
+	}
+	return "(?" + flags + ")"
 }
 
 // posixTranslator rewrites one POSIX pattern (BRE or ERE with GNU
