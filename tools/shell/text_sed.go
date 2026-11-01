@@ -417,7 +417,7 @@ func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 		}
 		next, outcome, err := e.execute(ctx, counter)
 		if err == nil {
-			err = e.failure
+			err = e.checkLimits(ctx, outcome == cycleContinue && next <= counter)
 		}
 		if err != nil {
 			return false, false, err
@@ -436,6 +436,24 @@ func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 		}
 	}
 	return true, true, nil
+}
+
+// checkLimits ends a cycle on a run-time failure, on a cancelled ctx when a
+// branch jumps back (sed ':a;ba' loops without reading), and when the
+// pattern or hold space outgrows the input budget (':a;N;G;h;ba').
+func (e *sedEditor) checkLimits(ctx context.Context, jumpedBack bool) error {
+	if e.failure != nil {
+		return e.failure
+	}
+	if jumpedBack {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if len(e.patternSpace) > maximumInputBytes || len(e.hold) > maximumInputBytes {
+		return errInputTooLarge
+	}
+	return nil
 }
 
 // cycleOutcome is what a command does to the cycle.
@@ -697,6 +715,9 @@ func (e *sedEditor) substitute(ctx context.Context, substitution *sedSubstitutio
 		result.WriteString(e.patternSpace[last:match[0]])
 		result.WriteString(expandReplacement(e.patternSpace, match, substitution.replacement))
 		last, replaced = match[1], true
+		if result.Len() > maximumInputBytes {
+			return errInputTooLarge
+		}
 	}
 	if !replaced {
 		return nil

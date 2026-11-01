@@ -85,6 +85,16 @@ func TestStreamingStopsEarly(t *testing.T) {
 	}, &Options{Timeout: 20 * time.Second})
 }
 
+// TestSedLoopsStop: a backward branch without input is stopped by the
+// timeout, a growing pattern space by the input budget.
+func TestSedLoopsStop(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "branch loop", script: `echo x | sed ':again;b again'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+		{name: "substitute loop", script: `echo x | sed ':a;s/^/ /;ta'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
+	}, &Options{Timeout: time.Second})
+}
+
 // TestInputBudget pipes more than maximumInputBytes to commands that hold
 // their input, and lets the streaming ones run over the same pipe.
 func TestInputBudget(t *testing.T) {
