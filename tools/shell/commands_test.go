@@ -96,6 +96,7 @@ func TestUtilityCommandCases(t *testing.T) {
 		{name: "test -x", files: files, script: "[ -x a.txt ] || echo not-executable; [ -x dir ] && echo searchable; [ -r a.txt ] && echo readable", want: "not-executable\nsearchable\nreadable\n"},
 		{name: "source", files: map[string]string{"lib.sh": "greeting=hello\n"}, script: "source lib.sh; echo $greeting; . nope.sh", want: "hello\nsource: bash: ./nope.sh: No such file or directory\n", status: 1},
 		{name: "pwd -P", files: files, script: "cd dir; pwd -P", want: "/dir\n"},
+		{name: "cd -P and -L (review S25)", files: files, script: "cd -P dir && pwd; cd -L .. && pwd; cd -P -- dir && pwd", want: "/dir\n/\n/dir\n"},
 		{name: "sleep is cancelled by the timeout", files: files, script: "sleep 1m", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
 	}, &Options{Commands: []Command{dateCommand(func() time.Time { return time.Unix(0, 0) })}, Timeout: 50 * time.Millisecond})
 }

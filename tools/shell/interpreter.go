@@ -408,6 +408,16 @@ func (s *session) rewriteCall(ctx context.Context, handler interp.HandlerContext
 // bash's ("cd: x: No such file or directory").
 func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.HandlerContext, arguments []string) []string {
 	prefix := "bash: " + linePrefix(handler.Pos) + "cd: "
+	// -P and -L differ only on symlinks, which workspace paths do not have;
+	// they are dropped so the builtin never resolves host links.
+	operands := arguments[1:]
+	for len(operands) > 0 && (operands[0] == "-P" || operands[0] == "-L") {
+		operands = operands[1:]
+	}
+	if len(operands) > 0 && operands[0] == "--" {
+		operands = operands[1:]
+	}
+	arguments = append([]string{"cd"}, operands...)
 	if len(arguments) > 2 {
 		return []string{internalFailure, prefix + "too many arguments", "1"}
 	}
