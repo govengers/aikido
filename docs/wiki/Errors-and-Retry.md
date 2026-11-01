@@ -14,6 +14,7 @@ Errors are matched with `errors.Is` against sentinels and read with `errors.As`;
 | `llm` | `ErrContentFiltered` | the provider's safety policy aborted the generation; do not retry the same prompt |
 | `llm/openrouter` | `*APIError{StatusCode, Code, Message}` | any unexpected HTTP status; `Unwrap` returns the `llm` sentinel above. A 429 with `Retry-After` arrives wrapped in a `*retry.AfterError` |
 | `llm/codex` | `ErrReauthenticationRequired`, `ErrDeviceLoginDisabled` | the login is gone for good; the issuer has no device login |
+| `llm/codex` | `ErrRefreshInterrupted` | a token refresh got no complete answer, the refresh token may have rotated; not transient, never retried ([Models](Models.md#codex-chatgpt-subscription)) |
 | `tools` | `ErrUnknownTool`, `ErrInvalidArguments`, `ErrToolPanicked`, `ErrDuplicateTool` | [Tools](Tools.md#what-dispatch-checks) |
 | `vfs` | `ErrPathInvalid`, `ErrFileNotFound`, `ErrFileTooLarge`, `ErrReadOnly` | [Files](Files.md#the-storage-contract) |
 | `agent/history/memory` | `ErrEmptySessionID` | |
@@ -31,7 +32,7 @@ Agent runs do not return errors: they end with `EventError` plus an `EndReason` 
 |---|---|---|
 | `openrouter` `Stream` | 429, 5xx and network errors before the first SSE byte, `Options.MaximumAttempts` in total (default 3), `Retry-After` honoured | anything after the stream started: it ends with `EventError` |
 | `openrouter` video submit (`POST /videos`) | 429 only: nothing else proves the job was not created | 5xx, network errors and a broken 202 answer: the job may exist and be billed, a second submit would bill a second clip |
-| `openrouter` `Complete`, images, speech, decisions, each video poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors, a 2xx whose body does not decode (`ErrInvalidResponse`) |
+| `openrouter` `Complete`, images, speech, decisions, models, each video poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors, a 2xx whose body does not decode (`ErrInvalidResponse`), a 2xx whose body breaks off mid-read (`ErrServerError`: the work may be done and billed, so the request is not sent again) |
 | `codex` `Stream` | 429 and 5xx at stream start (3 attempts) | mid-stream errors |
 | `llm.CollectWithRetry` | restarts the whole stream after a failure `policy.ShouldRetry` accepts (default `llm.IsTransientServerError`); every attempt is billed | |
 | `llm.CompleteWithRetry` | a fresh `Complete` per attempt, same default predicate | |

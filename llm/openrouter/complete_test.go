@@ -309,6 +309,37 @@ func TestComplete_ContentFilterErrorEnvelope(t *testing.T) {
 	}
 }
 
+// TestFinishReasonErrorWithoutEnvelope pins that finish_reason "error" without
+// an error envelope fails the call with ErrServerError on both paths, keeping
+// the partial text and the usage of the billed turn.
+func TestFinishReasonErrorWithoutEnvelope(t *testing.T) {
+	t.Parallel()
+	const usage = `"usage":{"prompt_tokens":7,"completion_tokens":3,"cost":0.01}`
+	t.Run("complete", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"partial"},"finish_reason":"error"}],` + usage + `}`)
+		response, err := newTestClient(t, newTestServer(t, jsonHandler(body))).Complete(context.Background(), llm.Request{Model: "m"})
+		if !errors.Is(err, llm.ErrServerError) {
+			t.Errorf("err = %v, want ErrServerError", err)
+		}
+		if response.Text != "partial" || response.FinishReason != finishReasonError || response.Usage == nil || response.Usage.CostUSD != 0.01 {
+			t.Errorf("response = %+v, want the partial text, finish reason and usage", response)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		t.Parallel()
+		body := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n" +
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}]," + usage + "}\n\n"
+		summary := summarize(t, streamBody(t, []byte(body)))
+		if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrServerError) {
+			t.Errorf("errors = %v, want one ErrServerError", summary.errors)
+		}
+		if summary.text != "partial" || len(summary.usages) != 1 || summary.end == nil || summary.end.FinishReason != finishReasonError {
+			t.Errorf("summary = %+v, want the partial text, usage and finish reason", summary)
+		}
+	})
+}
+
 func TestComplete_5xxRetryThenSuccess(t *testing.T) {
 	t.Parallel()
 	successBody := []byte(`{
@@ -653,67 +684,89 @@ func (b *trackedBody) Close() error {
 	return nil
 }
 
-// recordingTransport serves canned responses in order and keeps the request
-// bytes so the caller can assert body identity across retries.
-type recordingTransport struct {
-	bodies   [][]byte
-	attempts int
-	respond  func(attempt int) *http.Response
+// cannedTransport answers every request with respond and counts the requests.
+type cannedTransport struct {
+	requests int
+	respond  func(request *http.Request) *http.Response
 }
 
-func (rt *recordingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	rawBody, _ := io.ReadAll(request.Body)
-	rt.bodies = append(rt.bodies, rawBody)
-	rt.attempts++
-	return rt.respond(rt.attempts), nil
+func (transport *cannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.requests++
+	return transport.respond(request), nil
 }
 
-// TestPostJSON_ReadFailureRetriesAndClosesBody pins the read-failure branch:
-// a body that dies mid-read is an ErrServerError (so it retries), the retry
-// resends identical bytes, and every response body is closed.
-func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
-	t.Parallel()
-	first := &trackedBody{data: []byte(`{"id":"x","choices":[]}`), failAt: 4}
-	second := &trackedBody{data: []byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`), failAt: -1}
-	// Snapshotted when attempt two starts, so the assertion is "closed before
-	// the retry" and not merely "closed eventually".
-	var firstClosedAtRetry bool
-	transport := &recordingTransport{respond: func(attempt int) *http.Response {
-		body := io.ReadCloser(second)
-		if attempt == 1 {
-			body = first
-		} else {
-			firstClosedAtRetry = first.closed
+// cutBodyTransport answers every request with its endpoint's success status
+// (202 for the video submit, 200 otherwise) and a body that dies after four
+// bytes; bodies collects them so the caller can check they were closed.
+func cutBodyTransport() (*cannedTransport, *[]*trackedBody) {
+	var bodies []*trackedBody
+	transport := &cannedTransport{respond: func(request *http.Request) *http.Response {
+		status := http.StatusOK
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/videos") {
+			status = http.StatusAccepted
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       body,
-		}
+		body := &trackedBody{data: []byte(`{"id":"x","choices":[]}`), failAt: 4}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: body}
 	}}
-	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: "https://example.invalid/api/v1", HTTPClient: &http.Client{Transport: transport}})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	return transport, &bodies
+}
 
-	response, err := client.Complete(context.Background(), llm.Request{Model: "any"})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
+// TestBodyCutAfterSuccessIsNotRetried pins RES-004 on every non-streaming
+// endpoint: once a 2xx arrived the work may be done and billed, so a body that
+// dies mid-read fails the call with ErrServerError after one request instead
+// of sending it again, and the body is closed.
+func TestBodyCutAfterSuccessIsNotRetried(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name string
+		call func(client *Client) error
+	}{
+		{name: "complete", call: func(client *Client) error {
+			_, err := client.Complete(context.Background(), llm.Request{Model: "m"})
+			return err
+		}},
+		{name: "images", call: func(client *Client) error {
+			_, err := client.GenerateImage(context.Background(), llm.ImageRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
+		{name: "speech", call: func(client *Client) error {
+			_, err := client.Speak(context.Background(), llm.SpeechRequest{Model: "m", Input: "hi", Voice: "v"})
+			return err
+		}},
+		{name: "decisions", call: func(client *Client) error {
+			_, err := client.Decide(context.Background(), llm.DecisionRequest{Model: "m", State: "s", Questions: map[string]llm.DecisionQuestion{"q": llm.NoulQuestion("q?")}})
+			return err
+		}},
+		{name: "models", call: func(client *Client) error {
+			_, err := client.Models(context.Background())
+			return err
+		}},
+		{name: "video_submit", call: func(client *Client) error {
+			_, err := client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
 	}
-	if response.Text != "ok" {
-		t.Errorf("text = %q, want ok", response.Text)
-	}
-	if transport.attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", transport.attempts)
-	}
-	if string(transport.bodies[0]) != string(transport.bodies[1]) {
-		t.Errorf("retry sent a different body:\n%s\n%s", transport.bodies[0], transport.bodies[1])
-	}
-	if !firstClosedAtRetry {
-		t.Error("first response body was still open when attempt two started")
-	}
-	if !second.closed {
-		t.Error("last response body was not closed")
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			transport, bodies := cutBodyTransport()
+			client, err := NewClient(&Options{APIKey: "k", BaseURL: "https://example.invalid/api/v1", HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if err := testCase.call(client); !errors.Is(err, llm.ErrServerError) {
+				t.Errorf("err = %v, want ErrServerError", err)
+			}
+			if transport.requests != 1 {
+				t.Errorf("requests = %d, want 1 (a 2xx is never retried)", transport.requests)
+			}
+			for _, body := range *bodies {
+				if !body.closed {
+					t.Error("response body was not closed")
+				}
+			}
+		})
 	}
 }
 
@@ -722,7 +775,7 @@ func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
 // ErrInvalidResponse, and not retried.
 func TestComplete_OversizedBodyIsNotRead(t *testing.T) {
 	t.Parallel()
-	transport := &recordingTransport{respond: func(int) *http.Response {
+	transport := &cannedTransport{respond: func(*http.Request) *http.Response {
 		return &http.Response{
 			StatusCode:    http.StatusOK,
 			ContentLength: maximumResponseBytes + 1,
@@ -737,8 +790,8 @@ func TestComplete_OversizedBodyIsNotRead(t *testing.T) {
 	if !errors.Is(err, llm.ErrInvalidResponse) {
 		t.Errorf("err = %v, want ErrInvalidResponse", err)
 	}
-	if transport.attempts != 1 {
-		t.Errorf("attempts = %d, want 1", transport.attempts)
+	if transport.requests != 1 {
+		t.Errorf("requests = %d, want 1", transport.requests)
 	}
 }
 

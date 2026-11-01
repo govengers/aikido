@@ -74,9 +74,13 @@ type Options struct {
 
 	// MaximumAttempts is the total number of HTTP attempts per call on 429, 5xx
 	// and network errors, on every path (Stream, Complete, transcription,
-	// images, speech, each video submit/poll/download request); the video
-	// submit retries on 429 only. 0 keeps the default of 3; 1 disables retry,
-	// for callers that run their own job-level retry. Negative is treated as 1.
+	// images, speech, decisions, models, each video submit/poll/download
+	// request); the video submit retries on 429 only. Only failures before a
+	// response status arrived, 429 and 5xx are retried: once a 2xx arrived the
+	// request is never sent again, so a body cut off mid-read (or a stream
+	// broken mid-way) fails the call with llm.ErrServerError instead of
+	// billing the work twice. 0 keeps the default of 3; 1 disables retry, for
+	// callers that run their own job-level retry. Negative is treated as 1.
 	MaximumAttempts int
 
 	// VideoPollInterval is how often GenerateVideo polls a running job.
@@ -262,23 +266,29 @@ func (c *Client) postJSON(ctx context.Context, path string, body []byte) ([]byte
 
 // do sends call with retry and returns the body and headers of the answer.
 // Every non-streaming endpoint shares it, so retry, headers and error
-// classification stay in one place. The body is read and closed inside the
-// attempt, so a body that dies mid-read retries like a 5xx; a body above
-// call.maximumBytes is llm.ErrInvalidResponse and is not retried.
+// classification stay in one place. Once an answer with call.wantStatus has
+// arrived the request is never sent again (RES-004): the work may already be
+// done and billed, so a body that dies mid-read fails the call with
+// llm.ErrServerError instead of retrying, and a body above call.maximumBytes
+// is llm.ErrInvalidResponse.
 func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, error) {
 	var (
-		raw    []byte
-		header http.Header
+		raw      []byte
+		header   http.Header
+		answered bool
 	)
 	policy := c.retryPolicy()
 	if call.shouldRetry != nil {
 		policy.ShouldRetry = call.shouldRetry
 	}
+	shouldRetry := policy.ShouldRetry
+	policy.ShouldRetry = func(err error) bool { return !answered && shouldRetry(err) }
 	err := retry.Do(ctx, policy, func(_ int) error {
 		response, err := c.send(ctx, call)
 		if err != nil {
 			return err
 		}
+		answered = true
 		defer response.Body.Close()
 		raw, err = readBounded(ctx, response, call.maximumBytes)
 		if err != nil {

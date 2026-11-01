@@ -23,7 +23,9 @@ import (
 // Options.MaximumAttempts; auth and bad-request errors short-circuit.
 // Content-filter aborts surface as ErrContentFiltered (either via a top-level
 // error envelope on the JSON body or via finish_reason="content_filter"), with
-// the partial Response (usage, finish reason) still returned. Network-layer
+// the partial Response (usage, finish reason) still returned; a
+// finish_reason="error" without an envelope is ErrServerError the same way,
+// with the partial text and tool calls. Network-layer
 // errors are mapped onto ErrServerError so CompleteWithRetry can apply the
 // same retry policy as CollectWithRetry; a cancelled ctx surfaces as the
 // context error.
@@ -77,11 +79,13 @@ func parseCompleteResponse(body []byte) (llm.Response, error) {
 	}
 	response.Usage = chunkUsage(&chunk)
 
-	// finish_reason="content_filter" without a top-level error envelope:
-	// surface as ErrContentFiltered so the same caller branch fires for both
-	// streaming and non-streaming.
-	if response.FinishReason == finishReasonContentFilter {
+	// A failure finish_reason without a top-level error envelope fails the
+	// call like it fails a stream, with the partial response and its usage.
+	switch response.FinishReason {
+	case finishReasonContentFilter:
 		return response, fmt.Errorf("openrouter finish_reason=content_filter: %w", llm.ErrContentFiltered)
+	case finishReasonError:
+		return response, fmt.Errorf("openrouter finish_reason=error: %w", llm.ErrServerError)
 	}
 	return response, nil
 }

@@ -50,7 +50,7 @@ From [voice/example_test.go](../../voice/example_test.go) (`ExamplePipeline_Run`
 | `SpeechConcurrency` | 2 | parallel synthesis calls; chunks still arrive in order |
 | `SpokenStyle` | none | appended to the system prompt for speech turns; `voice.DefaultSpokenStyle` asks for short plain sentences |
 
-`New` needs at least a `Transcriber` or a `Speech` generator. `Run(ctx, runner, input)` takes any `voice.Runner` (`*agent.Session` is one) and a `voice.Input{Text | Audio + ContentType, Language, Output}`; invalid input is refused up front with `llm.ErrInvalidRequest`. `voice.Speakable(markdown)` is what turns a reply into speakable text: code, URLs and markup dropped.
+`New` needs at least a `Transcriber` or a `Speech` generator. It copies the options, `Speed` and `Vocabulary` included, so changing them afterwards does not reach the Pipeline. `Run(ctx, runner, input)` takes any `voice.Runner` (`*agent.Session` is one) and a `voice.Input{Text | Audio + ContentType, Language, Output}`; invalid input is refused up front with `llm.ErrInvalidRequest`. `voice.Speakable(markdown)` is what turns a reply into speakable text: code, URLs and markup dropped.
 
 ## Events
 
@@ -78,7 +78,7 @@ Every `Run` ends with one `EventDone`, also once `ctx` is over (`EndReason` `can
 - `Session(request)` resolves the `voice.Runner` per request (auth, tenant, conversation); an error answers 400. Check authentication in a middleware in front for a 401. The handler restores a JSON body, so `Session` can decode extra fields from it again.
 - `ToolResult` picks what of a tool result reaches the client; the default sends no content.
 - `MaximumAudioBytes` (default 8 MiB, larger is 413) and `Timeout` (default 5 minutes). The turn runs detached from the request context, so a closed tab does not lose it.
-- `WriteTimeout` (default 30 s) caps writing and flushing one line. A client that does not take a line within it counts as gone: the handler stops writing and drains the turn to its end. It needs a `ResponseWriter` that supports `http.ResponseController.SetWriteDeadline` (net/http's does); without one lines are written without a cap.
+- `WriteTimeout` (default 30 s) caps writing and flushing one line. A client that does not take a line within it counts as gone: the handler stops writing and drains the turn to its end. It needs a `ResponseWriter` that supports `http.ResponseController.SetWriteDeadline` (net/http's does); without one lines are written without a cap. The deadline is cleared after each line, so a turn may wait longer than `WriteTimeout` for its next event (a long tool call) without the stream being reset. A wrapper without `Flush` (logging or gzip middleware without `Unwrap`) still gets every line, unflushed.
 - Input errors answer 4xx with `{"error": "..."}` before any line.
 
 Complete program: [examples/voicebot](../../examples/voicebot/main.go), a push-to-talk page over an embedded corpus.

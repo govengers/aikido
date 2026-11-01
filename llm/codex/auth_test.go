@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/retry"
 )
 
 // fakeJWT builds an unsigned access token with the claims the package reads.
@@ -404,9 +405,10 @@ func TestTokenSource_InterruptedRefreshIsNotReplayed(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err = client.Stream(context.Background(), llm.Request{Model: "gpt-5"})
-			if !errors.Is(err, ErrRefreshInterrupted) || !errors.Is(err, llm.ErrServerError) || refreshes.Load() != 1 {
-				t.Fatalf("Stream: err = %v after %d refreshes; want ErrRefreshInterrupted after exactly one", err, refreshes.Load())
+			// The retry helper must not replay it either: the error is not transient.
+			_, err = llm.CollectWithRetry(context.Background(), client, llm.Request{Model: "gpt-5"}, retry.Policy{MaximumAttempts: 3})
+			if !errors.Is(err, ErrRefreshInterrupted) || llm.IsTransientServerError(err) || refreshes.Load() != 1 {
+				t.Fatalf("CollectWithRetry: err = %v after %d refreshes; want a non-transient ErrRefreshInterrupted after exactly one", err, refreshes.Load())
 			}
 			_, err = source.Token(context.Background())
 			if !errors.Is(err, ErrReauthenticationRequired) || !strings.Contains(err.Error(), "after an interrupted one") {
