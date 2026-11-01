@@ -3,8 +3,11 @@ package osfs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/govengers/aikido/vfs"
@@ -107,6 +110,45 @@ func TestDirectoryIsNotAFile(t *testing.T) {
 	if err := storage.WriteFile(ctx, "folder", []byte("x"), ""); err == nil {
 		t.Error("WriteFile over a directory returned no error")
 	}
+}
+
+func TestWriteFileKeepsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows keeps only the read-only bit")
+	}
+	directory := t.TempDir()
+	storage := newStorage(t, directory)
+	ctx := context.Background()
+	for _, mode := range []fs.FileMode{0o600, 0o755} {
+		name := fmt.Sprintf("file-%o.sh", mode)
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("v1"), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(directory, name), mode); err != nil { // undo the umask
+			t.Fatal(err)
+		}
+		if err := storage.WriteFile(ctx, name, []byte("v2"), ""); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+		if got := fileMode(t, filepath.Join(directory, name)); got != mode {
+			t.Errorf("mode after replacing a %o file = %o; want %o", mode, got, mode)
+		}
+	}
+	if err := storage.WriteFile(ctx, "new.md", []byte("x"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileMode(t, filepath.Join(directory, "new.md")); got != newFileMode {
+		t.Errorf("mode of a new file = %o; want %o", got, newFileMode)
+	}
+}
+
+func fileMode(t *testing.T, filePath string) fs.FileMode {
+	t.Helper()
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
 }
 
 func TestUnknownExtensionIsOctetStream(t *testing.T) {

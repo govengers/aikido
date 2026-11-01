@@ -114,9 +114,10 @@ func (s *Storage) ReadFile(ctx context.Context, filePath string) ([]byte, vfs.Fi
 }
 
 // WriteFile atomically replaces filePath with content, creating parent
-// directories as needed. The content type is ignored (see the package
-// comment). It returns an error matching vfs.ErrPathInvalid for an invalid
-// path.
+// directories as needed. A replaced file keeps its permission bits; a new
+// file gets 0644 (not reduced by the umask). The content type is ignored (see
+// the package comment). It returns an error matching vfs.ErrPathInvalid for
+// an invalid path.
 func (s *Storage) WriteFile(ctx context.Context, filePath string, content []byte, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -131,7 +132,7 @@ func (s *Storage) WriteFile(ctx context.Context, filePath string, content []byte
 		}
 	}
 	temporaryPath := path.Join(directory, "."+path.Base(filePath)+".tmp-"+rand.Text())
-	if err := s.writeNewFile(temporaryPath, content); err != nil {
+	if err := s.writeNewFile(temporaryPath, content, s.modeFor(filePath)); err != nil {
 		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", filePath, err)
 	}
 	if err := s.root.Rename(temporaryPath, filePath); err != nil {
@@ -160,14 +161,31 @@ func (s *Storage) DeleteFile(ctx context.Context, filePath string) error {
 	return nil
 }
 
-// writeNewFile creates filePath, which must not exist yet, and writes content;
-// on failure it removes the partial file.
-func (s *Storage) writeNewFile(filePath string, content []byte) error {
-	file, err := s.root.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+// newFileMode is the permission of a file WriteFile creates.
+const newFileMode fs.FileMode = 0o644
+
+// modeFor returns the permission bits WriteFile gives filePath: those of the
+// regular file it replaces, newFileMode for anything else.
+func (s *Storage) modeFor(filePath string) fs.FileMode {
+	info, err := s.root.Stat(filePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return newFileMode
+	}
+	return info.Mode().Perm()
+}
+
+// writeNewFile creates filePath, which must not exist yet, owner-only, writes
+// content and then sets mode, so no other user can open it in between; on
+// failure it removes the partial file.
+func (s *Storage) writeNewFile(filePath string, content []byte, mode fs.FileMode) error {
+	file, err := s.root.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	_, writeError := file.Write(content)
+	if writeError == nil {
+		writeError = file.Chmod(mode)
+	}
 	if err := errors.Join(writeError, file.Close()); err != nil {
 		_ = s.root.Remove(filePath) // best-effort cleanup; the write error is what the caller needs
 		return err
