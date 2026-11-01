@@ -8,4 +8,8 @@
 // Backends: vfs/memory (in-process, searchable), vfs/osfs (a directory on
 // disk) and vfs/embedfs (any fs.FS, read-only, searchable). Other backends are
 // caller-implemented and verified with vfs/vfstest.RunConformance.
+//
+// Composition: vfs/overlay keeps writes and deletes in memory over any base
+// until Commit (with Changes and UnifiedDiff for review), and vfs/mount
+// combines several backends by path prefix.
 package vfs

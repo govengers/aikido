@@ -361,7 +361,7 @@ res, _ := client.Complete(ctx, llm.Request{Model: "gpt-5.5", Messages: msgs, Res
 
 Keep one `TokenSource` per login and process, and do not share a login with the Codex CLI (`codex.ParseAuthJSON` reads its `auth.json`): a refresh token used twice revokes the login, surfacing as `codex.ErrReauthRequired`.
 
-Five runnable examples under [`examples/`](examples/): `chat-oneshot`, `image-generation`, `agent-vfs`, `chatbot`, `voicebot` (push-to-talk web page over `voice.Handler`).
+Six runnable examples under [`examples/`](examples/): `chat-oneshot`, `image-generation`, `agent-vfs`, `agent-overlay` (an agent edits a real directory, you review the diff before it is written), `chatbot`, `voicebot` (push-to-talk web page over `voice.Handler`).
 
 ## CLI
 
