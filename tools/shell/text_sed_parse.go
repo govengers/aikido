@@ -400,13 +400,11 @@ func (p *sedScriptParser) compileRegex(pattern string, ignoreCase, multiline boo
 	if pattern == "" {
 		return &sedRegex{}, nil
 	}
-	translated, err := translatePOSIX(pattern, regexOptions{extended: p.extended, sedEscapes: true})
-	if err == nil && multiline {
-		translated = "(?m)" + translated
-	}
+	options := regexOptions{extended: p.extended, sedEscapes: true, multiline: multiline, ignoreCase: ignoreCase}
+	translated, err := translatePOSIX(pattern, options)
 	var compiled *regexp.Regexp
 	if err == nil {
-		compiled, err = compileGo(translated, ignoreCase, true)
+		compiled, err = compileGo(translated, options)
 	}
 	var problem *regexError
 	if errors.As(err, &problem) {

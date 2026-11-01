@@ -26,6 +26,10 @@ var reviewCases = []scriptCase{
 	{name: "sed tab in a bracket", script: `printf 'a\tb\n' | sed 's/[\t]/T/'`, want: "aTb\n"},
 	{name: "sed other backslash in a bracket", script: `printf 'a\\b\n' | sed 's/[\\]/S/'`, want: "aSb\n"},
 	{name: "grep backslash n in a bracket", script: `printf 'n\n' | grep '[\n]'`, want: "n\n"},
+	{name: "sed M flag dot stops at newline", script: `printf 'a\nb\n' | sed 'N;s/a.*/X/M'`, want: "X\nb\n"},
+	{name: "sed M flag negated bracket", script: `printf 'a\nb\n' | sed 'N;s/a[^x]*/X/M'`, want: "X\nb\n"},
+	{name: "sed M flag anchors", script: `printf 'a\nb\n' | sed 'N;s/^b$/B/M'`, want: "a\nB\n"},
+	{name: "sed without M dot spans newline", script: `printf 'a\nb\n' | sed 'N;s/a.*/X/'`, want: "X\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 

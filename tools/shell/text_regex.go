@@ -18,6 +18,13 @@ type regexOptions struct {
 	// sedEscapes turns \t \n \r \f \v \a into the control characters, as GNU
 	// sed does; grep reads \t as "t".
 	sedEscapes bool
+	// multiline is sed's M flag: ^ and $ also match around a newline, and
+	// neither "." nor a negated bracket matches one (GNU's REG_NEWLINE).
+	multiline bool
+	ignoreCase bool
+	// leftmostFirst picks Perl's first alternative (grep -P) instead of
+	// POSIX's longest match.
+	leftmostFirst bool
 }
 
 // regexError is a pattern GNU's regcomp refuses; the message is regcomp's.
@@ -36,21 +43,25 @@ var (
 // limit (GNU allows 32767).
 const maximumRepetition = 1000
 
-// compileGo compiles Go regexp syntax; "." matches a newline like in POSIX.
-// Go matches text as UTF-8, so a pattern with other bytes is refused.
-func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error) {
+// compileGo compiles Go regexp syntax with the flags of options; "."
+// matches a newline like in POSIX unless options.multiline. Go matches text
+// as UTF-8, so a pattern with other bytes is refused.
+func compileGo(pattern string, options regexOptions) (*regexp.Regexp, error) {
 	if !utf8.ValidString(pattern) {
 		return nil, &regexError{"pattern is not valid UTF-8"}
 	}
-	flags := "(?s)"
-	if ignoreCase {
-		flags = "(?si)"
+	flags := "s"
+	if options.multiline {
+		flags = "m"
 	}
-	compiled, err := regexp.Compile(flags + pattern)
+	if options.ignoreCase {
+		flags += "i"
+	}
+	compiled, err := regexp.Compile("(?" + flags + ")" + pattern)
 	if err != nil {
 		return nil, &regexError{"Invalid regular expression"}
 	}
-	if longest {
+	if !options.leftmostFirst {
 		compiled.Longest()
 	}
 	return compiled, nil
@@ -433,6 +444,9 @@ func (t *posixTranslator) bracket() error {
 	class.WriteString("[")
 	if t.position < len(t.pattern) && t.pattern[t.position] == '^' {
 		class.WriteString("^")
+		if t.options.multiline {
+			class.WriteString(`\n`)
+		}
 		t.position++
 	}
 	hasClass := false

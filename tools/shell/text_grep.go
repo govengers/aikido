@@ -309,14 +309,14 @@ func newGrepMatcher(settings *grepSettings) (*grepMatcher, error) {
 	if settings.line {
 		combined = "^(?:" + combined + ")$"
 	}
-	longest := settings.syntax != grepPerl
-	regex, err := compileGo(combined, settings.ignoreCase, longest)
+	flags := regexOptions{ignoreCase: settings.ignoreCase, leftmostFirst: settings.syntax == grepPerl}
+	regex, err := compileGo(combined, flags)
 	if err != nil {
 		return nil, err
 	}
 	matcher := &grepMatcher{regex: regex, word: settings.word && !settings.line}
 	if matcher.word {
-		if matcher.whole, err = compileGo("^(?:"+combined+")$", settings.ignoreCase, longest); err != nil {
+		if matcher.whole, err = compileGo("^(?:"+combined+")$", flags); err != nil {
 			return nil, err
 		}
 	}
