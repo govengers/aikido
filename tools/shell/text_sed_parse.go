@@ -684,8 +684,9 @@ func parseReplacement(text string) []replacementPart {
 			flush()
 			parts = append(parts, replacementPart{kind: replaceCase, caseOperation: escaped})
 		default:
-			if control, ok := sedControlEscapes[escaped]; ok {
-				literal.WriteByte(control)
+			if value, consumed, ok := sedEscape(text[index:]); ok {
+				literal.WriteByte(value)
+				index += consumed - 1
 			} else {
 				literal.WriteByte(escaped)
 			}
@@ -729,8 +730,9 @@ func unescapeTranslation(text string) string {
 			continue
 		}
 		index++
-		if control, ok := sedControlEscapes[text[index]]; ok {
-			output.WriteByte(control)
+		if value, consumed, ok := sedEscape(text[index:]); ok {
+			output.WriteByte(value)
+			index += consumed - 1
 			continue
 		}
 		if text[index] != '\\' {

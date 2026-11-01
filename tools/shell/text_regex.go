@@ -202,22 +202,80 @@ func (t *posixTranslator) escape() error {
 			}
 			return errBackReferenceUnsupported
 		}
-		t.atom(t.escapedLiteral(character))
+		t.atom(t.escapedLiteral())
 	}
 	return nil
 }
 
-// escapedLiteral is the Go form of an escaped ordinary character.
-func (t *posixTranslator) escapedLiteral(character byte) string {
+// escapedLiteral is the Go form of an escaped ordinary character; position
+// is just past character.
+func (t *posixTranslator) escapedLiteral() string {
 	if t.options.sedEscapes {
-		if control, ok := sedControlEscapes[character]; ok {
-			return regexp.QuoteMeta(string(control))
+		if value, consumed, ok := sedEscape(t.pattern[t.position-1:]); ok {
+			t.position += consumed - 1
+			return regexp.QuoteMeta(string([]byte{value}))
 		}
 	}
 	return regexp.QuoteMeta(t.literalAt(t.position - 1))
 }
 
 var sedControlEscapes = map[byte]byte{'t': '\t', 'r': '\r', 'f': '\f', 'v': '\v', 'a': '\a', 'n': '\n'}
+
+// sedEscape decodes an escape GNU sed reads in a regex, a replacement and a
+// y set: \a \f \n \r \t \v, \cX (control-X), \dNNN (decimal), \oNNN
+// (octal) and \xHH (hexadecimal). text starts after the backslash;
+// consumed counts the bytes of text the escape uses, ok is false for any
+// other escape.
+func sedEscape(text string) (byte, int, bool) {
+	if text == "" {
+		return 0, 0, false
+	}
+	if control, ok := sedControlEscapes[text[0]]; ok {
+		return control, 1, true
+	}
+	switch text[0] {
+	case 'c':
+		if len(text) < 2 {
+			return 0, 0, false
+		}
+		letter := text[1]
+		if letter >= 'a' && letter <= 'z' {
+			letter -= 'a' - 'A'
+		}
+		return letter ^ 0x40, 2, true
+	case 'd':
+		return sedNumberEscape(text, 10, 3)
+	case 'o':
+		return sedNumberEscape(text, 8, 3)
+	case 'x':
+		return sedNumberEscape(text, 16, 2)
+	}
+	return 0, 0, false
+}
+
+// sedNumberEscape reads up to width digits of base after the escape letter;
+// a value above 255 keeps its low byte, as GNU's char conversion does.
+func sedNumberEscape(text string, base, width int) (byte, int, bool) {
+	end := 1
+	for end < len(text) && end <= width && strings.IndexByte("0123456789abcdef"[:base], lowerASCII(text[end])) >= 0 {
+		end++
+	}
+	if end == 1 {
+		return 0, 0, false
+	}
+	value, err := strconv.ParseUint(text[1:end], base, 16)
+	if err != nil {
+		return 0, 0, false
+	}
+	return byte(value), end, true //nolint:gosec // G115: GNU keeps the low byte of \d999 as well
+}
+
+func lowerASCII(character byte) byte {
+	if character >= 'A' && character <= 'Z' {
+		return character + 'a' - 'A'
+	}
+	return character
+}
 
 // basicOperator handles the escaped operators of a BRE: \( \) \| \{ \+ \?.
 func (t *posixTranslator) basicOperator(character byte) (bool, error) {
