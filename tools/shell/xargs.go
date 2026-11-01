@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 )
@@ -16,11 +15,11 @@ const (
 )
 
 func xargsCommand() Command {
-	return Command{
+	return boundedInput(Command{
 		Name:    "xargs",
 		Summary: "run a command with arguments from stdin (-0 -d delim -n N -L N -I {} -r -t; -P accepted, runs one at a time)",
 		Run:     runXargs,
-	}
+	})
 }
 
 // xargsPlan is one xargs invocation: how input splits and how commands
@@ -46,7 +45,7 @@ func runXargs(ctx context.Context, invocation *Invocation) error {
 		complain(invocation, "xargs", "%v", err)
 		return errFailed
 	}
-	input, err := io.ReadAll(invocation.Stdin)
+	input, err := readBounded(invocation.Stdin)
 	if err != nil {
 		return err
 	}

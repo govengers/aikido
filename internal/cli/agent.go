@@ -23,7 +23,10 @@ const defaultAgentSystemPrompt = "You are a focused assistant working in a virtu
 const workerSystemPrompt = "You are an autonomous agent working unattended in the repository that is your " +
 	"workspace. Nobody answers questions during the run: decide from the repository's instructions below, " +
 	"use your tools to inspect and change files and to run commands, and finish the task end to end. " +
-	"Never claim a check you did not run."
+	"When the repository prescribes a template or format (reports, journal lines, generated files), " +
+	"reproduce it exactly: every heading of the template in its order, writing \"none\" under a heading " +
+	"that has nothing to say. Before you answer, do the repository's completion steps (for example commit " +
+	"and push) and check that they succeeded. Never claim a check you did not run."
 
 // maximumLoggedArgumentBytes keeps a tool call's arguments to one readable line.
 const maximumLoggedArgumentBytes = 200

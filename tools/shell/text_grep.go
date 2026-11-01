@@ -2,10 +2,10 @@ package shell
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"strconv"
@@ -133,17 +133,28 @@ type grepSettings struct {
 	quiet, noMessages          bool
 	lineNumbers                bool
 	// filenames: 0 automatic, 1 -H, -1 -h.
-	filenames                      int
-	listing                        grepListing
-	maximum                        int
-	before, after                  int
-	recursive                      bool
-	includes, excludes, excludeDir []string
-	text, skipBinary               bool
+	filenames     int
+	listing       grepListing
+	maximum       int
+	before, after int
+	// context says -A, -B or -C was given, even with 0: groups are then
+	// separated by "--".
+	context    bool
+	recursive  bool
+	excludeDir []string
+	// fileRules are --include and --exclude in command-line order.
+	fileRules        []grepFileRule
+	text, skipBinary bool
 	// nullNames (-Z) ends a printed file name with a NUL byte instead of
 	// ":" or a newline; nullData (-z) makes NUL the line terminator of
 	// input and output.
 	nullNames, nullData bool
+}
+
+// grepFileRule is one --include (include) or --exclude glob.
+type grepFileRule struct {
+	pattern string
+	include bool
 }
 
 func runGrep(ctx context.Context, invocation *Invocation) error {
@@ -163,6 +174,10 @@ func runGrep(ctx context.Context, invocation *Invocation) error {
 		}
 		settings.patterns = strings.Split(operands[0], "\n")
 		operands = operands[1:]
+	}
+	if settings.maximum == 0 {
+		// GNU stops before reading anything: no output, status 1.
+		return ExitError(1)
 	}
 	if err := settings.readPatternFiles(ctx, invocation); err != nil {
 		return err
@@ -212,6 +227,7 @@ func parseGrepSettings(invocation *Invocation, options []parsedOption) (grepSett
 			if err != nil || value < 0 {
 				return settings, grepTool.fatal(invocation, 2, "%s: invalid context length argument", option.value)
 			}
+			settings.context = true
 			switch option.key {
 			case "before-context":
 				settings.before = value
@@ -221,9 +237,9 @@ func parseGrepSettings(invocation *Invocation, options []parsedOption) (grepSett
 				contextLines = value
 			}
 		case "include":
-			settings.includes = append(settings.includes, option.value)
+			settings.fileRules = append(settings.fileRules, grepFileRule{pattern: option.value, include: true})
 		case "exclude":
-			settings.excludes = append(settings.excludes, option.value)
+			settings.fileRules = append(settings.fileRules, grepFileRule{pattern: option.value})
 		case "exclude-dir":
 			settings.excludeDir = append(settings.excludeDir, option.value)
 		}
@@ -295,9 +311,7 @@ func (s *grepSettings) readPatternFiles(ctx context.Context, invocation *Invocat
 // grepMatcher decides which lines match and where.
 type grepMatcher struct {
 	// regex is nil when there are no patterns at all (an empty -f file).
-	regex *regexp.Regexp
-	// whole matches a candidate that must be a complete match, for -w.
-	whole *regexp.Regexp
+	regex *posixRegexp
 	word  bool
 }
 
@@ -306,41 +320,31 @@ func newGrepMatcher(settings *grepSettings) (*grepMatcher, error) {
 	if len(settings.patterns) == 0 {
 		return &grepMatcher{}, nil
 	}
-	alternatives := make([]string, 0, len(settings.patterns))
+	parts := make([]translation, 0, len(settings.patterns))
 	for _, pattern := range settings.patterns {
 		translated, err := translateGrepPattern(pattern, settings)
 		if err != nil {
 			return nil, err
 		}
-		alternatives = append(alternatives, "(?:"+translated+")")
+		parts = append(parts, translated)
 	}
-	combined := strings.Join(alternatives, "|")
+	combined := alternatives(parts)
 	if settings.line {
-		combined = "^(?:" + combined + ")$"
+		combined.pattern = "^(?:" + combined.pattern + ")$"
 	}
-	longest := settings.syntax != grepPerl
-	regex, err := compileGo(combined, settings.ignoreCase, longest)
+	regex, err := compilePOSIX(combined, regexOptions{ignoreCase: settings.ignoreCase, leftmostFirst: settings.syntax == grepPerl})
 	if err != nil {
 		return nil, err
 	}
-	matcher := &grepMatcher{regex: regex, word: settings.word && !settings.line}
-	if matcher.word {
-		if matcher.whole, err = compileGo("^(?:"+combined+")$", settings.ignoreCase, longest); err != nil {
-			return nil, err
-		}
-	}
-	return matcher, nil
+	return &grepMatcher{regex: regex, word: settings.word && !settings.line}, nil
 }
 
-func translateGrepPattern(pattern string, settings *grepSettings) (string, error) {
+func translateGrepPattern(pattern string, settings *grepSettings) (translation, error) {
 	switch settings.syntax {
 	case grepFixed:
-		return regexp.QuoteMeta(pattern), nil
+		return translation{pattern: regexp.QuoteMeta(pattern)}, nil
 	case grepPerl:
-		if _, err := regexp.Compile(pattern); err != nil {
-			return "", &regexError{"Invalid regular expression"}
-		}
-		return pattern, nil
+		return literalTranslation(pattern)
 	case grepExtended:
 		return translatePOSIX(pattern, regexOptions{extended: true, grepQuirks: true})
 	default:
@@ -349,28 +353,28 @@ func translateGrepPattern(pattern string, settings *grepSettings) (string, error
 }
 
 // matches reports whether line contains a match.
-func (m *grepMatcher) matches(line string) bool {
+func (m *grepMatcher) matches(ctx context.Context, line string) bool {
 	if m.regex == nil {
 		return false
 	}
 	if !m.word {
-		return m.regex.MatchString(line)
+		return m.regex.matchString(ctx, line)
 	}
-	return len(m.wordMatches(line, false)) > 0
+	return len(m.wordMatches(ctx, line, false)) > 0
 }
 
 // find returns the non-empty matches in line, for -o.
-func (m *grepMatcher) find(line string) [][]int {
+func (m *grepMatcher) find(ctx context.Context, line string) [][]int {
 	if m.regex == nil {
 		return nil
 	}
 	if m.word {
-		return m.wordMatches(line, true)
+		return m.wordMatches(ctx, line, true)
 	}
 	var found [][]int
-	for _, location := range m.regex.FindAllStringIndex(line, -1) {
+	for _, location := range m.regex.findAll(ctx, line) {
 		if location[1] > location[0] {
-			found = append(found, location)
+			found = append(found, location[:2])
 		}
 	}
 	return found
@@ -378,20 +382,22 @@ func (m *grepMatcher) find(line string) [][]int {
 
 // wordMatches finds matches that have no word character on either side,
 // trying shorter matches at the same start and then later starts, as GNU
-// grep -w does.
-// ponytail: later starts search a suffix of the line, so ^ and \b see the
-// cut as the line start; GNU keeps the context.
-func (m *grepMatcher) wordMatches(line string, all bool) [][]int {
+// grep -w does; every attempt sees the whole line as context.
+func (m *grepMatcher) wordMatches(ctx context.Context, line string, all bool) [][]int {
 	var found [][]int
 	for start := 0; start <= len(line); {
-		location := m.regex.FindStringIndex(line[start:])
+		location := m.regex.findFrom(ctx, line, start)
 		if location == nil {
 			break
 		}
-		begin, end := start+location[0], start+location[1]
-		matchedEnd := m.wordEnd(line, begin, end)
+		begin, end := location[0], location[1]
+		next := begin + 1
+		if begin < len(line) {
+			next = begin + runeLength(line[begin:])
+		}
+		matchedEnd := m.wordEnd(ctx, line, begin, end)
 		if matchedEnd < 0 {
-			start = begin + 1
+			start = next
 			continue
 		}
 		if matchedEnd > begin {
@@ -402,22 +408,25 @@ func (m *grepMatcher) wordMatches(line string, all bool) [][]int {
 		if !all {
 			return found
 		}
-		start = max(matchedEnd, begin+1)
+		start = max(matchedEnd, next)
 	}
 	return found
 }
 
 // wordEnd is the longest end at or before end where line[begin:end] is a
 // whole match with non-word characters around it, or -1.
-func (m *grepMatcher) wordEnd(line string, begin, end int) int {
+func (m *grepMatcher) wordEnd(ctx context.Context, line string, begin, end int) int {
 	if begin > 0 && isWordByte(line[begin-1]) {
 		return -1
 	}
 	for candidate := end; candidate >= begin; candidate-- {
+		if ctx.Err() != nil {
+			return -1
+		}
 		if candidate < len(line) && isWordByte(line[candidate]) {
 			continue
 		}
-		if candidate == end || m.whole.MatchString(line[begin:candidate]) {
+		if candidate == end || m.regex.matchesExactly(line, begin, candidate) {
 			return candidate
 		}
 	}
@@ -560,23 +569,20 @@ func (g *grepSearcher) expandOperand(ctx context.Context, operand string, implic
 	return inputs, isDirectory, nil
 }
 
-// excluded applies --include and --exclude to a file's base name.
+// excluded applies --include and --exclude to a file's base name like GNU:
+// the last matching option decides; when none matches, the file is skipped
+// only if the first option is an --include.
 func (g *grepSearcher) excluded(name string) bool {
-	base := path.Base(name)
-	for _, pattern := range g.settings.excludes {
-		if matched, _ := path.Match(pattern, base); matched {
-			return true
+	return excludedByRules(g.settings.fileRules, path.Base(name))
+}
+
+func excludedByRules(rules []grepFileRule, base string) bool {
+	for index := len(rules) - 1; index >= 0; index-- {
+		if matched, _ := path.Match(rules[index].pattern, base); matched {
+			return !rules[index].include
 		}
 	}
-	if len(g.settings.includes) == 0 {
-		return false
-	}
-	for _, pattern := range g.settings.includes {
-		if matched, _ := path.Match(pattern, base); matched {
-			return false
-		}
-	}
-	return true
+	return len(rules) > 0 && rules[0].include
 }
 
 // excludedDirectory applies --exclude-dir to every directory of a path
@@ -606,7 +612,7 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	if input.stdin {
 		name = "-"
 	}
-	content, err := readOperand(ctx, g.invocation, name)
+	reader, err := openOperand(ctx, g.invocation, name)
 	if reason, ok := operandReason(err); ok {
 		g.complain("%s: %s", input.name, reason)
 		return false, true, nil
@@ -614,58 +620,96 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	if err != nil {
 		return false, false, err
 	}
-	// With -z a NUL byte ends a line, so it does not make the file binary.
-	binary := !g.settings.text && !g.settings.nullData && bytes.IndexByte(content, 0) >= 0
+	lines := newLineReader(reader)
+	if g.settings.nullData {
+		lines.terminator = 0
+	}
+	// With -z a NUL byte ends a line, so it does not make the input binary.
+	binary := !g.settings.text && !g.settings.nullData && lines.startsBinary()
 	if binary && g.settings.skipBinary {
 		return false, false, nil
 	}
-	lines := splitRecords(string(content), g.lineEnd())
-	return g.searchLines(input.name, lines, binary), false, nil
+	found, err := g.searchLines(ctx, input.name, lines, binary)
+	return found, false, err
 }
 
 // grepScan is the state of searching one file.
 type grepScan struct {
 	name string
-	// printLines is false in -c, -l, -L and -q modes and for binary files.
-	printLines     bool
-	selected       int
-	lastPrinted    int
-	afterRemaining int
+	// printsLines is false in -c, -l, -L and -q modes; printLines also
+	// for a binary file.
+	printsLines, printLines bool
+	binary                  bool
+	selected                int
+	lastPrinted             int
+	afterRemaining          int
+	// recent are the last lines not selected, for -B.
+	recent []grepLine
+	// stop ends the search of the file (-q, -l, -m, a binary match).
+	stop bool
 }
 
-// searchLines prints the selected lines of one file in the chosen mode and
-// reports whether any line was selected.
-func (g *grepSearcher) searchLines(name string, lines []string, binary bool) bool {
-	settings := g.settings
-	printsLines := !settings.quiet && !settings.count && settings.listing == listNone
-	scan := &grepScan{name: name, printLines: printsLines && !binary, lastPrinted: -1}
-	for index, text := range lines {
-		if settings.maximum >= 0 && scan.selected >= settings.maximum {
-			if !g.trailingContext(scan, index, text) {
-				break
-			}
-			continue
+// grepLine is a line with its 0-based index.
+type grepLine struct {
+	index int
+	text  string
+}
+
+// searchLines streams the lines of one file, prints the selected ones in
+// the chosen mode and reports whether any line was selected. It stops
+// reading as soon as the answer is known (-q, -l, -m).
+func (g *grepSearcher) searchLines(ctx context.Context, name string, lines *lineReader, binary bool) (bool, error) {
+	printsLines := !g.settings.quiet && !g.settings.count && g.settings.listing == listNone
+	scan := &grepScan{name: name, printsLines: printsLines, printLines: printsLines && !binary, binary: binary, lastPrinted: -1}
+	for index := 0; !scan.stop; index++ {
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
-		if g.matcher.matches(text) == settings.invert {
-			g.trailingContext(scan, index, text)
-			continue
-		}
-		scan.selected++
-		if settings.quiet || settings.listing != listNone && !settings.count {
+		text, _, err := lines.next()
+		if errors.Is(err, io.EOF) {
 			break
 		}
-		if binary && printsLines {
-			g.binaryMatches(name)
-			break
+		if err != nil {
+			return false, err
 		}
-		if scan.printLines {
-			g.printBefore(scan, lines, index)
-			g.printSelected(scan, index, text)
-			scan.afterRemaining = settings.after
+		if !scan.binary && !g.settings.text && strings.IndexByte(text, 0) >= 0 {
+			// A NUL after the first buffer makes the rest binary, as in GNU.
+			scan.binary, scan.printLines = true, false
 		}
+		g.scanLine(ctx, scan, grepLine{index: index, text: text})
 	}
 	g.printSummary(name, scan.selected)
-	return scan.selected > 0
+	return scan.selected > 0, nil
+}
+
+// scanLine decides one line: selected, context or nothing.
+func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) {
+	settings := g.settings
+	if settings.maximum >= 0 && scan.selected >= settings.maximum {
+		scan.stop = !g.trailingContext(scan, line.index, line.text)
+		return
+	}
+	if g.matcher.matches(ctx, line.text) == settings.invert {
+		if !g.trailingContext(scan, line.index, line.text) && settings.before > 0 {
+			scan.recent = append(scan.recent, line)
+			if len(scan.recent) > settings.before {
+				scan.recent = scan.recent[1:]
+			}
+		}
+		return
+	}
+	scan.selected++
+	switch {
+	case settings.quiet || settings.listing != listNone && !settings.count:
+		scan.stop = true
+	case scan.binary && scan.printsLines:
+		g.binaryMatches(scan.name)
+		scan.stop = true
+	case scan.printLines:
+		g.printBefore(scan)
+		g.printSelected(ctx, scan, line.index, line.text)
+		scan.afterRemaining = settings.after
+	}
 }
 
 // trailingContext prints a line of -A context if one is due.
@@ -687,14 +731,17 @@ func (g *grepSearcher) binaryMatches(name string) {
 }
 
 // printBefore prints the -B context of a selected line.
-func (g *grepSearcher) printBefore(scan *grepScan, lines []string, index int) {
-	for context := max(index-g.settings.before, scan.lastPrinted+1); context < index; context++ {
-		g.printLine(scan, context, lines[context], '-')
+func (g *grepSearcher) printBefore(scan *grepScan) {
+	for _, line := range scan.recent {
+		if line.index > scan.lastPrinted {
+			g.printLine(scan, line.index, line.text, '-')
+		}
 	}
+	scan.recent = scan.recent[:0]
 }
 
 // printSelected prints a selected line, or its matches with -o.
-func (g *grepSearcher) printSelected(scan *grepScan, index int, text string) {
+func (g *grepSearcher) printSelected(ctx context.Context, scan *grepScan, index int, text string) {
 	if !g.settings.onlyMatches {
 		g.printLine(scan, index, text, ':')
 		return
@@ -702,19 +749,31 @@ func (g *grepSearcher) printSelected(scan *grepScan, index int, text string) {
 	if g.settings.invert {
 		return
 	}
-	for _, location := range g.matcher.find(text) {
+	g.startLine(scan, index)
+	for _, location := range g.matcher.find(ctx, text) {
 		g.printLine(scan, index, text[location[0]:location[1]], ':')
 	}
 }
 
-// printLine writes one output line with its prefixes, preceded by "--" when
-// it does not continue the previous group. Write errors surface at Flush.
-func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
-	var line strings.Builder
-	contextual := g.settings.before > 0 || g.settings.after > 0
-	if contextual && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) && !g.settings.onlyMatches {
-		line.WriteString("--\n")
+// startLine records line index as output, preceded by "--" when a context
+// option was given and the line does not continue the previous group. -o
+// suppresses the text of context lines, not their place in a group.
+func (g *grepSearcher) startLine(scan *grepScan, index int) {
+	if g.settings.context && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) {
+		fmt.Fprint(g.output, "--\n")
 	}
+	scan.lastPrinted = index
+	g.printedLines = true
+}
+
+// printLine writes one output line with its prefixes. Write errors surface
+// at Flush.
+func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
+	g.startLine(scan, index)
+	if g.settings.onlyMatches && separator == '-' {
+		return
+	}
+	var line strings.Builder
 	if g.withFilename {
 		line.WriteString(scan.name)
 		line.WriteByte(g.nameEnd(separator))
@@ -726,8 +785,6 @@ func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separat
 	line.WriteString(text)
 	line.WriteByte(g.lineEnd())
 	fmt.Fprint(g.output, line.String())
-	scan.lastPrinted = index
-	g.printedLines = true
 }
 
 // printSummary prints the -c count and the -l / -L name of one file.
@@ -761,13 +818,4 @@ func (g *grepSearcher) lineEnd() byte {
 		return 0
 	}
 	return '\n'
-}
-
-// splitRecords splits text into records ended by terminator; the last one
-// may lack it.
-func splitRecords(text string, terminator byte) []string {
-	if text == "" {
-		return nil
-	}
-	return strings.Split(strings.TrimSuffix(text, string(terminator)), string(terminator))
 }

@@ -36,7 +36,7 @@ jq is a JSON processor (gojq inside; object keys print sorted).
 `
 
 func jqCommand() Command {
-	return Command{Name: "jq", Summary: "JSON processor (-r -j -c -n -s -e -R -S --tab --indent N --arg --argjson)", Run: runJq}
+	return Command{Name: "jq", Summary: "JSON processor (-r -j -c -n -s -e -R --tab --indent N --arg --argjson; object keys always sorted)", Run: runJq}
 }
 
 // jqSettings is a parsed jq command line.
@@ -215,6 +215,7 @@ func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSetti
 		names = []string{"-"}
 	}
 	var content bytes.Buffer
+	var budget inputBudget
 	for _, name := range names {
 		data, err := readOperand(ctx, invocation, name)
 		if reason, ok := operandReason(err); ok {
@@ -222,6 +223,9 @@ func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSetti
 			return nil, ExitError(2)
 		}
 		if err != nil {
+			return nil, err
+		}
+		if err := budget.charge(len(data)); err != nil {
 			return nil, err
 		}
 		content.Write(data)
@@ -345,24 +349,31 @@ type jqRunner struct {
 func (r *jqRunner) run(ctx context.Context) error {
 	if r.settings.nullInput {
 		r.apply(ctx, nil, "<unknown>")
-	} else {
-		for value, ok := r.inputs.Next(); ok; value, ok = r.inputs.Next() {
-			if problem, isParseError := value.(*jqParseError); isParseError {
-				r.flush()
-				fmt.Fprintf(r.invocation.Stderr, "jq: error (at %s): %s\n", r.inputs.location(true), problem.message)
-				r.status = 2
-				break
-			}
-			r.apply(ctx, value, "")
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-		}
+	} else if err := r.applyInputs(ctx); err != nil {
+		return err
 	}
 	if r.flush(); r.writeError != nil {
 		return r.writeError
 	}
 	return exitStatus(r.finalStatus())
+}
+
+// applyInputs runs the filter on each input until the inputs end, one is
+// not valid JSON, or the output is gone.
+func (r *jqRunner) applyInputs(ctx context.Context) error {
+	for value, ok := r.inputs.Next(); ok && r.writeError == nil; value, ok = r.inputs.Next() {
+		if problem, isParseError := value.(*jqParseError); isParseError {
+			r.flush()
+			fmt.Fprintf(r.invocation.Stderr, "jq: error (at %s): %s\n", r.inputs.location(true), problem.message)
+			r.status = 2
+			return nil
+		}
+		r.apply(ctx, value, "")
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finalStatus is the exit status, with -e judging the last output.
@@ -385,7 +396,7 @@ func (r *jqRunner) finalStatus() ExitError {
 func (r *jqRunner) apply(ctx context.Context, input any, location string) {
 	values := append([]any{input}, r.settings.variableValues...)
 	iterator := r.code.RunWithContext(ctx, values[0], values[1:]...)
-	for {
+	for r.writeError == nil {
 		value, ok := iterator.Next()
 		if !ok {
 			return
@@ -440,7 +451,14 @@ func (r *jqRunner) print(value any) {
 	if !r.settings.join {
 		r.output.WriteByte('\n')
 	}
+	if r.output.Len() >= jqFlushBytes {
+		r.flush()
+	}
 }
+
+// jqFlushBytes is how much output collects before it is written, so an
+// endless filter (jq -n 'repeat(1)') streams instead of growing.
+const jqFlushBytes = 64 << 10
 
 // encode writes value as jq does: pretty with the indent, or compact.
 func (r *jqRunner) encode(value any, depth int) {

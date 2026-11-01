@@ -160,7 +160,7 @@ func (d *differ) compareOperands(ctx context.Context, left, right string) (ExitE
 	if leftEntry.directory && rightEntry.directory {
 		return d.compareDirectories(ctx, left, right)
 	}
-	return d.compareFiles(leftEntry, rightEntry, false), nil
+	return d.compareFiles(ctx, leftEntry, rightEntry, false)
 }
 
 // load reads one operand; a missing file or a directory is not an error.
@@ -199,12 +199,12 @@ func (d *differ) modificationTime(ctx context.Context, resolved string) time.Tim
 
 // compareFiles prints the difference of two files and returns 1 when they
 // differ. inDirectory adds the "diff -r a b" line GNU prints there.
-func (d *differ) compareFiles(left, right diffEntry, inDirectory bool) ExitError {
+func (d *differ) compareFiles(ctx context.Context, left, right diffEntry, inDirectory bool) (ExitError, error) {
 	if bytes.Equal(left.content, right.content) {
 		if d.settings.reportIdentical {
 			fmt.Fprintf(&d.output, "Files %s and %s are identical\n", left.name, right.name)
 		}
-		return 0
+		return 0, nil
 	}
 	if d.settings.brief || bytes.IndexByte(left.content, 0) >= 0 || bytes.IndexByte(right.content, 0) >= 0 {
 		if d.settings.brief {
@@ -212,7 +212,7 @@ func (d *differ) compareFiles(left, right diffEntry, inDirectory bool) ExitError
 		} else {
 			fmt.Fprintf(&d.output, "Binary files %s and %s differ\n", left.name, right.name)
 		}
-		return 1
+		return 1, nil
 	}
 	if inDirectory {
 		d.output.WriteString(strings.Join(slices.DeleteFunc([]string{"diff", d.settings.switches, left.name, right.name}, func(part string) bool { return part == "" }), " ") + "\n")
@@ -220,7 +220,10 @@ func (d *differ) compareFiles(left, right diffEntry, inDirectory bool) ExitError
 	leftLines, leftTerminated := splitLines(string(left.content))
 	rightLines, rightTerminated := splitLines(string(right.content))
 	keyedLeft, keyedRight := keyLines(leftLines, leftTerminated), keyLines(rightLines, rightTerminated)
-	hunks := diffLines(keyedLeft, keyedRight)
+	hunks, err := diffLines(ctx, keyedLeft, keyedRight)
+	if err != nil {
+		return 0, err
+	}
 	printer := &diffPrinter{output: &d.output, left: leftLines, right: rightLines, leftTerminated: leftTerminated, rightTerminated: rightTerminated}
 	if d.settings.context >= 0 {
 		printer.unifiedHeader(left, right)
@@ -228,7 +231,7 @@ func (d *differ) compareFiles(left, right diffEntry, inDirectory bool) ExitError
 	} else {
 		printer.normal(hunks)
 	}
-	return 1
+	return 1, nil
 }
 
 // keyLines makes a last line without newline differ from the same text
@@ -302,7 +305,7 @@ func (d *differ) compareChild(ctx context.Context, left, right string, child dif
 		fmt.Fprintf(&d.output, "File %s is a %s while file %s is a %s\n", leftPath, kind[leftEntry.directory], rightPath, kind[rightEntry.directory])
 		return 1, nil
 	}
-	return d.compareFiles(leftEntry, rightEntry, true), nil
+	return d.compareFiles(ctx, leftEntry, rightEntry, true)
 }
 
 // children lists the names directly below a directory.

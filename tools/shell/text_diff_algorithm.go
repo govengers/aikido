@@ -1,5 +1,7 @@
 package shell
 
+import "context"
+
 // diffHunk is one change: lines [aStart, aEnd) of the old file become lines
 // [bStart, bEnd) of the new one, 0-based.
 type diffHunk struct {
@@ -8,8 +10,9 @@ type diffHunk struct {
 
 // diffLines computes a minimal line diff (Myers' O(ND) algorithm in linear
 // space) and slides each change like GNU diff, so ambiguous changes sit at
-// the same place as in GNU's output.
-func diffLines(oldLines, newLines []string) []diffHunk {
+// the same place as in GNU's output. The search, quadratic for files that
+// share little, stops with ctx's error.
+func diffLines(ctx context.Context, oldLines, newLines []string) ([]diffHunk, error) {
 	ids := map[string]int{}
 	identify := func(lines []string) []int {
 		result := make([]int, len(lines))
@@ -27,10 +30,13 @@ func diffLines(oldLines, newLines []string) []diffHunk {
 		a: identify(oldLines), b: identify(newLines),
 		changedA: make([]bool, len(oldLines)), changedB: make([]bool, len(newLines)),
 	}
-	comparison.compare(0, len(oldLines), 0, len(newLines))
+	comparison.compare(ctx, 0, len(oldLines), 0, len(newLines))
+	if comparison.err != nil {
+		return nil, comparison.err
+	}
 	shiftBoundaries(comparison.a, comparison.changedA, comparison.changedB)
 	shiftBoundaries(comparison.b, comparison.changedB, comparison.changedA)
-	return collectHunks(comparison.changedA, comparison.changedB)
+	return collectHunks(comparison.changedA, comparison.changedB), nil
 }
 
 // diffComparison marks the lines of a and b that are not in the common
@@ -38,10 +44,15 @@ func diffLines(oldLines, newLines []string) []diffHunk {
 type diffComparison struct {
 	a, b               []int
 	changedA, changedB []bool
+	// err is ctx's error once the search was stopped.
+	err error
 }
 
 // compare marks the changes between a[aLow:aHigh] and b[bLow:bHigh].
-func (c *diffComparison) compare(aLow, aHigh, bLow, bHigh int) {
+func (c *diffComparison) compare(ctx context.Context, aLow, aHigh, bLow, bHigh int) {
+	if c.err != nil {
+		return
+	}
 	for aLow < aHigh && bLow < bHigh && c.a[aLow] == c.b[bLow] {
 		aLow++
 		bLow++
@@ -54,13 +65,16 @@ func (c *diffComparison) compare(aLow, aHigh, bLow, bHigh int) {
 		c.markChanged(aLow, aHigh, bLow, bHigh)
 		return
 	}
-	splitOld, splitNew, ok := c.middleSnake(aLow, aHigh, bLow, bHigh)
+	splitOld, splitNew, ok := c.middleSnake(ctx, aLow, aHigh, bLow, bHigh)
+	if c.err != nil {
+		return
+	}
 	if !ok || (splitOld == aLow && splitNew == bLow) || (splitOld == aHigh && splitNew == bHigh) {
 		c.markChanged(aLow, aHigh, bLow, bHigh)
 		return
 	}
-	c.compare(aLow, splitOld, bLow, splitNew)
-	c.compare(splitOld, aHigh, splitNew, bHigh)
+	c.compare(ctx, aLow, splitOld, bLow, splitNew)
+	c.compare(ctx, splitOld, aHigh, splitNew, bHigh)
 }
 
 func (c *diffComparison) markChanged(aLow, aHigh, bLow, bHigh int) {
@@ -74,7 +88,7 @@ func (c *diffComparison) markChanged(aLow, aHigh, bLow, bHigh int) {
 
 // middleSnake finds a point on an optimal edit path between the two ranges
 // by searching from both ends until the paths meet.
-func (c *diffComparison) middleSnake(aLow, aHigh, bLow, bHigh int) (int, int, bool) {
+func (c *diffComparison) middleSnake(ctx context.Context, aLow, aHigh, bLow, bHigh int) (int, int, bool) {
 	oldLength, newLength := aHigh-aLow, bHigh-bLow
 	maximum := (oldLength + newLength + 1) / 2
 	search := &snakeSearch{
@@ -87,6 +101,10 @@ func (c *diffComparison) middleSnake(aLow, aHigh, bLow, bHigh int) (int, int, bo
 	}
 	search.forward[search.offset+1], search.backward[search.offset+1] = 0, 0
 	for depth := 0; depth <= maximum; depth++ {
+		if err := ctx.Err(); err != nil {
+			c.err = err
+			return 0, 0, false
+		}
 		if splitOld, splitNew, found := search.step(depth, true); found {
 			return splitOld, splitNew, true
 		}

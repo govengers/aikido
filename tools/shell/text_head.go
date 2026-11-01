@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -177,9 +176,9 @@ func headerName(name string) string {
 // all but the last count.
 func headInput(input io.Reader, output io.Writer, settings sliceOptions) error {
 	if settings.fromEnd {
-		content, err := io.ReadAll(input)
+		content, err := readBounded(input)
 		if err != nil {
-			return fmt.Errorf("read input: %w", err)
+			return err
 		}
 		end := len(content) - min(settings.count, len(content))
 		if !settings.bytes {
@@ -193,17 +192,20 @@ func headInput(input io.Reader, output io.Writer, settings sliceOptions) error {
 		}
 		return nil
 	}
-	reader := bufio.NewReader(input)
+	reader := newLineReader(input)
 	for written := 0; written < settings.count; written++ {
-		line, err := reader.ReadBytes('\n')
-		if writeErr := writeAll(output, line); writeErr != nil {
-			return writeErr
-		}
-		if err == io.EOF {
+		line, terminated, err := reader.next()
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("read input: %w", err)
+			return err
+		}
+		if terminated {
+			line += "\n"
+		}
+		if err := writeAll(output, []byte(line)); err != nil {
+			return err
 		}
 	}
 	return nil

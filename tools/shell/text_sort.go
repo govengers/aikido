@@ -81,6 +81,7 @@ func runSort(ctx context.Context, invocation *Invocation) error {
 		return err
 	}
 	var lines []string
+	var budget inputBudget
 	for _, name := range operandsOrStdin(line.operands) {
 		content, readErr := readOperand(ctx, invocation, name)
 		if reason, ok := operandReason(readErr); ok {
@@ -91,6 +92,9 @@ func runSort(ctx context.Context, invocation *Invocation) error {
 		}
 		if readErr != nil {
 			return readErr
+		}
+		if err := budget.charge(len(content)); err != nil {
+			return err
 		}
 		fileLines, _ := splitLines(string(content))
 		lines = append(lines, fileLines...)
@@ -475,12 +479,8 @@ func writeSorted(ctx context.Context, invocation *Invocation, settings sortSetti
 		}
 		return nil
 	}
-	resolved, err := Resolve(invocation.Directory, settings.output)
-	if err != nil || resolved == "" {
-		return sortTool.fatal(invocation, 2, "open failed: %s: %s", settings.output, reasonNoSuchFile)
-	}
-	if err := invocation.Storage.WriteFile(ctx, resolved, []byte(text), "text/plain"); err != nil {
-		return fmt.Errorf("write %s: %w", settings.output, err)
+	if err := storeOutput(ctx, invocation, settings.output, []byte(text)); err != nil {
+		return sortTool.fatal(invocation, 2, "open failed: %s: %v", settings.output, err)
 	}
 	return nil
 }

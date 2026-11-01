@@ -104,9 +104,10 @@ var grepCases = []textCase{
 	{name: "grep bad class", files: grepFiles, script: "grep '[[:foo:]]' a.txt", stderr: "grep: Invalid character class name\n", exit: 2},
 	{name: "grep trailing backslash", files: grepFiles, script: "grep 'a\\' a.txt", stderr: "grep: Trailing backslash\n", exit: 2},
 	{
-		name: "grep back reference", files: grepFiles, script: "grep '\\(fo\\)\\1' a.txt", stderr: "grep: Invalid back reference\n", exit: 2,
+		name: "grep back reference", files: grepFiles, script: "grep '\\(fo\\)\\1' a.txt", stderr: "grep: back-references are not supported by this grep/sed\n", exit: 2,
 		gnuSkip: "back-references are not supported (Go RE2); GNU matches them",
 	},
+	{name: "grep back reference to an open group", files: grepFiles, script: "grep '\\(a\\1\\)' a.txt", stderr: "grep: Invalid back reference\n", exit: 2},
 	{name: "grep bad context", files: grepFiles, script: "grep -A x a a.txt", stderr: "grep: x: invalid context length argument\n", exit: 2},
 	{name: "grep bad max count", files: grepFiles, script: "grep -m x a a.txt", stderr: "grep: invalid max count\n", exit: 2},
 	{name: "grep no pattern", script: "grep", stderr: "Usage: grep [OPTION]... PATTERNS [FILE]...\nTry 'grep --help' for more information.\n", exit: 2},
@@ -135,13 +136,13 @@ func TestTranslatePOSIX(t *testing.T) {
 		{`x$y`, regexOptions{}, `x\$y`},
 		{`a|b+`, regexOptions{}, `a\|b\+`},
 		{`(a|b)+`, regexOptions{extended: true}, `(a|b)+`},
-		{`\<w\>`, regexOptions{}, `\bw\b`},
+		{`\<w\>`, regexOptions{}, `\b()w\b()`},
 		{`a\tb`, regexOptions{sedEscapes: true}, "a\tb"},
 		{`a\tb`, regexOptions{}, `atb`},
 	} {
 		got, err := translatePOSIX(testCase.pattern, testCase.options)
-		if err != nil || got != testCase.want {
-			t.Errorf("translatePOSIX(%q) = %q, %v; want %q", testCase.pattern, got, err, testCase.want)
+		if err != nil || got.pattern != testCase.want {
+			t.Errorf("translatePOSIX(%q) = %q, %v; want %q", testCase.pattern, got.pattern, err, testCase.want)
 		}
 	}
 }

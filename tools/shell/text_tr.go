@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -255,8 +256,8 @@ func parseTrSet(text string, second bool, firstLength int) ([]byte, string) {
 		}
 	}
 	if fillAt >= 0 && firstLength > len(set) {
-		fill := strings.Repeat(string(set[fillAt]), firstLength-len(set)+1)
-		set = append(set[:fillAt], append([]byte(fill), set[fillAt+1:]...)...)
+		fill := bytes.Repeat(set[fillAt:fillAt+1], firstLength-len(set)+1)
+		set = append(set[:fillAt], append(fill, set[fillAt+1:]...)...)
 	}
 	return set, ""
 }
@@ -382,5 +383,5 @@ func parseTrRepeat(text string, second bool) (trToken, int, string) {
 	if repeat == 0 {
 		return trToken{character: character, fill: true}, consumed + end + 1, ""
 	}
-	return trToken{isGroup: true, expansion: []byte(strings.Repeat(string(character), int(repeat)))}, consumed + end + 1, ""
+	return trToken{isGroup: true, expansion: bytes.Repeat([]byte{character}, int(repeat))}, consumed + end + 1, ""
 }
