@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // sedUsage is printed for --help and, as GNU sed does, after a usage error.
@@ -521,13 +522,25 @@ func (e *sedEditor) simpleCommand(command *sedInstruction) {
 		name := e.currentFile
 		e.output.write(name, true)
 	case 'y':
-		e.patternSpace = strings.Map(func(character rune) rune {
-			if mapped, ok := command.translation[character]; ok {
-				return mapped
-			}
-			return character
-		}, e.patternSpace)
+		e.patternSpace = translateCharacters(e.patternSpace, command.translation)
 	}
+}
+
+// translateCharacters is y: characters in translation are replaced, every
+// other byte (also one that is not UTF-8) is kept as it is.
+func translateCharacters(text string, translation map[rune]rune) string {
+	var output strings.Builder
+	output.Grow(len(text))
+	for len(text) > 0 {
+		character, size := utf8.DecodeRuneInString(text)
+		if mapped, ok := translation[character]; ok && (character != utf8.RuneError || size > 1) {
+			output.WriteRune(mapped)
+		} else {
+			output.WriteString(text[:size])
+		}
+		text = text[size:]
+	}
+	return output.String()
 }
 
 // readInto is n and N: without a next line the cycle ends like in GNU sed,
@@ -702,7 +715,19 @@ func expandReplacement(text string, match []int, parts []replacementPart) string
 	var output strings.Builder
 	var mode, once byte
 	emit := func(piece string) {
-		for _, character := range piece {
+		if mode == 0 && once == 0 {
+			output.WriteString(piece)
+			return
+		}
+		for len(piece) > 0 {
+			character, size := utf8.DecodeRuneInString(piece)
+			if character == utf8.RuneError && size == 1 {
+				// A byte that is not UTF-8 passes through unchanged.
+				output.WriteByte(piece[0])
+				piece = piece[1:]
+				continue
+			}
+			piece = piece[size:]
 			switch mode {
 			case 'U':
 				character = unicode.ToUpper(character)

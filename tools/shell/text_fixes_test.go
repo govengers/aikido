@@ -56,6 +56,9 @@ var reviewCases = []scriptCase{
 	{name: "sed a backslash continues into the next -e", script: `seq 3 | sed -e '2a\' -e hello`, want: "1\n2\nhello\n3\n"},
 	{name: "sed a text continues into the next -e", script: `seq 2 | sed -e '1a foo\' -e bar`, want: "1\nfoo\nbar\n2\n"},
 	{name: "sed a backslash at the very end", script: `seq 1 | sed -e '1a\'`, want: "sed: -e expression #1, char 3: expected \\ after `a', `c' or `i'\n", status: 1},
+	{name: "sed -i keeps Latin-1 bytes", files: map[string]string{"f": "caf\xe9\n"}, script: `sed -i 's/.*/[&]/' f; base64 f`, want: "W2NhZuldCg==\n"},
+	{name: "sed case conversion keeps Latin-1 bytes", script: `printf 'caf\351\n' | sed 's/.*/\U&/' | base64`, want: "Q0FG6Qo=\n"},
+	{name: "sed y keeps Latin-1 bytes", script: `printf 'caf\351\n' | sed 'y/a/A/' | base64`, want: "Y0Fm6Qo=\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
