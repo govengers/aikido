@@ -44,6 +44,7 @@ func (s *session) parse(script, name string) (*syntax.File, error) {
 	}
 	s.noteFunctions(file)
 	s.substituteProcesses(file)
+	markRedirectLines(file)
 	return file, nil
 }
 

@@ -93,6 +93,20 @@ func TestHandlerPanicsDoNotCrash(t *testing.T) {
 	}
 }
 
+// TestRedirectErrorsCarryTheLine checks bash's "bash: line N: " in front of
+// a failed redirect (CI against GNU bash: "bash: line 1: r/: Is a
+// directory"), on the redirect's own line, and that a leading ~ still
+// expands.
+func TestRedirectErrorsCarryTheLine(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	script := "echo x > r/\nf=out\n{\n  cat <missing\n} 2>/dev/null; cat <missing\nbash -c 'echo y >/nope/x'\necho z > ~/f; cat ~/f"
+	want := "bash: line 1: r/: Is a directory\nbash: line 5: missing: No such file or directory\n" +
+		"bash: line 1: /nope/x: No such file or directory\nz\n"
+	if result := mustRun(t, shell, script); result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}
+
 // TestWrappedBuiltinsAreRewritten replays the review's wrapper bypasses:
 // every way to reach a builtin through command, builtin or exec gets the
 // rewrite a direct call gets (pwd -P resolved host symlinks; type and

@@ -159,7 +159,7 @@ func TestTmpIsCapped(t *testing.T) {
 	shell, _ := newTestShell(t, nil, nil)
 	shell.scratch = newScratchStorage(10)
 	result := mustRun(t, shell, "printf 123456 > /tmp/a && printf 12345 > /tmp/b; printf 1234 > /tmp/b; printf 123 > /tmp/a; rm /tmp/b; printf 1234567 > /tmp/c && cat /tmp/a /tmp/c")
-	if want := "bash: /tmp/b: No space left on device\n1231234567"; result.Output != want {
+	if want := "bash: line 1: /tmp/b: No space left on device\n1231234567"; result.Output != want {
 		t.Fatalf("output = %q, want %q", result.Output, want)
 	}
 }
@@ -362,11 +362,11 @@ func TestOverOverlayAndReadOnlyMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := mustRun(t, direct, "echo x > ref/new.md; rm ref/guide.md"); !strings.Contains(result.Output, "bash: ref/new.md: Read-only file system") || !strings.Contains(result.Output, "rm: cannot remove 'ref/guide.md': Read-only file system") {
+	if result := mustRun(t, direct, "echo x > ref/new.md; rm ref/guide.md"); !strings.Contains(result.Output, "bash: line 1: ref/new.md: Read-only file system") || !strings.Contains(result.Output, "rm: cannot remove 'ref/guide.md': Read-only file system") {
 		t.Fatalf("read-only mount output = %q", result.Output)
 	}
 	// The review's S12: the store failed at close, after && had decided.
-	if result := mustRun(t, direct, "echo x > ref/new.md && echo stored || echo failed; echo y >> ref/guide.md; echo $?"); result.Output != "bash: ref/new.md: Read-only file system\nfailed\nbash: ref/guide.md: Read-only file system\n1\n" {
+	if result := mustRun(t, direct, "echo x > ref/new.md && echo stored || echo failed; echo y >> ref/guide.md; echo $?"); result.Output != "bash: line 1: ref/new.md: Read-only file system\nfailed\nbash: line 1: ref/guide.md: Read-only file system\n1\n" {
 		t.Fatalf("a refused redirect: %q", result.Output)
 	}
 }
@@ -445,7 +445,7 @@ func TestRedirectStoreIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := mustRun(t, shell, "echo x > f; echo after")
-	if result.Output != "bash: f: Connection timed out\nafter\n" {
+	if result.Output != "bash: line 1: f: Connection timed out\nafter\n" {
 		t.Fatalf("output = %q", result.Output)
 	}
 }
@@ -490,7 +490,7 @@ func TestMountPoint(t *testing.T) {
 	result := mustRun(t, shell, "cat tmp/keep.txt; cd /; cd /work; cd ..; ls /; cat /etc/passwd; echo x > /work/x; pwd")
 	want := "keep\nbash: line 1: cd: /: No such file or directory\nbash: line 1: cd: /work: No such file or directory\n" +
 		"bash: line 1: cd: ..: No such file or directory\nls: cannot access '/': No such file or directory\n" +
-		"cat: /etc/passwd: No such file or directory\nbash: /work/x: No such file or directory\n/work/repo\n"
+		"cat: /etc/passwd: No such file or directory\nbash: line 1: /work/x: No such file or directory\n/work/repo\n"
 	if result.Output != want {
 		t.Fatalf("outside the mount point: %q; want %q", result.Output, want)
 	}

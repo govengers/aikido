@@ -530,9 +530,45 @@ func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.Han
 }
 
 // pathError is how a handler reports a file error: the interpreter prints
-// it as "bash: name: reason".
-func pathError(name string, err error) error {
-	return &os.PathError{Op: "bash:", Path: name, Err: describe(err)}
+// it as "<prefix>name: reason", prefix being "bash: " or "bash: line N: ".
+func pathError(prefix, name string, err error) error {
+	return &os.PathError{Op: strings.TrimSuffix(prefix, " "), Path: name, Err: describe(err)}
+}
+
+// redirectLineMarker separates a redirect's word from the line number
+// markRedirectLines appends. The interpreter cuts words at a NUL byte, so
+// the marker starts with a byte that is never valid UTF-8 instead; a script
+// that spells it only changes a message.
+const redirectLineMarker = "\xffline="
+
+// markRedirectLines appends the line of every file redirect to its word:
+// the interpreter gives the open handler no position, and bash's message
+// for a failed redirect starts with "bash: line N: ". The marker goes at the
+// end so a leading ~ still expands; open takes it off again.
+func markRedirectLines(file *syntax.File) {
+	syntax.Walk(file, func(node syntax.Node) bool {
+		redirect, ok := node.(*syntax.Redirect)
+		if !ok || redirect.Word == nil {
+			return true
+		}
+		switch redirect.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrAll, syntax.AppAll, syntax.ClbOut, syntax.RdrInOut:
+			end := redirect.Word.End()
+			line := strconv.FormatUint(uint64(redirect.OpPos.Line()), 10)
+			redirect.Word.Parts = append(redirect.Word.Parts, &syntax.Lit{ValuePos: end, ValueEnd: end, Value: redirectLineMarker + line})
+		}
+		return true
+	})
+}
+
+// redirectName splits a redirect name marked by markRedirectLines into
+// bash's message prefix and the name itself.
+func redirectName(marked string) (prefix, name string) {
+	index := strings.LastIndex(marked, redirectLineMarker)
+	if index < 0 {
+		return "bash: ", marked
+	}
+	return "bash: line " + marked[index+len(redirectLineMarker):] + ": ", marked[:index]
 }
 
 // open is the interpreter's open handler for redirects and source. Reads get
@@ -541,9 +577,10 @@ func pathError(name string, err error) error {
 func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (_ io.ReadWriteCloser, err error) {
 	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
+	prefix, name := redirectName(name)
 	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
 	if err != nil {
-		return nil, pathError(name, errNotFound)
+		return nil, pathError(prefix, name, errNotFound)
 	}
 	if isDevice(resolved) {
 		return openDevice(resolved, flag, handler)
@@ -552,18 +589,18 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 	case os.O_RDONLY:
 		content, err := readFile(ctx, s.files(), resolved)
 		if err != nil {
-			return nil, pathError(name, err)
+			return nil, pathError(prefix, name, err)
 		}
 		return pipeReader(content)
 	case os.O_WRONLY:
-		file, err := s.openForWriting(ctx, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+		file, err := s.openForWriting(ctx, prefix, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
 		if err != nil {
 			return nil, err
 		}
 		targets.add(file)
 		return file, nil
 	}
-	return nil, pathError(name, errUnsupported)
+	return nil, pathError(prefix, name, errUnsupported)
 }
 
 // openForWriting opens a redirect target like bash: ">" truncates the file
@@ -571,31 +608,31 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 // read-only mount) fails the redirect before the command runs and before
 // && or || decide. The returned file collects what is written and stores
 // it on Close.
-func (s *session) openForWriting(ctx context.Context, name, resolved string, appending bool, stderr io.Writer) (*bufferedFile, error) {
+func (s *session) openForWriting(ctx context.Context, prefix, name, resolved string, appending bool, stderr io.Writer) (*bufferedFile, error) {
 	files := s.files()
 	if err := files.checkWritable(ctx, resolved); err != nil {
-		return nil, pathError(name, err)
+		return nil, pathError(prefix, name, err)
 	}
 	if strings.HasSuffix(name, "/") {
 		// "out/" names a directory: bash cannot open it as a file.
 		if found, err := files.stat(ctx, resolved); err == nil && found.kind == entryFile {
-			return nil, pathError(name, errNotDirectory)
+			return nil, pathError(prefix, name, errNotDirectory)
 		}
-		return nil, pathError(name, errIsDirectory)
+		return nil, pathError(prefix, name, errIsDirectory)
 	}
-	file := &bufferedFile{name: name, stderr: stderr}
+	file := &bufferedFile{label: prefix + name, stderr: stderr}
 	if appending {
 		content, _, err := files.storage.ReadFile(ctx, resolved)
 		switch {
 		case err == nil:
 			file.content = content
 		case !errors.Is(err, vfs.ErrFileNotFound):
-			return nil, pathError(name, err)
+			return nil, pathError(prefix, name, err)
 		}
 	}
 	contentType := contentTypeFor(resolved)
 	if err := files.storage.WriteFile(ctx, resolved, file.content, contentType); err != nil {
-		return nil, pathError(name, err)
+		return nil, pathError(prefix, name, err)
 	}
 	// A script that timed out still stores what it wrote, as bash would
 	// have, but a Storage that hangs cannot hold the shell past

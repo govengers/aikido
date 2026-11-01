@@ -72,13 +72,13 @@ func TestFileCommandCases(t *testing.T) {
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
 				"cp: failed to access 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
-				"touch: cannot touch 'a.txt/': Not a directory\nbash: c/: Is a directory\nbash: a.txt/: Not a directory\n" +
+				"touch: cannot touch 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Not a directory\n" +
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},
 		{name: "cat /dev/stdin", files: files, script: "echo piped | cat /dev/stdin", want: "piped\n"},
 		{name: "redirect to /dev/stdout and /dev/stderr", files: files, script: "echo out > /dev/stdout; echo err > /dev/stderr", want: "out\nerr\n"},
-		{name: "redirect read of a directory", files: files, script: "cat < dir", want: "bash: dir: Is a directory\n", status: 1},
+		{name: "redirect read of a directory", files: files, script: "cat < dir", want: "bash: line 1: dir: Is a directory\n", status: 1},
 		{name: "find -exec with a missing command", files: files, script: "find a.txt -exec nosuch {} \\;; echo $?", want: "find: 'nosuch': No such file or directory\n0\n"},
 		{name: "find -exec + failing", files: files, script: "find a.txt -exec false {} +; echo $?", want: "1\n"},
 		{name: "find -delete a directory", files: files, script: "find dir -delete; ls", want: "a.txt\n"},

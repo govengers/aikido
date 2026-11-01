@@ -174,7 +174,7 @@ func TestHideHiddenPaths(t *testing.T) {
 	files := map[string]string{".env": "SECRET=1\n", ".git/config": "[core]\n", "_private/notes": "SECRET\n", "src/a.go": "package a\n"}
 	shell, storage := newTestShell(t, files, &Options{HideHiddenPaths: true})
 	result := mustRun(t, shell, "ls -A; cat .env; find . | sort; echo hook > .git/hooks/pre-commit; grep -r SECRET .; echo $?; echo *; cd .git; echo x > /tmp/.scratch && cat /tmp/.scratch")
-	want := "src\ncat: .env: No such file or directory\n.\n./src\n./src/a.go\nbash: .git/hooks/pre-commit: No such file or directory\n1\nsrc\n" +
+	want := "src\ncat: .env: No such file or directory\n.\n./src\n./src/a.go\nbash: line 1: .git/hooks/pre-commit: No such file or directory\n1\nsrc\n" +
 		"bash: line 1: cd: .git: No such file or directory\nx\n"
 	if result.Output != want {
 		t.Fatalf("output = %q, want %q", result.Output, want)

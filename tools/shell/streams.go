@@ -45,8 +45,9 @@ func pipeReader(content []byte) (*os.File, error) {
 // failed store is reported on stderr here. Safe for concurrent writes (a
 // background job and the script may share a redirect).
 type bufferedFile struct {
-	mutex   sync.Mutex
-	name    string
+	mutex sync.Mutex
+	// label starts a message about the file: "bash: line N: name".
+	label   string
 	content []byte
 	commit  func(content []byte) error
 	stderr  io.Writer
@@ -76,7 +77,7 @@ func (f *bufferedFile) Close() error {
 	}
 	f.closed = true
 	if err := f.commit(f.content); err != nil {
-		fmt.Fprintf(f.stderr, "bash: %s: %v\n", f.name, describe(err))
+		fmt.Fprintf(f.stderr, "%s: %v\n", f.label, describe(err))
 		return err
 	}
 	return nil
