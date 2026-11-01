@@ -270,6 +270,9 @@ func gnuRunner(t *testing.T) func(*testing.T, string) {
 			runOrFail(t, exec.CommandContext(t.Context(), "bash", filepath.Join(directory, "run.sh")), directory)
 		}
 	}
+	if os.Getenv(dockerReferenceVariable) == "" {
+		t.Skipf("no GNU tools on the host; set %s=1 to compare in Docker", dockerReferenceVariable)
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("no GNU tools on the host and no docker")
 	}

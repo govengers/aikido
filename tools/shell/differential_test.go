@@ -82,6 +82,11 @@ const dockerProbeTimeout = 15 * time.Second
 // referenceTimeout bounds one batch of reference runs.
 const referenceTimeout = 5 * time.Minute
 
+// dockerReferenceVariable opts into the GNU reference in Docker when the host
+// has no GNU tools (macOS). Off by default: a wedged Docker daemon would stall
+// every test run, and CI on Linux has GNU tools natively.
+const dockerReferenceVariable = "AIKIDO_GNU_DOCKER"
+
 // differentialBashVariable names a GNU bash to use as the host reference
 // even without GNU tools (macOS with Homebrew bash): only meaningful for the
 // shell-semantics cases, the file commands are then the host's BSD ones.
@@ -95,6 +100,9 @@ var detectBackend = sync.OnceValue(func() differentialBackend {
 		if bash, err := exec.LookPath("bash"); err == nil {
 			return differentialBackend{kind: backendHost, bash: bash}
 		}
+	}
+	if os.Getenv(dockerReferenceVariable) == "" {
+		return differentialBackend{kind: backendNone}
 	}
 	for _, image := range differentialImages {
 		if exec.Command("docker", "image", "inspect", image).Run() != nil {
