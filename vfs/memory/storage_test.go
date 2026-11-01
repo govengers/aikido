@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxcd/aikido/vfs"
+	"github.com/govengers/aikido/vfs"
 )
 
 func TestConformance(t *testing.T) {

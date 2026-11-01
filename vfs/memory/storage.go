@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mxcd/aikido/vfs"
+	"github.com/govengers/aikido/vfs"
 )
 
 type fileEntry struct {

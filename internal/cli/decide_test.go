@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
 )
 
 func TestDecideCommand_BuildsQuestionsAndPrintsAnswers(t *testing.T) {

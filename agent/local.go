@@ -1,7 +1,7 @@
 package agent
 
 import (
-	historymem "github.com/mxcd/aikido/agent/history/memory"
+	historymem "github.com/govengers/aikido/agent/history/memory"
 )
 
 // NewLocalSession is a convenience constructor for single-replica deployments

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // Registry holds tool definitions and their handlers.

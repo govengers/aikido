@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/llm"
 )
 
 // RunConformance executes the standard suite against a History factory.

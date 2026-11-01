@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // TestUsageAccounting_RequestedOnBothPaths pins the wire contract that makes

@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/agent/history/memory"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/agent/history/memory"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/tools"
 )
 
 func newTestHandler(t *testing.T, stt, chat llm.Client, maxBytes int64) (*Handler, func() []llm.Message) {

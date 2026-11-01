@@ -7,7 +7,7 @@ import (
 	"mime"
 	"strings"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // Compile-time conformance for the optional speech capability.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/openrouter"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
 
 	urfavecli "github.com/urfave/cli/v3"
 )

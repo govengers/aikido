@@ -20,8 +20,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/llm"
 )
 
 // DefaultSpeechModel and DefaultVoice are used when Options name none.

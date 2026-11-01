@@ -96,7 +96,7 @@ func RunConformance(t *testing.T, factory func() Storage)
 ```go
 package memory
 
-import "github.com/mxcd/aikido/vfs"
+import "github.com/govengers/aikido/vfs"
 
 type Storage struct{ /* fields described in "Internal types" below */ }
 
@@ -392,7 +392,7 @@ Per REFERENCE-CODE.md Q8, `Storage.WriteFile` and `Storage.DeleteFile` both call
 ### Exit criteria
 
 - [ ] `vfs/memory/storage_test.go` passes — `RunConformance` green across all sub-tests.
-- [ ] `go doc github.com/mxcd/aikido/vfs` reads as a complete reference: every method has a one-paragraph godoc; every exported error is documented; `TxStorage` and `Tx` doc-comments explain the capability pattern (not just what they are).
+- [ ] `go doc github.com/govengers/aikido/vfs` reads as a complete reference: every method has a one-paragraph godoc; every exported error is documented; `TxStorage` and `Tx` doc-comments explain the capability pattern (not just what they are).
 - [ ] `go test ./vfs/...` produces no race warnings (`-race` clean).
 - [ ] `Write_RejectsInvalidPath` is green — confirms defense-in-depth wired through.
 - [ ] No new third-party dependencies beyond the `uuid` already brought in by W1.
@@ -437,10 +437,10 @@ import (
     "time"
 
     "github.com/google/uuid"
-    "github.com/mxcd/aikido/llm"
-    "github.com/mxcd/aikido/notes"
-    "github.com/mxcd/aikido/tools"
-    "github.com/mxcd/aikido/vfs"
+    "github.com/govengers/aikido/llm"
+    "github.com/govengers/aikido/notes"
+    "github.com/govengers/aikido/tools"
+    "github.com/govengers/aikido/vfs"
 )
 
 type Options struct {
@@ -564,7 +564,7 @@ The one nuance: `NewAgent(nil)` and `NewAgent(opts with nil Client)` etc. return
        "errors"
        "sync/atomic"
 
-       "github.com/mxcd/aikido/llm"
+       "github.com/govengers/aikido/llm"
    )
 
    // StubClient is a scriptable llm.Client. Tests construct one with a
@@ -1619,9 +1619,9 @@ import (
     "time"
 
     "github.com/google/uuid"
-    "github.com/mxcd/aikido/llm"
-    "github.com/mxcd/aikido/tools"
-    "github.com/mxcd/aikido/vfs"
+    "github.com/govengers/aikido/llm"
+    "github.com/govengers/aikido/tools"
+    "github.com/govengers/aikido/vfs"
 )
 
 type Options struct {
@@ -2072,7 +2072,7 @@ The repo has a top-level `README.md` (created in W0). It includes a "Status" sec
 aikido v0.1.0 was tagged on dd.MM.yyyy. The library is now usable; pin against
 the tag in `go.mod`:
 
-    go get github.com/mxcd/aikido@v0.1.0
+    go get github.com/govengers/aikido@v0.1.0
 
 This is a minimum-viable-shape release. The v1 surface (per [docs/v1/API.md](docs/v1/API.md))
 is locked; future v1 patches are additive and backwards-compatible.
@@ -2104,16 +2104,16 @@ Annotated tag (`-a`) so the commit object carries the message; lightweight tags 
 ```sh
 mkdir /tmp/aikido-tag-check && cd /tmp/aikido-tag-check
 go mod init throwaway
-go list -m github.com/mxcd/aikido@v0.1.0
+go list -m github.com/govengers/aikido@v0.1.0
 ```
 
 Expected output:
 
 ```
-github.com/mxcd/aikido v0.1.0
+github.com/govengers/aikido v0.1.0
 ```
 
-If it returns `module github.com/mxcd/aikido: ...` errors, the proxy hasn't picked the tag up yet — wait 60s and retry. If it persists past 5 minutes, check that the tag is annotated and pushed (`git ls-remote --tags origin v0.1.0` should show a SHA).
+If it returns `module github.com/govengers/aikido: ...` errors, the proxy hasn't picked the tag up yet — wait 60s and retry. If it persists past 5 minutes, check that the tag is annotated and pushed (`git ls-remote --tags origin v0.1.0` should show a SHA).
 
 Then a final import sanity check:
 
@@ -2122,8 +2122,8 @@ cat > main.go <<'EOF'
 package main
 import (
     "fmt"
-    _ "github.com/mxcd/aikido/llm"
-    _ "github.com/mxcd/aikido/agent"
+    _ "github.com/govengers/aikido/llm"
+    _ "github.com/govengers/aikido/agent"
 )
 func main() { fmt.Println("aikido imports clean") }
 EOF

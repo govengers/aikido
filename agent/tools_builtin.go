@@ -10,9 +10,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/tools"
-	"github.com/mxcd/aikido/vfs"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs"
 )
 
 func readFileDef() llm.ToolDef {

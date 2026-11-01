@@ -10,7 +10,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // ErrStubExhausted is returned by Stream when no scripts remain.

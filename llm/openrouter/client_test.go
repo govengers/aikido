@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // loadFixture reads an SSE transcript from testdata/.

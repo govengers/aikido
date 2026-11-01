@@ -85,7 +85,7 @@ import (
     "context"
     "errors"
     "sync"
-    "github.com/mxcd/aikido/llm"
+    "github.com/govengers/aikido/llm"
 )
 
 // StubClient is a scriptable llm.Client. Each Stream call dequeues one turn
@@ -155,7 +155,7 @@ No Go tests in W0. The smoke check is "`just check` exits 0 on a fresh clone" an
 
 ### W1 — `llm` types
 
-Package: `github.com/mxcd/aikido/llm`. File: `llm/llm_test.go` (single file fine for W1; split when it crosses ~400 lines).
+Package: `github.com/govengers/aikido/llm`. File: `llm/llm_test.go` (single file fine for W1; split when it crosses ~400 lines).
 
 | Test | Tests that... |
 |------|---------------|
@@ -176,7 +176,7 @@ Package: `github.com/mxcd/aikido/llm`. File: `llm/llm_test.go` (single file fine
 
 ### W2 — `llm/openrouter` non-streaming via `Stream`
 
-Package: `github.com/mxcd/aikido/llm/openrouter`. Files: `client_test.go`, `modelid_test.go`.
+Package: `github.com/govengers/aikido/llm/openrouter`. Files: `client_test.go`, `modelid_test.go`.
 
 | Test | Tests that... |
 |------|---------------|
@@ -196,7 +196,7 @@ Package: `github.com/mxcd/aikido/llm/openrouter`. Files: `client_test.go`, `mode
 
 ### W3 — `llm/openrouter` streaming + tool-call assembly + retry
 
-Package: `github.com/mxcd/aikido/llm/openrouter`. Plus `github.com/mxcd/aikido/internal/sseparse`.
+Package: `github.com/govengers/aikido/llm/openrouter`. Plus `github.com/govengers/aikido/internal/sseparse`.
 
 | Test | Tests that... |
 |------|---------------|
@@ -226,7 +226,7 @@ Package: `github.com/mxcd/aikido/llm/openrouter`. Plus `github.com/mxcd/aikido/i
 
 ### W4 — `tools` registry
 
-Package: `github.com/mxcd/aikido/tools`. Files: `registry_test.go`, `schema_test.go`, `schema_reflect_test.go`.
+Package: `github.com/govengers/aikido/tools`. Files: `registry_test.go`, `schema_test.go`, `schema_reflect_test.go`.
 
 | Test | Tests that... |
 |------|---------------|
@@ -256,7 +256,7 @@ Package: `github.com/mxcd/aikido/tools`. Files: `registry_test.go`, `schema_test
 
 ### W5 — `vfs` interface + memory impl + conformance suite
 
-Package: `github.com/mxcd/aikido/vfs` (suite + path validation), `github.com/mxcd/aikido/vfs/memory` (impl + run conformance).
+Package: `github.com/govengers/aikido/vfs` (suite + path validation), `github.com/govengers/aikido/vfs/memory` (impl + run conformance).
 
 The conformance suite is the bulk of W5. It is in `vfs/conformance.go` (not `_test.go`) and is invoked from `vfs/memory/memory_test.go` via `vfs.RunConformance(t, factory)`. Subtest names below are the names that show up in `go test -v` output.
 
@@ -340,7 +340,7 @@ The conformance suite **skips** `Tx_*` subtests if the supplied factory does not
 
 ### W6 — `agent` core
 
-Package: `github.com/mxcd/aikido/agent`. Plus `internal/testutil`. Files: `agent_test.go`, `run_test.go`, `safety_test.go`.
+Package: `github.com/govengers/aikido/agent`. Plus `internal/testutil`. Files: `agent_test.go`, `run_test.go`, `safety_test.go`.
 
 | Test | Tests that... |
 |------|---------------|
@@ -378,7 +378,7 @@ Package: `github.com/mxcd/aikido/agent`. Plus `internal/testutil`. Files: `agent
 
 ### W7 — VFS-aware built-in tools
 
-Package: `github.com/mxcd/aikido/agent` (built-in tool handlers). File: `tools_builtin_test.go`.
+Package: `github.com/govengers/aikido/agent` (built-in tool handlers). File: `tools_builtin_test.go`.
 
 Per-tool: 1 happy path + 1 invalid-path + 1 not-found + tool-specific edge cases. Tested directly against the handler with a `tools.Env` that uses `vfs/memory`, then end-to-end via stub-driven agent.
 
@@ -421,7 +421,7 @@ Per-tool: 1 happy path + 1 invalid-path + 1 not-found + tool-specific edge cases
 
 ### W8 — `notes` package
 
-Package: `github.com/mxcd/aikido/notes`. Files: `notebook_test.go`, `tools_test.go`.
+Package: `github.com/govengers/aikido/notes`. Files: `notebook_test.go`, `tools_test.go`.
 
 | Test | Tests that... |
 |------|---------------|
@@ -654,7 +654,7 @@ clean:
     rm -f coverage.out coverage.html
 
 doc:
-    @echo "Open http://localhost:6060/pkg/github.com/mxcd/aikido/"
+    @echo "Open http://localhost:6060/pkg/github.com/govengers/aikido/"
     godoc -http=:6060
 ```
 
@@ -780,7 +780,7 @@ Pre-tag-v0.1.0 sanity check. Run on a clean shell with current `main` checked ou
 ### Setup
 
 ```sh
-cd ~/github.com/mxcd/aikido
+cd ~/github.com/govengers/aikido
 git checkout main
 git pull
 just check                          # Step 0: CI must already be green locally

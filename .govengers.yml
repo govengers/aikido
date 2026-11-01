@@ -1,0 +1,8 @@
+# govengers/standards profile (README "Profiles"). Every exception names the rule and why.
+profile: library
+exceptions:
+  - rule: DES-001
+    reason: >-
+      agent.NewLocalSession is agent.NewSession with the in-process History and Locker filled in for
+      single-replica use (ADR-014, ADR-024). It takes the same *SessionOptions and returns the same errors;
+      every other component follows DES-001.

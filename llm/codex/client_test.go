@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 func newClient(t *testing.T, h http.HandlerFunc) *Client {

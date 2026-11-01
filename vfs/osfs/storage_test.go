@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mxcd/aikido/vfs"
+	"github.com/govengers/aikido/vfs"
 )
 
 func newStorage(t *testing.T, dir string) *Storage {

@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/retry"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/retry"
 )
 
 // DefaultBaseURL is OpenRouter's API root.

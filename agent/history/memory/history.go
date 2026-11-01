@@ -8,7 +8,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // History is the in-memory implementation.

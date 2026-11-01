@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/retry"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/retry"
 )
 
 // retryPolicy returns the policy every HTTP call path uses. It only retries

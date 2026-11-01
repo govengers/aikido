@@ -21,7 +21,7 @@ import (
 
 	"os"
 
-	"github.com/mxcd/aikido/vfs"
+	"github.com/govengers/aikido/vfs"
 )
 
 // Storage is the local-disk implementation. Close it when done.

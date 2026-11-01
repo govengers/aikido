@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // jsonHandler returns an http.HandlerFunc that writes the given JSON bytes
@@ -537,7 +537,7 @@ func TestComplete_WireContract(t *testing.T) {
 	c, err := NewClient(&Options{
 		APIKey:      "sk-test",
 		BaseURL:     srv.URL,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido CLI",
 	})
 	if err != nil {
@@ -565,7 +565,7 @@ func TestComplete_WireContract(t *testing.T) {
 		if got := h.Get("Authorization"); got != "Bearer sk-test" {
 			t.Errorf("attempt %d Authorization = %q", i, got)
 		}
-		if got := h.Get("HTTP-Referer"); got != "https://github.com/mxcd/aikido" {
+		if got := h.Get("HTTP-Referer"); got != "https://github.com/govengers/aikido" {
 			t.Errorf("attempt %d HTTP-Referer = %q", i, got)
 		}
 		if got := h.Get("X-Title"); got != "aikido CLI" {

@@ -7,10 +7,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/tools"
-	vfsmem "github.com/mxcd/aikido/vfs/memory"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/tools"
+	vfsmem "github.com/govengers/aikido/vfs/memory"
 
 	urfavecli "github.com/urfave/cli/v3"
 )

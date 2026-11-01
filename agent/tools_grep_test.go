@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	vfsmem "github.com/mxcd/aikido/vfs/memory"
+	vfsmem "github.com/govengers/aikido/vfs/memory"
 )
 
 func seeded(t *testing.T, opts VFSToolOptions, files map[string]string) *VFSToolOptions {

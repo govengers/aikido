@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
 )
 
 var bathroomVocabulary = &llm.Vocabulary{

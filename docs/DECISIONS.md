@@ -11,7 +11,7 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 **Context.** aikido is a library plus, eventually, a CLI binary. A multi-module repo (separate `go.mod` for `cmd/aikido`) avoids forcing library consumers to download cobra and friends. A single-module repo halves release friction.
 
-**Decision.** Single `go.mod` at the repo root. The CLI binary, when it lands in v2, lives under `cmd/aikido/`. Go's per-package dependency tracking ensures library consumers who only import `github.com/mxcd/aikido/llm` (etc.) do not transitively pull cobra.
+**Decision.** Single `go.mod` at the repo root. The CLI binary, when it lands in v2, lives under `cmd/aikido/`. Go's per-package dependency tracking ensures library consumers who only import `github.com/govengers/aikido/llm` (etc.) do not transitively pull cobra.
 
 **Consequences.** One version tag covers everything. The `cmd/aikido` directory is built only by `go build ./cmd/aikido`; library users never see it. If we ever publish the CLI separately (e.g., via Homebrew with its own version cadence), we can split into multi-module then — Go modules handle this gracefully.
 

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mxcd/aikido/retry"
+	"github.com/govengers/aikido/retry"
 )
 
 // Float32 returns a pointer to v.

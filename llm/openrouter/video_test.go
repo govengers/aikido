@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // fakeMP4 is the smallest byte string http.DetectContentType calls video/mp4.

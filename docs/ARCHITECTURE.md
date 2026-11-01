@@ -5,7 +5,7 @@ How aikido fits together. Read [README.md](README.md) for the elevator pitch and
 ## Package map
 
 ```
-github.com/mxcd/aikido/
+github.com/govengers/aikido/
 ├── llm/                          # provider-agnostic types + Client interface
 │   ├── openrouter/               # first provider implementation (with inline SSE parser)
 │   └── llmtest/                  # public test helpers — StubClient, canned scripts
@@ -244,7 +244,7 @@ session, _ := agent.NewLocalSession(&agent.SessionOptions{
 events, _ := session.Run(ctx, "Make a notes file with three facts about Go.")
 ```
 
-Every constructor takes `*Options` and returns `(*X, error)`. Options carry only the fields that constructor needs; defaults are applied inside the constructor. No init() side effects, no environment reads — callers do that themselves (typically via `mxcd/go-config`).
+Every constructor takes `*Options` and returns `(*X, error)`. Options carry only the fields that constructor needs; defaults are applied inside the constructor. No init() side effects, no environment reads — callers do that themselves (typically via `govengers/config`).
 
 For multi-tenant backends, the caller binds scope at registration time:
 

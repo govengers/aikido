@@ -13,7 +13,7 @@ aikido is small, opinionated, and meant to stay that way. Read [DECISIONS.md](DE
 **Bootstrap:**
 
 ```sh
-git clone https://github.com/mxcd/aikido
+git clone https://github.com/govengers/aikido
 cd aikido
 just check        # vet + lint + test
 ```

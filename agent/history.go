@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // History is the pluggable conversation-history interface (ADR-014).

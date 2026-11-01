@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
 )
 
 var fakePNG = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'x', 'x'}

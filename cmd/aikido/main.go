@@ -2,7 +2,7 @@
 // an in-memory VFS, backed by OpenRouter.
 //
 // Per ADR-010 a CLI is a v2 deliverable; this binary is a v1.x convenience.
-// All command logic lives in github.com/mxcd/aikido/internal/cli — main.go
+// All command logic lives in github.com/govengers/aikido/internal/cli — main.go
 // only wires .env loading, signal handling, and dispatch.
 package main
 
@@ -14,7 +14,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mxcd/aikido/internal/cli"
+	"github.com/govengers/aikido/internal/cli"
 )
 
 func main() {

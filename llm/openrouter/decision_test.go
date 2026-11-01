@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // liveDecisionsAnswer is a real answer of typesafe/jev-1.14 (22.10.2026) plus

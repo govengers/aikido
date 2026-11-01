@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/tools"
 )
 
 func TestDrain_HappyPath_SingleTurn(t *testing.T) {

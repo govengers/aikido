@@ -8,11 +8,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
-	"github.com/mxcd/aikido/tools"
-	"github.com/mxcd/aikido/vfs"
-	vfsmem "github.com/mxcd/aikido/vfs/memory"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs"
+	vfsmem "github.com/govengers/aikido/vfs/memory"
 )
 
 func newRegistryWithVFS(t *testing.T, opts *VFSToolOptions) *tools.Registry {

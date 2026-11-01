@@ -19,8 +19,8 @@ import (
     "log"
     "os"
 
-    "github.com/mxcd/aikido/llm"
-    "github.com/mxcd/aikido/llm/openrouter"
+    "github.com/govengers/aikido/llm"
+    "github.com/govengers/aikido/llm/openrouter"
 )
 
 func main() {
@@ -71,10 +71,10 @@ import (
     "log"
     "os"
 
-    "github.com/mxcd/aikido/agent"
-    "github.com/mxcd/aikido/llm/openrouter"
-    "github.com/mxcd/aikido/tools"
-    vfsmem "github.com/mxcd/aikido/vfs/memory"
+    "github.com/govengers/aikido/agent"
+    "github.com/govengers/aikido/llm/openrouter"
+    "github.com/govengers/aikido/tools"
+    vfsmem "github.com/govengers/aikido/vfs/memory"
 )
 
 func main() {

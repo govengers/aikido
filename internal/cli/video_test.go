@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
 )
 
 func TestVideoCommand_WritesClipAndThreadsFlags(t *testing.T) {

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // sseDoneToken is the OpenRouter terminator. Once seen, no more useful events

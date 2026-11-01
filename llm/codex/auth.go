@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // Protocol constants of the ChatGPT login, as used by the Codex CLI.

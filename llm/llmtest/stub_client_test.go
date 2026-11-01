@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 func TestStubClient_Replay(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // TestSmoke_Transcribe sends faint noise, which must come back empty (models

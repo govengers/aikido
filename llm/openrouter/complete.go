@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // Complete sends a non-streaming chat-completions request and returns the

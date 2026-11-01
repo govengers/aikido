@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mxcd/aikido/llm/openrouter"
+	"github.com/govengers/aikido/llm/openrouter"
 )
 
 // recordingTransport remembers the path and body of the last request so the
@@ -88,7 +88,7 @@ func TestSmoke_ImageGeneration(t *testing.T) {
 			client, err := openrouter.NewClient(&openrouter.Options{
 				APIKey:      apiKey,
 				HTTPClient:  &http.Client{Transport: rt},
-				HTTPReferer: "https://github.com/mxcd/aikido",
+				HTTPReferer: "https://github.com/govengers/aikido",
 				XTitle:      "aikido CLI",
 			})
 			if err != nil {

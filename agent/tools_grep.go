@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/tools"
 )
 
 const (

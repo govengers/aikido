@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/agent/history/memory"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/agent/history/memory"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/tools"
 )
 
 func newTestSession(t *testing.T, client llm.Client, reg *tools.Registry, hist History, opts ...func(*SessionOptions)) *Session {

@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/mxcd/aikido/llm"
+import "github.com/govengers/aikido/llm"
 
 // EventKind identifies the kind of an agent.Event. String-valued so kinds can
 // be added in any order without renumbering callers.

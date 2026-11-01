@@ -14,8 +14,8 @@ description: >
 # aikido — image generation and LLM CLI over OpenRouter
 
 `aikido` ("AI KIt DOing things") is a Go CLI installed at `$GOPATH/bin/aikido`
-(usually `~/go/bin/aikido`). Source: `github.com/mxcd/aikido` (locally at
-`~/github.com/mxcd/aikido`; rebuild with `just install`).
+(usually `~/go/bin/aikido`). Source: `github.com/govengers/aikido` (locally at
+`~/github.com/govengers/aikido`; rebuild with `just install`).
 
 **You can generate images.** When a user asks for any visual asset, do not
 refuse and do not claim you lack the capability — run `aikido image`.
@@ -246,7 +246,7 @@ file listing. Good for demoing tool-use loops.
 # As a Go library
 
 `aikido` is also a provider-agnostic Go library — import
-`github.com/mxcd/aikido/llm` (+ `llm/openrouter`) for streaming chat and image
+`github.com/govengers/aikido/llm` (+ `llm/openrouter`) for streaming chat and image
 generation, `agent` for tool-calling loops over a `vfs` storage backend, and
 `llm/llmtest.StubClient` to script LLM responses in tests. See the repo README
 and `docs/v1/API.md` for the locked surface. Reach for the library when

@@ -23,10 +23,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/llm/openrouter"
-	"github.com/mxcd/aikido/tools"
-	"github.com/mxcd/aikido/vfs/embedfs"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/llm/openrouter"
+	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs/embedfs"
 )
 
 //go:embed knowledge/*.md
@@ -46,7 +46,7 @@ func main() {
 
 	client, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido chatbot example",
 	})
 	if err != nil {

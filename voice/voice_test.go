@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/agent/history/memory"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/agent/history/memory"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
 )
 
 // fakeSpeech synthesizes "audio:<text>" and can delay or fail per input.

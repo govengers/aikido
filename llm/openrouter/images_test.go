@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // readFixture loads a recorded response body from testdata.
@@ -45,7 +45,7 @@ func TestGenerateImage_RequestOnWire(t *testing.T) {
 	c, err := NewClient(&Options{
 		APIKey:      "sk-test",
 		BaseURL:     srv.URL,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido CLI",
 	})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestGenerateImage_RequestOnWire(t *testing.T) {
 	if got := gotHeader.Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q", got)
 	}
-	if got := gotHeader.Get("HTTP-Referer"); got != "https://github.com/mxcd/aikido" {
+	if got := gotHeader.Get("HTTP-Referer"); got != "https://github.com/govengers/aikido" {
 		t.Errorf("HTTP-Referer = %q", got)
 	}
 	if got := gotHeader.Get("X-Title"); got != "aikido CLI" {

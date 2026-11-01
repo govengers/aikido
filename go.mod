@@ -1,6 +1,6 @@
-module github.com/mxcd/aikido
+module github.com/govengers/aikido
 
-go 1.25
+go 1.26.0
 
 require github.com/google/uuid v1.6.0
 

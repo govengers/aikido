@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/tools"
 )
 
 // Run executes one agent turn from a single user message.

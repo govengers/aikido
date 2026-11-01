@@ -339,7 +339,7 @@ import (
     "context"
     "net/http"
 
-    "github.com/mxcd/aikido/llm"
+    "github.com/govengers/aikido/llm"
 )
 
 // Options configure the OpenRouter client.
@@ -409,7 +409,7 @@ package llmtest
 import (
     "context"
 
-    "github.com/mxcd/aikido/llm"
+    "github.com/govengers/aikido/llm"
 )
 
 // StubClient is a scriptable llm.Client for tests.
@@ -482,7 +482,7 @@ import (
     "encoding/json"
 
     "github.com/google/uuid"
-    "github.com/mxcd/aikido/llm"
+    "github.com/govengers/aikido/llm"
 )
 
 // Env carries per-call execution context to a Handler. Slimmed per ADR-021:
@@ -622,7 +622,7 @@ In-memory backend. Satisfies `Storage` and `Searchable` (case-insensitive substr
 package memory
 
 import (
-    "github.com/mxcd/aikido/vfs"
+    "github.com/govengers/aikido/vfs"
 )
 
 // Storage is the in-memory implementation.
@@ -651,9 +651,9 @@ import (
     "log/slog"
     "time"
 
-    "github.com/mxcd/aikido/llm"
-    "github.com/mxcd/aikido/tools"
-    "github.com/mxcd/aikido/vfs"
+    "github.com/govengers/aikido/llm"
+    "github.com/govengers/aikido/tools"
+    "github.com/govengers/aikido/vfs"
 )
 
 // History is the pluggable conversation-history interface (ADR-014).
@@ -845,7 +845,7 @@ Bundled in-memory History backend. Suitable for single-replica deployments and t
 package memory
 
 import (
-    "github.com/mxcd/aikido/agent"
+    "github.com/govengers/aikido/agent"
 )
 
 // History is the in-memory implementation.

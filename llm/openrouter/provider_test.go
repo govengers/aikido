@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 func TestWithProvider_OverridesClientPrefs(t *testing.T) {

@@ -3,7 +3,7 @@
 **AI KIt DOing things.** A Go library that gives applications a single, provider-agnostic interface for running AI inference — chat completion, tool calling, virtual file system, agent loops.
 
 ```bash
-go get github.com/mxcd/aikido
+go get github.com/govengers/aikido
 ```
 
 Backed by OpenRouter in v1; designed so v2 can plug in direct providers (Anthropic, OpenAI, …) behind the same `llm.Client` interface.
@@ -366,7 +366,7 @@ Five runnable examples under [`examples/`](examples/): `chat-oneshot`, `image-ge
 ## CLI
 
 ```bash
-go install github.com/mxcd/aikido/cmd/aikido@latest
+go install github.com/govengers/aikido/cmd/aikido@latest
 export OPENROUTER_API_KEY=sk-or-...   # or place it in .env in the cwd
 
 aikido chat "Give me one fun fact about Go."
@@ -416,7 +416,7 @@ model was chosen explicitly (`-m` or `OPENROUTER_IMAGE_MODEL`); then it errors
 and names that model.
 
 `aikido --version` reports the module version the binary was built from:
-`go install github.com/mxcd/aikido/cmd/aikido@v0.6.1` prints `v0.6.1`, a build
+`go install github.com/govengers/aikido/cmd/aikido@v0.6.1` prints `v0.6.1`, a build
 from a checkout prints its VCS pseudo-version or `(devel)` plus the revision.
 
 ### Claude Code skill

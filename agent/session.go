@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/tools"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/tools"
 )
 
 // SessionOptions configure a Session.

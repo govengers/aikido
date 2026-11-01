@@ -9,8 +9,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/mxcd/aikido/vfs"
-	"github.com/mxcd/aikido/vfs/embedfs"
+	"github.com/govengers/aikido/vfs"
+	"github.com/govengers/aikido/vfs/embedfs"
 )
 
 func newTestFS() fstest.MapFS {

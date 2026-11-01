@@ -18,7 +18,7 @@ The detailed planning docs under `planning/` reflect the *pre-grilling* surface 
 
 **Deliverables**
 
-- `go.mod` declaring module `github.com/mxcd/aikido`, Go 1.23.
+- `go.mod` declaring module `github.com/govengers/aikido`, Go 1.23.
 - `LICENSE` (MIT).
 - `README.md` at repo root pointing to `docs/`.
 - `justfile` with `check`, `test`, `lint`, `vet`, `build`, `tidy` targets.
@@ -55,7 +55,7 @@ The detailed planning docs under `planning/` reflect the *pre-grilling* surface 
 - `ThinkingByEffort` / `ThinkingByBudget` round-trip — internal effort/budget readable by provider clients (via unexported accessors in the same package).
 - `Float32(0)` returns a non-nil pointer to zero — verifies the deterministic-zero foot-gun is closed.
 
-**Exit criteria.** `go doc github.com/mxcd/aikido/llm` reads as a complete API reference. No imports outside the standard library and `github.com/google/uuid`.
+**Exit criteria.** `go doc github.com/govengers/aikido/llm` reads as a complete API reference. No imports outside the standard library and `github.com/google/uuid`.
 
 **Risks.** Type bikeshedding. Lock the names from [v1/API.md](API.md); deviations need an ADR update.
 

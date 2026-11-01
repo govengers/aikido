@@ -10,8 +10,8 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/openrouter"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -34,7 +34,7 @@ func resolveWriter(cmd *urfavecli.Command) io.Writer {
 }
 
 // version is the CLI's reported version, read from the build info the Go
-// toolchain embeds: `go install github.com/mxcd/aikido/cmd/aikido@v0.6.1`
+// toolchain embeds: `go install github.com/govengers/aikido/cmd/aikido@v0.6.1`
 // reports v0.6.1, a checkout build reports its VCS pseudo-version or revision.
 func version() string {
 	info, ok := debug.ReadBuildInfo()
@@ -107,7 +107,7 @@ func NewOpenRouterClient() (llm.Client, error) {
 	}
 	c, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido CLI",
 	})
 	if err != nil {

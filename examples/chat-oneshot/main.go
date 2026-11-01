@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/openrouter"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 
 	client, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido chat-oneshot example",
 	})
 	if err != nil {

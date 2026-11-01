@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
