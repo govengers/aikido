@@ -483,7 +483,9 @@ func (e *sedEditor) execute(ctx context.Context, counter int) (int, cycleOutcome
 		e.quitting, e.exitCode = true, command.exitCode
 		return 0, cycleEnd, nil
 	case 'Q':
+		// Q prints nothing more, not even the text a queued.
 		e.quitting, e.exitCode = true, command.exitCode
+		e.appendQueue = e.appendQueue[:0]
 		return 0, cycleQuitSilently, nil
 	case 'b', 't', 'T':
 		return e.branch(counter)

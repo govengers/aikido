@@ -51,6 +51,8 @@ var reviewCases = []scriptCase{
 	{name: "sed empty regex without a previous one", script: `echo a | sed 's//b/'; echo $?`, want: "sed: -e expression #1, char 0: no previous regular expression\n1\n"},
 	{name: "sed empty address without a previous one", script: `echo a | sed -n '//p'; echo $?`, want: "sed: -e expression #1, char 0: no previous regular expression\n1\n"},
 	{name: "sed empty regex reuses the last one", script: `echo abc | sed '/b/s//X/'`, want: "aXc\n"},
+	{name: "sed Q drops queued text", script: `printf 'x\n' | sed -e '1a foo' -e '1Q'`, want: ""},
+	{name: "sed q prints queued text", script: `printf 'x\n' | sed -e '1a foo' -e '1q'`, want: "x\nfoo\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
