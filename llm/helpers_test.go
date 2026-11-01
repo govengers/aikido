@@ -120,6 +120,30 @@ func TestCollect_PropagatesEventError(t *testing.T) {
 	}
 }
 
+// TestCollect_KeepsUsageAfterEventError pins that Collect reads on after an
+// EventError: the provider reports the billed usage of a failed call after
+// it, and only the first error is returned.
+func TestCollect_KeepsUsageAfterEventError(t *testing.T) {
+	first := errors.New("content filtered")
+	client := &scriptedClient{events: []Event{
+		{Kind: EventTextDelta, Text: "partial"},
+		{Kind: EventError, Err: first},
+		{Kind: EventError, Err: errors.New("second")},
+		{Kind: EventUsage, Usage: &Usage{PromptTokens: 9, CostUSD: 0.01}},
+		{Kind: EventEnd, FinishReason: "content_filter"},
+	}}
+	response, err := Collect(t.Context(), client, Request{})
+	if err != first { //nolint:errorlint // the very first error, not one wrapping it
+		t.Errorf("err = %v, want the first error", err)
+	}
+	if response.Usage == nil || response.Usage.CostUSD != 0.01 {
+		t.Errorf("usage = %+v, want the trailing usage", response.Usage)
+	}
+	if response.FinishReason != "content_filter" || response.Text != "partial" {
+		t.Errorf("response = %+v", response)
+	}
+}
+
 func TestCollect_PropagatesStreamError(t *testing.T) {
 	sentinel := errors.New("dial failure")
 	client := &scriptedClient{err: sentinel}

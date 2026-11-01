@@ -119,28 +119,37 @@ func CompleteWithRetry(ctx context.Context, client Client, request Request, poli
 // provider emitted one and the FinishReason of EventEnd. Thinking text is not
 // included in the text.
 //
-// On a stream error or a cancelled ctx, Collect returns what it gathered so far
-// together with the error; it does not wait for the producer after ctx ends.
+// On a stream error Collect keeps reading until the channel closes, so the
+// usage a provider reports after the error (the failed call was billed) and
+// the FinishReason still land in the Response; it returns the first error.
+// On a cancelled ctx it returns what it gathered so far with that first
+// error, else with the context error; it does not wait for the producer
+// after ctx ends.
 func Collect(ctx context.Context, client Client, request Request) (Response, error) {
 	events, err := client.Stream(ctx, request)
 	if err != nil {
 		return Response{}, err
 	}
-	var response Response
-	var text strings.Builder
+	var (
+		response    Response
+		text        strings.Builder
+		streamError error
+	)
 	for {
 		select {
 		case <-ctx.Done():
 			response.Text = text.String()
+			if streamError != nil {
+				return response, streamError
+			}
 			return response, ctx.Err()
 		case event, open := <-events:
 			if !open {
 				response.Text = text.String()
-				return response, nil
+				return response, streamError
 			}
-			if event.Kind == EventError {
-				response.Text = text.String()
-				return response, event.Err
+			if event.Kind == EventError && streamError == nil {
+				streamError = event.Err
 			}
 			collectEvent(&response, &text, event)
 		}

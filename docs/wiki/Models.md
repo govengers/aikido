@@ -20,7 +20,7 @@
 
 ## Response, Collect and streaming
 
-`llm.Response` holds `Text` (without reasoning), `ToolCalls`, `Images`, `Usage` (nil when the provider reported none) and `FinishReason`. `llm.Collect(ctx, client, request)` drains a stream into one; on an error or a cancelled `ctx` it returns what it gathered with the error. From [llm/example_test.go](../../llm/example_test.go) (`ExampleCollect`):
+`llm.Response` holds `Text` (without reasoning), `ToolCalls`, `Images`, `Usage` (nil when the provider reported none) and `FinishReason`. `llm.Collect(ctx, client, request)` drains a stream into one; after an `EventError` it reads on until the channel closes, so the usage of the failed (and billed) call is kept, and returns the first error. On a cancelled `ctx` it returns what it gathered with the error. From [llm/example_test.go](../../llm/example_test.go) (`ExampleCollect`):
 
 ```go
 	response, err := llm.Collect(context.Background(), client, llm.Request{
