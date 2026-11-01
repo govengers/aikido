@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/govengers/aikido/llm"
@@ -48,98 +47,122 @@ func videoCommand(factory ClientFactory) *urfavecli.Command {
 			&urfavecli.StringFlag{Name: "last-frame", Usage: "Image file the clip ends on (models listing last_frame)"},
 			&urfavecli.StringSliceFlag{Name: "ref", Usage: "Reference image file for style or identity; repeat for several; ignored when a frame is set"},
 		},
-		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+		Action: func(ctx context.Context, command *urfavecli.Command) error {
 			client, err := factory()
 			if err != nil {
 				return err
 			}
-			o := videoOpts{
-				req: llm.VideoRequest{
-					Model:           cmd.String("model"),
-					Prompt:          strings.TrimSpace(strings.Join(cmd.Args().Slice(), " ")),
-					AspectRatio:     cmd.String("aspect"),
-					Resolution:      cmd.String("resolution"),
-					Size:            cmd.String("size"),
-					DurationSeconds: int(cmd.Int("duration")),
-				},
-				outDir:     cmd.String("out"),
-				firstFrame: cmd.String("first-frame"),
-				lastFrame:  cmd.String("last-frame"),
-				refs:       cmd.StringSlice("ref"),
-			}
-			if cmd.IsSet("audio") {
-				audio := cmd.Bool("audio")
-				o.req.GenerateAudio = &audio
-			}
-			if cmd.IsSet("seed") {
-				seed := int(cmd.Int("seed"))
-				o.req.Seed = &seed
-			}
-			return runVideo(ctx, o, resolveWriter(cmd), client)
+			return runVideo(ctx, videoOptionsFromFlags(command), resolveWriter(command), client)
 		},
 	}
 }
 
-type videoOpts struct {
-	req                   llm.VideoRequest
-	outDir                string
-	firstFrame, lastFrame string
-	refs                  []string
+func videoOptionsFromFlags(command *urfavecli.Command) videoOptions {
+	options := videoOptions{
+		request: llm.VideoRequest{
+			Model:           command.String("model"),
+			Prompt:          promptFromArguments(command),
+			AspectRatio:     command.String("aspect"),
+			Resolution:      command.String("resolution"),
+			Size:            command.String("size"),
+			DurationSeconds: command.Int("duration"),
+		},
+		outputDirectory: command.String("out"),
+		firstFramePath:  command.String("first-frame"),
+		lastFramePath:   command.String("last-frame"),
+		referencePaths:  command.StringSlice("ref"),
+		warnings:        resolveErrorWriter(command),
+	}
+	if command.IsSet("audio") {
+		options.request.GenerateAudio = new(command.Bool("audio"))
+	}
+	if command.IsSet("seed") {
+		options.request.Seed = new(command.Int("seed"))
+	}
+	return options
 }
 
-func runVideo(ctx context.Context, o videoOpts, out io.Writer, client llm.Client) error {
-	if o.req.Prompt == "" {
+type videoOptions struct {
+	request         llm.VideoRequest
+	outputDirectory string
+	firstFramePath  string
+	lastFramePath   string
+	referencePaths  []string
+	warnings        io.Writer // the progress notice; nil discards it
+}
+
+func runVideo(ctx context.Context, options videoOptions, out io.Writer, client llm.Client) error {
+	if options.request.Prompt == "" {
 		return errors.New("missing prompt: aikido video [flags] <prompt...>")
 	}
-	gen, ok := client.(llm.VideoGenerator)
+	generator, ok := client.(llm.VideoGenerator)
 	if !ok {
 		return errors.New("client does not support video generation")
 	}
-	var err error
-	if o.req.FirstFrame, err = loadFrame(o.firstFrame); err != nil {
-		return err
-	}
-	if o.req.LastFrame, err = loadFrame(o.lastFrame); err != nil {
-		return err
-	}
-	if o.req.References, err = loadReferenceImages(o.refs); err != nil {
-		return err
-	}
-	if o.outDir == "" {
-		o.outDir = "out"
-	}
-	if err := os.MkdirAll(o.outDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", o.outDir, err)
-	}
-
-	fmt.Fprintf(os.Stderr, "aikido: rendering with %s, this takes one to five minutes\n", o.req.Model)
-	resp, err := gen.GenerateVideo(ctx, o.req)
+	request, err := withVideoImages(options)
 	if err != nil {
-		if resp.JobID != "" {
-			return fmt.Errorf("%w (job %s)", err, resp.JobID)
+		return err
+	}
+	if options.outputDirectory == "" {
+		options.outputDirectory = "out"
+	}
+	//nolint:gosec // G301: the output directory the user asked for; world-readable like any CLI output, umask applies
+	if err := os.MkdirAll(options.outputDirectory, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", options.outputDirectory, err)
+	}
+	if options.warnings != nil {
+		fmt.Fprintf(options.warnings, "aikido: rendering with %s, this takes one to five minutes\n", request.Model)
+	}
+	response, err := generator.GenerateVideo(ctx, request)
+	if err != nil {
+		if response.JobID != "" {
+			return fmt.Errorf("%w (job %s)", err, response.JobID)
 		}
 		return err
 	}
-	ext := ".mp4"
-	if resp.ContentType != "video/mp4" {
-		ext = ".bin"
+	return writeVideo(out, options.outputDirectory, response)
+}
+
+// withVideoImages returns the request with the frame and reference files
+// loaded.
+func withVideoImages(options videoOptions) (llm.VideoRequest, error) {
+	request := options.request
+	var err error
+	if options.firstFramePath != "" {
+		if request.FirstFrame, err = loadFrame(options.firstFramePath); err != nil {
+			return llm.VideoRequest{}, err
+		}
 	}
-	path := filepath.Join(o.outDir, "video-"+time.Now().UTC().Format("20060102-150405")+ext)
-	if err := os.WriteFile(path, resp.Video, 0o644); err != nil {
+	if options.lastFramePath != "" {
+		if request.LastFrame, err = loadFrame(options.lastFramePath); err != nil {
+			return llm.VideoRequest{}, err
+		}
+	}
+	if request.References, err = loadReferenceImages(options.referencePaths); err != nil {
+		return llm.VideoRequest{}, err
+	}
+	return request, nil
+}
+
+func writeVideo(out io.Writer, directory string, response llm.VideoResponse) error {
+	extension := ".mp4"
+	if response.ContentType != "video/mp4" {
+		extension = ".bin"
+	}
+	path := filepath.Join(directory, "video-"+time.Now().UTC().Format("20060102-150405")+extension)
+	//nolint:gosec // G306: a generated clip the user asked for; world-readable like any CLI output, umask applies
+	if err := os.WriteFile(path, response.Video, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	fmt.Fprintf(out, "wrote %s (%d bytes, %s)\n", path, len(resp.Video), resp.ContentType)
-	if resp.Usage != nil {
-		fmt.Fprintf(out, "\n[usage] cost=$%.4f duration=%s job=%s\n", resp.Usage.CostUSD, resp.Usage.Duration.Round(time.Second), resp.JobID)
+	fmt.Fprintf(out, "wrote %s (%d bytes, %s)\n", path, len(response.Video), response.ContentType)
+	if response.Usage != nil {
+		fmt.Fprintf(out, "\n[usage] cost=$%.4f duration=%s job=%s\n", response.Usage.CostUSD, response.Usage.Duration.Round(time.Second), response.JobID)
 	}
 	return nil
 }
 
-// loadFrame reads one --first-frame/--last-frame file; empty path is no frame.
+// loadFrame reads one --first-frame/--last-frame file.
 func loadFrame(path string) (*llm.ImagePart, error) {
-	if path == "" {
-		return nil, nil
-	}
 	parts, err := loadReferenceImages([]string{path})
 	if err != nil {
 		return nil, err

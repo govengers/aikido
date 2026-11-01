@@ -6,15 +6,27 @@ import "github.com/govengers/aikido/llm"
 // be added in any order without renumbering callers.
 type EventKind string
 
+// EventKind values. Each names the Event field that carries its payload.
 const (
-	EventText       EventKind = "text"
-	EventThinking   EventKind = "thinking"
-	EventToolCall   EventKind = "tool_call"
+	// EventText carries a streamed text delta of the assistant reply in Text.
+	EventText EventKind = "text"
+	// EventThinking carries streamed model reasoning in Text. It is not part
+	// of the persisted conversation.
+	EventThinking EventKind = "thinking"
+	// EventToolCall carries a tool call of the model in ToolCall. It is
+	// emitted after the tool ran, right before its EventToolResult.
+	EventToolCall EventKind = "tool_call"
+	// EventToolResult carries the outcome of the preceding EventToolCall in
+	// ToolResult.
 	EventToolResult EventKind = "tool_result"
-	EventImage      EventKind = "image"
-	EventUsage      EventKind = "usage"
-	EventError      EventKind = "error"
-	EventEnd        EventKind = "end"
+	// EventImage carries an image of the assistant reply in Image.
+	EventImage EventKind = "image"
+	// EventUsage carries the token usage of one model call in Usage.
+	EventUsage EventKind = "usage"
+	// EventError carries the error that ends the run in Err; EventEnd follows.
+	EventError EventKind = "error"
+	// EventEnd is the last event of a run and carries EndReason.
+	EventEnd EventKind = "end"
 )
 
 // EndReason says why a run ended; EventEnd carries it. The string values are
@@ -23,23 +35,36 @@ type EndReason string
 
 // EndReason values emitted on EventEnd.
 const (
-	EndReasonStop         EndReason = "stop"
+	// EndReasonStop means the model replied without tool calls.
+	EndReasonStop EndReason = "stop"
+	// EndReasonMaximumTurns means SessionOptions.MaximumTurns model calls ran
+	// without a final reply. History is still updated.
 	EndReasonMaximumTurns EndReason = "max_turns"
-	EndReasonError        EndReason = "error"
-	EndReasonTimeout      EndReason = "timeout"
-	EndReasonCancelled    EndReason = "cancelled"
+	// EndReasonError means the run failed; EventError carries the cause.
+	EndReasonError EndReason = "error"
+	// EndReasonTimeout means the caller's deadline, RunTimeout or
+	// LLMCallTimeout expired.
+	EndReasonTimeout EndReason = "timeout"
+	// EndReasonCancelled means the caller cancelled the run's context.
+	EndReasonCancelled EndReason = "cancelled"
 )
 
 // ToolResult is one tool execution result surfaced to the caller.
 type ToolResult struct {
-	CallID  string
-	Name    string
-	OK      bool
+	// CallID is the llm.ToolCall ID this result answers.
+	CallID string
+	// Name is the called tool's name.
+	Name string
+	// OK is false when the tool failed; Error then holds its message.
+	OK bool
+	// Content is the tool's result when OK; it is sent to the model as JSON.
 	Content any
-	Error   string
+	// Error is the failure message when not OK.
+	Error string
 }
 
-// Event is one streaming event from a session run.
+// Event is one streaming event from a session run. Kind says which of the
+// other fields is set.
 type Event struct {
 	Kind       EventKind
 	Text       string

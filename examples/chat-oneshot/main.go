@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -17,9 +18,15 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
-		log.Fatal("OPENROUTER_API_KEY not set")
+		return errors.New("OPENROUTER_API_KEY not set")
 	}
 
 	client, err := openrouter.NewClient(&openrouter.Options{
@@ -28,7 +35,7 @@ func main() {
 		XTitle:      "aikido chat-oneshot example",
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -44,7 +51,7 @@ func main() {
 		Temperature:   new(float32(0.7)),
 	})
 	if err != nil {
-		log.Fatalf("Collect: %v", err)
+		return fmt.Errorf("collect: %w", err)
 	}
 	fmt.Println("---")
 	fmt.Println(response.Text)
@@ -53,4 +60,5 @@ func main() {
 		fmt.Printf("tokens: prompt=%d completion=%d cost=$%.6f\n",
 			usage.PromptTokens, usage.CompletionTokens, usage.CostUSD)
 	}
+	return nil
 }

@@ -6,3 +6,12 @@ exceptions:
       agent.NewLocalSession is agent.NewSession with the in-process History and Locker filled in for
       single-replica use (ADR-014, ADR-024). It takes the same *SessionOptions and returns the same errors;
       every other component follows DES-001.
+  - rule: DES-001
+    reason: >-
+      llmtest.NewStubClient(turns ...TurnScript) is a test double without dependencies or settings; the scripted
+      turns are its data, written inline in tests.
+  - rule: RES-005
+    reason: >-
+      llm.CollectWithRetry restarts a stream from scratch after a transient failure. Collect delivers nothing to
+      its caller until the stream ends and discards the partial attempt, so no output is duplicated; the doc
+      comment states that every attempt is billed. Streaming consumers (agent.Session) never retry mid-stream.

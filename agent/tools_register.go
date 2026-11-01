@@ -2,21 +2,36 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/tools"
 	"github.com/govengers/aikido/vfs"
 )
 
+// defaultMaximumFileBytes is the file size limit when VFSToolOptions leaves
+// MaximumFileBytes unset.
+const defaultMaximumFileBytes = 1 << 20
+
 // VFSToolOptions configure the built-in VFS tools.
 type VFSToolOptions struct {
-	Storage           vfs.Storage // required; pre-bound to scope if multi-tenant
-	HideHiddenPaths   bool        // hide paths beginning with "_" or "." (per segment)
-	AllowedExtensions []string    // nil = allow all
-	MaximumFileBytes  int64       // default 1 MiB; 0 means default
+	// Storage is the file store the tools work on. Required; multi-tenant
+	// callers pass a store already bound to the tenant's scope.
+	Storage vfs.Storage
+	// HideHiddenPaths hides paths with a segment beginning with "_" or "."
+	// from listings and rejects them as tool arguments.
+	HideHiddenPaths bool
+	// AllowedExtensions limits the tools to files with these extensions
+	// (".md", compared case-insensitively). Nil allows every file.
+	AllowedExtensions []string
+	// MaximumFileBytes caps the size of a file the tools write; zero or
+	// negative means 1 MiB.
+	MaximumFileBytes int64
 
-	// ReadOnly disables registration of write_file and delete_file. Use this
-	// for fixed-corpus deployments (e.g. an embedded knowledge base over
-	// vfs/embedfs). Search and list/read remain registered.
+	// ReadOnly disables registration of write_file, delete_file and
+	// edit_file. Use this for fixed-corpus deployments (e.g. an embedded
+	// knowledge base over vfs/embedfs). Search and list/read remain
+	// registered.
 	ReadOnly bool
 
 	// DisableExtended skips registration of grep, glob and edit_file, leaving
@@ -27,51 +42,58 @@ type VFSToolOptions struct {
 // RegisterVFSTools registers read_file, list_files, grep and glob into the
 // supplied registry, plus write_file, delete_file and edit_file when not
 // read-only (grep, glob and edit_file are skipped with DisableExtended). If
-// opts.Storage satisfies vfs.Searchable, also registers `search`. Tool handlers capture opts.Storage
-// via closure (ADR-021).
-func RegisterVFSTools(reg *tools.Registry, opts *VFSToolOptions) error {
-	if reg == nil {
+// options.Storage satisfies vfs.Searchable, it also registers search. Tool
+// handlers capture options.Storage via closure (ADR-021).
+//
+// It returns an error for a nil registry or Storage, and an error matching
+// tools.ErrDuplicateTool if the registry already holds one of the names.
+func RegisterVFSTools(registry *tools.Registry, options *VFSToolOptions) error {
+	if registry == nil {
 		return errors.New("aikido/agent: RegisterVFSTools: nil registry")
 	}
-	if opts == nil || opts.Storage == nil {
+	if options == nil || options.Storage == nil {
 		return errors.New("aikido/agent: RegisterVFSTools: Storage is required")
 	}
-	cp := *opts
-	if cp.MaximumFileBytes <= 0 {
-		cp.MaximumFileBytes = 1 << 20 // 1 MiB
+	configured := *options
+	if configured.MaximumFileBytes <= 0 {
+		configured.MaximumFileBytes = defaultMaximumFileBytes
 	}
-
-	if err := reg.Register(readFileDef(), readFileHandler(cp)); err != nil {
-		return err
-	}
-	if err := reg.Register(listFilesDef(), listFilesHandler(cp)); err != nil {
-		return err
-	}
-	if !cp.ReadOnly {
-		if err := reg.Register(writeFileDef(), writeFileHandler(cp)); err != nil {
-			return err
-		}
-		if err := reg.Register(deleteFileDef(), deleteFileHandler(cp)); err != nil {
-			return err
-		}
-	}
-	if !cp.DisableExtended {
-		if err := reg.Register(grepDef(), grepHandler(cp)); err != nil {
-			return err
-		}
-		if err := reg.Register(globDef(), globHandler(cp)); err != nil {
-			return err
-		}
-		if !cp.ReadOnly {
-			if err := reg.Register(editFileDef(), editFileHandler(cp)); err != nil {
-				return err
-			}
-		}
-	}
-	if searchable, ok := cp.Storage.(vfs.Searchable); ok {
-		if err := reg.Register(searchDef(searchable), searchHandler(cp, searchable)); err != nil {
-			return err
+	for _, tool := range vfsTools(configured) {
+		if err := registry.Register(tool.definition, tool.handler); err != nil {
+			return fmt.Errorf("aikido/agent: RegisterVFSTools: %w", err)
 		}
 	}
 	return nil
+}
+
+type vfsTool struct {
+	definition llm.ToolDefinition
+	handler    tools.Handler
+}
+
+// vfsTools selects the tools the options enable, in registration order.
+func vfsTools(options VFSToolOptions) []vfsTool {
+	selected := []vfsTool{
+		{readFileDefinition(), readFileHandler(options)},
+		{listFilesDefinition(), listFilesHandler(options)},
+	}
+	if !options.ReadOnly {
+		selected = append(selected,
+			vfsTool{writeFileDefinition(), writeFileHandler(options)},
+			vfsTool{deleteFileDefinition(), deleteFileHandler(options)},
+		)
+	}
+	if !options.DisableExtended {
+		selected = append(selected,
+			vfsTool{grepDefinition(), grepHandler(options)},
+			vfsTool{globDefinition(), globHandler(options)},
+		)
+		if !options.ReadOnly {
+			selected = append(selected, vfsTool{editFileDefinition(), editFileHandler(options)})
+		}
+	}
+	if searchable, ok := options.Storage.(vfs.Searchable); ok {
+		selected = append(selected, vfsTool{searchDefinition(searchable), searchHandler(options, searchable)})
+	}
+	return selected
 }

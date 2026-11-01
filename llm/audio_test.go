@@ -1,7 +1,6 @@
 package llm_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -12,7 +11,7 @@ import (
 
 func TestAudioFormat(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]string{
+	for contentType, want := range map[string]string{
 		"audio/webm;codecs=opus": "webm",
 		"audio/webm":             "webm",
 		"audio/mp4":              "m4a",
@@ -26,13 +25,13 @@ func TestAudioFormat(t *testing.T) {
 		"audio/x-aiff":           "aiff",
 		"Audio/WebM":             "webm",
 	} {
-		if got, err := llm.AudioFormat(in); err != nil || got != want {
-			t.Errorf("AudioFormat(%q) = %q, %v; want %q", in, got, err, want)
+		if got, err := llm.AudioFormat(contentType); err != nil || got != want {
+			t.Errorf("AudioFormat(%q) = %q, %v; want %q", contentType, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "video/webm", "audio/midi", ";;"} {
-		if got, err := llm.AudioFormat(in); err == nil {
-			t.Errorf("AudioFormat(%q) = %q, want error", in, got)
+	for _, contentType := range []string{"", "video/webm", "audio/midi", ";;"} {
+		if got, err := llm.AudioFormat(contentType); err == nil {
+			t.Errorf("AudioFormat(%q) = %q, want error", contentType, got)
 		}
 	}
 }
@@ -48,7 +47,7 @@ func textTurn(text string) llmtest.TurnScript {
 func TestTranscribe_Request(t *testing.T) {
 	t.Parallel()
 	stub := llmtest.NewStubClient(textTurn("  Ich habe 3.800 € bezahlt.\n"))
-	text, usage, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{
+	text, usage, err := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{
 		Audio:  []byte("RIFF"),
 		Format: "wav",
 		Hint:   "The speaker most likely speaks German.",
@@ -57,19 +56,19 @@ func TestTranscribe_Request(t *testing.T) {
 		t.Fatalf("Transcribe = %q, %+v, %v", text, usage, err)
 	}
 
-	req := stub.Requests()[0]
-	if req.Model != llm.DefaultTranscribeModel || req.Temperature == nil || *req.Temperature != 0 {
-		t.Errorf("model %q temperature %v", req.Model, req.Temperature)
+	request := stub.Requests()[0]
+	if request.Model != llm.DefaultTranscribeModel || request.Temperature == nil || *request.Temperature != 0 {
+		t.Errorf("model %q temperature %v", request.Model, request.Temperature)
 	}
-	m := req.Messages[0]
-	if len(req.Messages) != 1 || m.Role != llm.RoleUser {
-		t.Fatalf("messages = %+v", req.Messages)
+	if len(request.Messages) != 1 || request.Messages[0].Role != llm.RoleUser {
+		t.Fatalf("messages = %+v", request.Messages)
 	}
-	if len(m.Audio) != 1 || string(m.Audio[0].Data) != "RIFF" || m.Audio[0].Format != "wav" {
-		t.Errorf("audio = %+v", m.Audio)
+	message := request.Messages[0]
+	if len(message.Audio) != 1 || string(message.Audio[0].Data) != "RIFF" || message.Audio[0].Format != "wav" {
+		t.Errorf("audio = %+v", message.Audio)
 	}
-	if !strings.Contains(m.Content, "[no speech]") || !strings.HasSuffix(m.Content, "\n\nThe speaker most likely speaks German.") {
-		t.Errorf("prompt = %q", m.Content)
+	if !strings.Contains(message.Content, "[no speech]") || !strings.HasSuffix(message.Content, "\n\nThe speaker most likely speaks German.") {
+		t.Errorf("prompt = %q", message.Content)
 	}
 }
 
@@ -77,7 +76,7 @@ func TestTranscribe_NoSpeechAndModel(t *testing.T) {
 	t.Parallel()
 	stub := llmtest.NewStubClient(textTurn("[no speech]\n"), textTurn(" [no speech]. "))
 	for range 2 {
-		text, _, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Model: "m", Audio: []byte{1}, Format: "webm"})
+		text, _, err := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{Model: "m", Audio: []byte{1}, Format: "webm"})
 		if err != nil || text != "" {
 			t.Errorf("Transcribe = %q, %v; want empty", text, err)
 		}
@@ -90,10 +89,10 @@ func TestTranscribe_NoSpeechAndModel(t *testing.T) {
 func TestTranscribe_Errors(t *testing.T) {
 	t.Parallel()
 	stub := llmtest.NewStubClient()
-	if _, _, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Format: "wav"}); !errors.Is(err, llm.ErrInvalidRequest) {
+	if _, _, err := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{Format: "wav"}); !errors.Is(err, llm.ErrInvalidRequest) {
 		t.Errorf("no audio: %v", err)
 	}
-	if _, _, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Audio: []byte{1}}); !errors.Is(err, llm.ErrInvalidRequest) {
+	if _, _, err := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{Audio: []byte{1}}); !errors.Is(err, llm.ErrInvalidRequest) {
 		t.Errorf("no format: %v", err)
 	}
 	if len(stub.Requests()) != 0 {
@@ -104,7 +103,7 @@ func TestTranscribe_Errors(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 3}},
 		{Kind: llm.EventError, Err: llm.ErrServerError},
 	}})
-	if _, usage, err := llm.Transcribe(context.Background(), boom, llm.TranscribeRequest{Audio: []byte{1}, Format: "wav"}); !errors.Is(err, llm.ErrServerError) || usage == nil {
+	if _, usage, err := llm.Transcribe(t.Context(), boom, llm.TranscribeRequest{Audio: []byte{1}, Format: "wav"}); !errors.Is(err, llm.ErrServerError) || usage == nil {
 		t.Errorf("provider error: usage %+v, err %v", usage, err)
 	}
 }

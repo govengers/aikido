@@ -1,12 +1,12 @@
 package agent
 
 import (
-	historymem "github.com/govengers/aikido/agent/history/memory"
+	historymemory "github.com/govengers/aikido/agent/history/memory"
 )
 
 // NewLocalSession is a convenience constructor for single-replica deployments
 // and tests. It auto-supplies in-memory implementations for History and
-// Locker if the caller leaves them unset.
+// Locker if the caller leaves them unset, then validates like NewSession.
 //
 // For multi-replica deployments, or any setup needing a custom Locker (e.g.,
 // Redis) or a persistent History (e.g., Postgres), use NewSession directly
@@ -14,16 +14,16 @@ import (
 //
 // History defaults to an in-memory store; conversation is lost when the
 // process restarts.
-func NewLocalSession(opts *SessionOptions) (*Session, error) {
-	if opts == nil {
-		return NewSession(opts)
+func NewLocalSession(options *SessionOptions) (*Session, error) {
+	if options == nil {
+		return NewSession(options)
 	}
-	cp := *opts
-	if cp.History == nil {
-		cp.History = historymem.NewHistory()
+	withPlugins := *options
+	if withPlugins.History == nil {
+		withPlugins.History = historymemory.NewHistory()
 	}
-	if cp.Locker == nil {
-		cp.Locker = NewLocalLocker()
+	if withPlugins.Locker == nil {
+		withPlugins.Locker = NewLocalLocker()
 	}
-	return NewSession(&cp)
+	return NewSession(&withPlugins)
 }

@@ -20,31 +20,31 @@ import (
 // recordingTransport remembers the path and body of the last request so the
 // smoke test can assert which endpoint actually took the call.
 type recordingTransport struct {
-	mu   sync.Mutex
-	path string
-	body []byte
+	mutex sync.Mutex
+	path  string
+	body  []byte
 }
 
-func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (rt *recordingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	var body []byte
-	if req.Body != nil && req.GetBody != nil {
-		if b, err := req.GetBody(); err == nil {
-			buf := new(bytes.Buffer)
-			_, _ = buf.ReadFrom(b)
-			_ = b.Close()
-			body = buf.Bytes()
+	if request.Body != nil && request.GetBody != nil {
+		if bodyReader, err := request.GetBody(); err == nil {
+			buffer := new(bytes.Buffer)
+			_, _ = buffer.ReadFrom(bodyReader)
+			_ = bodyReader.Close()
+			body = buffer.Bytes()
 		}
 	}
-	rt.mu.Lock()
-	rt.path = req.URL.Path
+	rt.mutex.Lock()
+	rt.path = request.URL.Path
 	rt.body = body
-	rt.mu.Unlock()
-	return http.DefaultTransport.RoundTrip(req)
+	rt.mutex.Unlock()
+	return http.DefaultTransport.RoundTrip(request)
 }
 
 func (rt *recordingTransport) snapshot() (string, []byte) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
+	rt.mutex.Lock()
+	defer rt.mutex.Unlock()
 	return rt.path, rt.body
 }
 
@@ -62,17 +62,19 @@ func TestSmoke_ImageGeneration(t *testing.T) {
 		t.Skip("OPENROUTER_API_KEY is not set")
 	}
 
-	cases := []struct {
+	testCases := []struct {
 		name     string
 		model    string
 		list     []string
 		wantPath string
+		wantPNG  bool
 	}{
 		{
 			name:     "flare_images_api",
 			model:    defaultImageModel,
 			list:     defaultImagesAPIModels,
 			wantPath: "/api/v1/images",
+			wantPNG:  true,
 		},
 		{
 			name:     "gemini_chat_path",
@@ -82,12 +84,12 @@ func TestSmoke_ImageGeneration(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rt := &recordingTransport{}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			transport := &recordingTransport{}
 			client, err := openrouter.NewClient(&openrouter.Options{
 				APIKey:      apiKey,
-				HTTPClient:  &http.Client{Transport: rt},
+				HTTPClient:  &http.Client{Transport: transport},
 				HTTPReferer: "https://github.com/govengers/aikido",
 				XTitle:      "aikido CLI",
 			})
@@ -95,48 +97,54 @@ func TestSmoke_ImageGeneration(t *testing.T) {
 				t.Fatalf("NewClient: %v", err)
 			}
 
-			dir := t.TempDir()
+			directory := t.TempDir()
 			var out bytes.Buffer
-			err = runImage(context.Background(), imageOpts{
-				model:           tc.model,
-				outDir:          dir,
+			err = runImage(context.Background(), imageOptions{
+				model:           testCase.model,
+				outputDirectory: directory,
 				prompt:          "a red cube on white",
-				maxTokens:       1024,
-				imagesAPIModels: tc.list,
+				maximumTokens:   1024,
+				imagesAPIModels: testCase.list,
 			}, &out, client)
 			if err != nil {
 				t.Fatalf("runImage: %v\n%s", err, out.String())
 			}
 
-			path, body := rt.snapshot()
-			if path != tc.wantPath {
-				t.Errorf("endpoint = %q, want %q", path, tc.wantPath)
+			path, body := transport.snapshot()
+			if path != testCase.wantPath {
+				t.Errorf("endpoint = %q, want %q", path, testCase.wantPath)
 			}
-			if !bytes.Contains(body, []byte(`"`+tc.model+`"`)) {
-				t.Errorf("request body does not name %s: %s", tc.model, body)
+			if !bytes.Contains(body, []byte(`"`+testCase.model+`"`)) {
+				t.Errorf("request body does not name %s: %s", testCase.model, body)
 			}
-
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				t.Fatalf("read out dir: %v", err)
-			}
-			if len(entries) != 1 {
-				t.Fatalf("wrote %d files, want 1", len(entries))
-			}
-			f, err := os.Open(filepath.Join(dir, entries[0].Name()))
-			if err != nil {
-				t.Fatalf("open image: %v", err)
-			}
-			defer f.Close()
-			if tc.name == "flare_images_api" {
-				if _, err := png.Decode(f); err != nil {
-					t.Errorf("png.Decode: %v", err)
-				}
-				return
-			}
-			if _, _, err := image.Decode(f); err != nil {
-				t.Errorf("image.Decode: %v", err)
-			}
+			assertOneDecodableImage(t, directory, testCase.wantPNG)
 		})
+	}
+}
+
+// assertOneDecodableImage checks that directory holds exactly one file that
+// decodes as an image, a PNG when wantPNG.
+func assertOneDecodableImage(t *testing.T, directory string, wantPNG bool) {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatalf("read out directory: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("wrote %d files, want 1", len(entries))
+	}
+	imageFile, err := os.Open(filepath.Join(directory, entries[0].Name())) //nolint:gosec // G304: the test's own temp output
+	if err != nil {
+		t.Fatalf("open image: %v", err)
+	}
+	defer imageFile.Close() // read-only
+	if wantPNG {
+		if _, err := png.Decode(imageFile); err != nil {
+			t.Errorf("png.Decode: %v", err)
+		}
+		return
+	}
+	if _, _, err := image.Decode(imageFile); err != nil {
+		t.Errorf("image.Decode: %v", err)
 	}
 }

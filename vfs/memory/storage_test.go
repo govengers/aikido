@@ -2,8 +2,10 @@ package memory
 
 import (
 	"context"
-	"sort"
-	"strings"
+	"errors"
+	"slices"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/govengers/aikido/vfs"
@@ -14,30 +16,31 @@ func TestConformance(t *testing.T) {
 	vfstest.RunConformance(t, func() vfs.Storage { return NewStorage() })
 }
 
-func TestSearch_GlobalEmpty(t *testing.T) {
-	s := NewStorage()
-	ctx := context.Background()
-	_ = s.WriteFile(ctx, "a.md", []byte("hello"), "text/markdown")
-	_ = s.WriteFile(ctx, "b.md", []byte("world"), "text/markdown")
+func writeFile(t *testing.T, storage *Storage, path, content string) {
+	t.Helper()
+	if err := storage.WriteFile(context.Background(), path, []byte(content), "text/markdown"); err != nil {
+		t.Fatalf("WriteFile %q: %v", path, err)
+	}
+}
 
-	// Empty query returns all paths (acts as "list everything").
-	paths, err := s.Search(ctx, "")
+func TestSearch_EmptyQueryMatchesEveryFile(t *testing.T) {
+	storage := NewStorage()
+	writeFile(t, storage, "b.md", "world")
+	writeFile(t, storage, "a.md", "hello")
+
+	paths, err := storage.Search(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	got := append([]string(nil), paths...)
-	sort.Strings(got)
-	want := []string{"a.md", "b.md"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("paths = %v; want %v", got, want)
+	if want := []string{"a.md", "b.md"}; !slices.Equal(paths, want) {
+		t.Errorf("paths = %v; want %v", paths, want)
 	}
 }
 
 func TestSearch_CaseInsensitive(t *testing.T) {
-	s := NewStorage()
-	ctx := context.Background()
-	_ = s.WriteFile(ctx, "a.md", []byte("Hello WORLD"), "text/markdown")
-	paths, err := s.Search(ctx, "world")
+	storage := NewStorage()
+	writeFile(t, storage, "a.md", "Hello WORLD")
+	paths, err := storage.Search(context.Background(), "world")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -47,28 +50,66 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 }
 
 func TestWrite_DefenseInDepthValidation(t *testing.T) {
-	s := NewStorage()
-	// Bypass tool layer; storage itself must reject.
-	err := s.WriteFile(context.Background(), "../escape", []byte("x"), "text/plain")
-	if err == nil {
-		t.Fatal("expected ErrPathInvalid; got nil")
+	storage := NewStorage()
+	err := storage.WriteFile(context.Background(), "../escape", []byte("x"), "text/plain")
+	if !errors.Is(err, vfs.ErrPathInvalid) {
+		t.Fatalf("err = %v; want ErrPathInvalid", err)
+	}
+}
+
+func TestReadFile_ReturnsACopy(t *testing.T) {
+	storage := NewStorage()
+	writeFile(t, storage, "a.md", "original")
+	content, _, err := storage.ReadFile(context.Background(), "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content[0] = 'X'
+	again, _, err := storage.ReadFile(context.Background(), "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != "original" {
+		t.Errorf("stored content changed through the returned slice: %q", again)
+	}
+}
+
+func TestCanceledContext(t *testing.T) {
+	storage := NewStorage()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := storage.ListFiles(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("ListFiles err = %v; want context.Canceled", err)
+	}
+	if _, _, err := storage.ReadFile(ctx, "a.md"); !errors.Is(err, context.Canceled) {
+		t.Errorf("ReadFile err = %v; want context.Canceled", err)
+	}
+	if err := storage.WriteFile(ctx, "a.md", nil, ""); !errors.Is(err, context.Canceled) {
+		t.Errorf("WriteFile err = %v; want context.Canceled", err)
+	}
+	if err := storage.DeleteFile(ctx, "a.md"); !errors.Is(err, context.Canceled) {
+		t.Errorf("DeleteFile err = %v; want context.Canceled", err)
+	}
+	if _, err := storage.Search(ctx, "a"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Search err = %v; want context.Canceled", err)
 	}
 }
 
 func TestStorage_Concurrency(t *testing.T) {
-	s := NewStorage()
+	storage := NewStorage()
 	ctx := context.Background()
-	const n = 50
-	done := make(chan struct{})
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			path := "f-" + string(rune('a'+i%26)) + ".md"
-			_ = s.WriteFile(ctx, path, []byte("payload"), "text/markdown")
-			_, _, _ = s.ReadFile(ctx, path)
-			done <- struct{}{}
-		}(i)
+	const writers = 50
+	var waitGroup sync.WaitGroup
+	for writer := range writers {
+		waitGroup.Go(func() {
+			path := "f-" + strconv.Itoa(writer%26) + ".md"
+			if err := storage.WriteFile(ctx, path, []byte("payload"), "text/markdown"); err != nil {
+				t.Errorf("WriteFile: %v", err)
+			}
+			if _, _, err := storage.ReadFile(ctx, path); err != nil {
+				t.Errorf("ReadFile: %v", err)
+			}
+		})
 	}
-	for i := 0; i < n; i++ {
-		<-done
-	}
+	waitGroup.Wait()
 }

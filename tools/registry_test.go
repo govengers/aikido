@@ -11,120 +11,120 @@ import (
 )
 
 func TestRegistry_RegisterAndDispatch(t *testing.T) {
-	reg := NewRegistry()
+	registry := NewRegistry()
 
-	type echoArgs struct {
-		Msg string `json:"msg"`
+	type echoArguments struct {
+		Message string `json:"msg"`
 	}
-	var seenEnv Environment
-	var seenArgs echoArgs
+	var seenEnvironment Environment
+	var seenArguments echoArguments
 
-	def := llm.ToolDefinition{Name: "echo", Description: "echo", Parameters: Object(map[string]any{
+	definition := llm.ToolDefinition{Name: "echo", Description: "echo", Parameters: Object(map[string]any{
 		"msg": String("text"),
 	}, "msg")}
-	if err := reg.Register(def, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
-		seenEnv = env
-		if err := json.Unmarshal(args, &seenArgs); err != nil {
+	if err := registry.Register(definition, func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error) {
+		seenEnvironment = environment
+		if err := json.Unmarshal(arguments, &seenArguments); err != nil {
 			return Result{}, err
 		}
-		return Result{Content: seenArgs.Msg}, nil
+		return Result{Content: seenArguments.Message}, nil
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
 	// Second tool, different name.
-	if err := reg.Register(llm.ToolDefinition{Name: "noop"}, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
+	if err := registry.Register(llm.ToolDefinition{Name: "noop"}, func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error) {
 		return Result{Content: "ok"}, nil
 	}); err != nil {
 		t.Fatalf("register noop: %v", err)
 	}
 
-	if !reg.Has("echo") {
+	if !registry.Has("echo") {
 		t.Error("Has(echo) = false; want true")
 	}
-	if !reg.Has("noop") {
+	if !registry.Has("noop") {
 		t.Error("Has(noop) = false; want true")
 	}
-	if reg.Has("nope") {
+	if registry.Has("nope") {
 		t.Error("Has(nope) = true; want false")
 	}
 
-	defs := reg.Definitions()
-	if len(defs) != 2 {
-		t.Fatalf("len(defs) = %d, want 2", len(defs))
+	definitions := registry.Definitions()
+	if len(definitions) != 2 {
+		t.Fatalf("len(defs) = %d, want 2", len(definitions))
 	}
-	if defs[0].Name != "echo" || defs[1].Name != "noop" {
-		t.Errorf("defs order = [%s, %s], want [echo, noop] (registration order)", defs[0].Name, defs[1].Name)
+	if definitions[0].Name != "echo" || definitions[1].Name != "noop" {
+		t.Errorf("defs order = [%s, %s], want [echo, noop] (registration order)", definitions[0].Name, definitions[1].Name)
 	}
 
-	tid := uuid.New()
-	res, err := reg.Dispatch(context.Background(), llm.ToolCall{
+	turnID := uuid.New()
+	result, err := registry.Dispatch(context.Background(), llm.ToolCall{
 		ID:        "c1",
 		Name:      "echo",
 		Arguments: `{"msg":"hello"}`,
-	}, Environment{SessionID: "s-1", TurnID: tid})
+	}, Environment{SessionID: "s-1", TurnID: turnID})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	if seenArgs.Msg != "hello" {
-		t.Errorf("seenArgs.Msg = %q", seenArgs.Msg)
+	if seenArguments.Message != "hello" {
+		t.Errorf("seenArguments.Message = %q", seenArguments.Message)
 	}
-	if seenEnv.SessionID != "s-1" || seenEnv.TurnID != tid {
-		t.Errorf("seenEnv = %+v", seenEnv)
+	if seenEnvironment.SessionID != "s-1" || seenEnvironment.TurnID != turnID {
+		t.Errorf("seenEnv = %+v", seenEnvironment)
 	}
-	if res.Content != "hello" {
-		t.Errorf("res = %+v", res)
+	if result.Content != "hello" {
+		t.Errorf("res = %+v", result)
 	}
 }
 
 func TestRegistry_DuplicateTool(t *testing.T) {
-	reg := NewRegistry()
-	noop := func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
+	registry := NewRegistry()
+	noopHandler := func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error) {
 		return Result{}, nil
 	}
-	if err := reg.Register(llm.ToolDefinition{Name: "x"}, noop); err != nil {
+	if err := registry.Register(llm.ToolDefinition{Name: "x"}, noopHandler); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
-	err := reg.Register(llm.ToolDefinition{Name: "x"}, noop)
+	err := registry.Register(llm.ToolDefinition{Name: "x"}, noopHandler)
 	if !errors.Is(err, ErrDuplicateTool) {
 		t.Errorf("err = %v, want ErrDuplicateTool", err)
 	}
 }
 
 func TestRegistry_DispatchUnknown(t *testing.T) {
-	reg := NewRegistry()
-	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "ghost"}, Environment{})
+	registry := NewRegistry()
+	_, err := registry.Dispatch(context.Background(), llm.ToolCall{Name: "ghost"}, Environment{})
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Errorf("err = %v, want ErrUnknownTool", err)
 	}
 }
 
 func TestRegistry_RegisterEmptyName(t *testing.T) {
-	reg := NewRegistry()
-	noop := func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
+	registry := NewRegistry()
+	noopHandler := func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error) {
 		return Result{}, nil
 	}
-	if err := reg.Register(llm.ToolDefinition{Name: ""}, noop); err == nil {
+	if err := registry.Register(llm.ToolDefinition{Name: ""}, noopHandler); err == nil {
 		t.Error("expected error for empty name")
 	}
 }
 
 func TestRegistry_RegisterNilHandler(t *testing.T) {
-	reg := NewRegistry()
-	if err := reg.Register(llm.ToolDefinition{Name: "x"}, nil); err == nil {
+	registry := NewRegistry()
+	if err := registry.Register(llm.ToolDefinition{Name: "x"}, nil); err == nil {
 		t.Error("expected error for nil handler")
 	}
 }
 
 func TestRegistry_DispatchHandlerError(t *testing.T) {
-	reg := NewRegistry()
+	registry := NewRegistry()
 	sentinel := errors.New("boom")
-	if err := reg.Register(llm.ToolDefinition{Name: "fail"}, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
+	if err := registry.Register(llm.ToolDefinition{Name: "fail"}, func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error) {
 		return Result{}, sentinel
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "fail"}, Environment{})
+	_, err := registry.Dispatch(context.Background(), llm.ToolCall{Name: "fail"}, Environment{})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want sentinel", err)
 	}
