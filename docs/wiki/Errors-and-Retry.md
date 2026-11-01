@@ -14,6 +14,7 @@ Errors are matched with `errors.Is` against sentinels and read with `errors.As`;
 | `llm` | `ErrContentFiltered` | the provider's safety policy aborted the generation; do not retry the same prompt |
 | `llm/openrouter` | `*APIError{StatusCode, Code, Message}` | any unexpected HTTP status; `Unwrap` returns the `llm` sentinel above. A 429 with `Retry-After` arrives wrapped in a `*retry.AfterError` |
 | `llm/codex` | `ErrReauthenticationRequired`, `ErrDeviceLoginDisabled` | the login is gone for good; the issuer has no device login |
+| `llm/codex` | `ErrRefreshInterrupted` | a token refresh got no complete answer, the refresh token may have rotated; not transient, never retried ([Models](Models.md#codex-chatgpt-subscription)) |
 | `tools` | `ErrUnknownTool`, `ErrInvalidArguments`, `ErrToolPanicked`, `ErrDuplicateTool` | [Tools](Tools.md#what-dispatch-checks) |
 | `vfs` | `ErrPathInvalid`, `ErrFileNotFound`, `ErrFileTooLarge`, `ErrReadOnly` | [Files](Files.md#the-storage-contract) |
 | `agent/history/memory` | `ErrEmptySessionID` | |

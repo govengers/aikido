@@ -42,10 +42,12 @@ const (
 var ErrReauthenticationRequired = errors.New("aikido/codex: ChatGPT login expired or revoked, log in again")
 
 // ErrRefreshInterrupted means a refresh got no complete answer (transport
-// failure, cut response, a 200 without tokens): the issuer may have rotated
-// the refresh token, and the rotated one is lost. The error wraps the cause
-// too: llm.ErrServerError, or context.DeadlineExceeded when the refresh ran
-// out of time. The next Token call refreshes with the previous token
+// failure, cut response, a 200 without tokens, the refresh's own timeout):
+// the issuer may have rotated the refresh token, and the rotated one is lost.
+// The cause is part of the message only: the error matches neither
+// llm.ErrServerError nor a context error, so no retry helper
+// (llm.CollectWithRetry, llm.CompleteWithRetry, llm.IsTransientServerError)
+// replays the refresh. The next Token call refreshes with the previous token
 // again; if that fails with ErrReauthenticationRequired, the user has to sign
 // in again. No client can do better: the issuer offers no way to recover a
 // rotated token whose answer did not arrive.
@@ -379,22 +381,29 @@ func keepMissingFields(fresh, previous Tokens) Tokens {
 var permanentRefreshErrors = []string{"refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "invalid_grant"}
 
 // refresh trades refreshToken for a new login at /oauth/token. A failure
-// without a complete answer wraps ErrRefreshInterrupted.
+// without a complete answer is refreshInterrupted.
 func refresh(ctx context.Context, options *LoginOptions, refreshToken string) (Tokens, error) {
 	status, body, err := postJSON(ctx, options, "/oauth/token", map[string]string{
 		"client_id": ClientID, "grant_type": "refresh_token", "refresh_token": refreshToken,
 	})
 	if err != nil {
-		return Tokens{}, fmt.Errorf("%w: %w", ErrRefreshInterrupted, err)
+		return Tokens{}, refreshInterrupted(err)
 	}
 	if status != http.StatusOK {
 		return Tokens{}, refreshError(status, body)
 	}
 	tokens, err := tokensFromResponse(body)
 	if err != nil {
-		return Tokens{}, fmt.Errorf("%w: %w: %w", ErrRefreshInterrupted, err, llm.ErrServerError)
+		return Tokens{}, refreshInterrupted(err)
 	}
 	return tokens, nil
+}
+
+// refreshInterrupted wraps ErrRefreshInterrupted and keeps cause as text
+// only, so a transient-looking cause cannot make a retry helper replay the
+// refresh.
+func refreshInterrupted(cause error) error {
+	return fmt.Errorf("%w: %v", ErrRefreshInterrupted, cause) //nolint:errorlint // matching the cause (llm.ErrServerError) would let retry helpers replay a possibly rotated refresh token
 }
 
 // refreshError classifies a failed refresh. A 401 or a 4xx naming a permanent
