@@ -110,6 +110,11 @@ func TestBenchmarkCommands(t *testing.T) {
 			script: `awk -F': ' '{s+=$2} END{print "total: " s}' LINES.md; awk 'BEGIN {print ENVIRON["HOME"]}'`,
 			want:   "total: 42\n/\n",
 		},
+		{
+			name: "grep -rlZ into xargs -0 sed -i", files: map[string]string{"a.go": "api.acme-legacy.io\n", "my docs/b.md": "x api.acme-legacy.io\n", "c.txt": "none\n"},
+			script: `grep -rlZ 'api\.acme-legacy\.io' . | xargs -0 sed -i 's/api\.acme-legacy\.io/api.acme.dev/g' && grep -rn 'api\.acme' . | sort`,
+			want:   "./a.go:1:api.acme.dev\n./my docs/b.md:1:x api.acme.dev\n",
+		},
 	}, nil)
 }
 

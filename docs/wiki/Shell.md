@@ -78,7 +78,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 | `sha256sum` | files or stdin, `-b -t` accepted |
 | `bash`, `sh` | `-c script [name [args]]`, `file [args]`, or a script on stdin; `-e -u -x -o option`. A nested interpreter in the same workspace; its `cd` and variables stay inside. `$0` is not set |
 
-Text commands (`grep`, `sed`, `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `jq`, `awk`) are built in the same way; their flags appear in the tool description from their `Summary`.
+Text commands (`grep`, `sed`, `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `jq`, `awk`) are built in the same way; their flags appear in the tool description from their `Summary`. `grep -Z` (`--null`) ends every printed file name with a NUL byte, for `grep -rlZ x . | xargs -0 sed -i ...`; `grep -z` (`--null-data`) reads and writes NUL-terminated lines. `awk` sees the exported variables in `ENVIRON`.
 
 The interpreter itself provides the shell builtins: `cd`, `pwd`, `echo`, `printf`, `test` and `[`, `read`, `export`, `set`, `shift`, `exit`, `return`, `source`/`.`, `eval`, `local`, `declare`, `trap`, `wait`, `true`, `false`, `type`, `command`, `alias`, `getopts`, `pushd`/`popd`, `mapfile`. `xargs`, `find -exec` and `env` can start them too (`xargs echo`). `command -v` and `type` answer for registered commands as for builtins.
 

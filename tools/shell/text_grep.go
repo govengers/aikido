@@ -44,6 +44,8 @@ Search for PATTERNS in each FILE.
   -L, --files-without-match print only names of FILEs with no selected lines
   -l, --files-with-matches  print only names of FILEs with selected lines
   -c, --count               print only a count of selected lines per FILE
+  -Z, --null                print 0 byte after FILE name
+  -z, --null-data           a data line ends in 0 byte, not newline
   -B, --before-context=NUM  print NUM lines of leading context
   -A, --after-context=NUM   print NUM lines of trailing context
   -C, --context=NUM, -NUM   print NUM lines of output context
@@ -82,6 +84,8 @@ var grepParser = &optionParser{digitsKey: "context", specs: []optionSpec{
 	{short: 'L', long: "files-without-match"},
 	{short: 'l', long: "files-with-matches"},
 	{short: 'c', long: "count"},
+	{short: 'Z', long: "null"},
+	{short: 'z', long: "null-data"},
 	{short: 'B', long: "before-context", argument: requiredArgument},
 	{short: 'A', long: "after-context", argument: requiredArgument},
 	{short: 'C', long: "context", argument: requiredArgument},
@@ -94,7 +98,7 @@ var grepParser = &optionParser{digitsKey: "context", specs: []optionSpec{
 func grepCommand() Command {
 	return Command{
 		Name:    "grep",
-		Summary: "search text (-r -n -l -L -c -i -v -w -x -o -q -s -E -F -P -e -f -A -B -C -m -h -H --include --exclude --exclude-dir)",
+		Summary: "search text (-r -n -l -L -c -i -v -w -x -o -q -s -E -F -P -e -f -A -B -C -m -h -H -Z -z --include --exclude --exclude-dir)",
 		Run:     runGrep,
 	}
 }
@@ -136,6 +140,10 @@ type grepSettings struct {
 	recursive                      bool
 	includes, excludes, excludeDir []string
 	text, skipBinary               bool
+	// nullNames (-Z) ends a printed file name with a NUL byte instead of
+	// ":" or a newline; nullData (-z) makes NUL the line terminator of
+	// input and output.
+	nullNames, nullData bool
 }
 
 func runGrep(ctx context.Context, invocation *Invocation) error {
@@ -236,6 +244,7 @@ func (s *grepSettings) applyFlag(key string) bool {
 		"no-messages": &s.noMessages, "invert-match": &s.invert, "line-number": &s.lineNumbers,
 		"only-matching": &s.onlyMatches, "quiet": &s.quiet, "silent": &s.quiet, "recursive": &s.recursive,
 		"dereference-recursive": &s.recursive, "text": &s.text, "I": &s.skipBinary, "count": &s.count,
+		"null": &s.nullNames, "null-data": &s.nullData,
 	}
 	if flag, ok := flags[key]; ok {
 		*flag = true
@@ -605,11 +614,12 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	if err != nil {
 		return false, false, err
 	}
-	binary := !g.settings.text && bytes.IndexByte(content, 0) >= 0
+	// With -z a NUL byte ends a line, so it does not make the file binary.
+	binary := !g.settings.text && !g.settings.nullData && bytes.IndexByte(content, 0) >= 0
 	if binary && g.settings.skipBinary {
 		return false, false, nil
 	}
-	lines, _ := splitLines(string(content))
+	lines := splitRecords(string(content), g.lineEnd())
 	return g.searchLines(input.name, lines, binary), false, nil
 }
 
@@ -707,14 +717,14 @@ func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separat
 	}
 	if g.withFilename {
 		line.WriteString(scan.name)
-		line.WriteByte(separator)
+		line.WriteByte(g.nameEnd(separator))
 	}
 	if g.settings.lineNumbers {
 		line.WriteString(strconv.Itoa(index + 1))
 		line.WriteByte(separator)
 	}
 	line.WriteString(text)
-	line.WriteByte('\n')
+	line.WriteByte(g.lineEnd())
 	fmt.Fprint(g.output, line.String())
 	scan.lastPrinted = index
 	g.printedLines = true
@@ -728,11 +738,36 @@ func (g *grepSearcher) printSummary(name string, selectedCount int) {
 	}
 	if settings.count && settings.listing == listNone {
 		if g.withFilename {
-			fmt.Fprintf(g.output, "%s:", name)
+			fmt.Fprintf(g.output, "%s%c", name, g.nameEnd(':'))
 		}
 		fmt.Fprintf(g.output, "%d\n", selectedCount)
 	}
 	if settings.listing == listMatching && selectedCount > 0 || settings.listing == listNonMatching && selectedCount == 0 {
-		fmt.Fprintf(g.output, "%s\n", name)
+		fmt.Fprintf(g.output, "%s%c", name, g.nameEnd('\n'))
 	}
+}
+
+// nameEnd is the byte after a printed file name: separator, or NUL with -Z.
+func (g *grepSearcher) nameEnd(separator byte) byte {
+	if g.settings.nullNames {
+		return 0
+	}
+	return separator
+}
+
+// lineEnd is the line terminator of input and output: NUL with -z.
+func (g *grepSearcher) lineEnd() byte {
+	if g.settings.nullData {
+		return 0
+	}
+	return '\n'
+}
+
+// splitRecords splits text into records ended by terminator; the last one
+// may lack it.
+func splitRecords(text string, terminator byte) []string {
+	if text == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(text, string(terminator)), string(terminator))
 }
