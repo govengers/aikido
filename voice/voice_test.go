@@ -382,6 +382,28 @@ func TestRun_VocabularyCorrectsTheTranscript(t *testing.T) {
 	}
 }
 
+// New keeps no caller-owned mutable configuration: changing Speed or the
+// Vocabulary after New does not reach the Pipeline (or race with its turns).
+func TestNew_CopiesPointedToOptions(t *testing.T) {
+	t.Parallel()
+	speed := float32(1.25)
+	vocabulary := &llm.Vocabulary{Terms: []string{"Waschtisch"}, Replacements: map[string]string{"wasch tisch": "Waschtisch"}}
+	pipeline := newPipeline(t, &Options{Speech: &fakeSpeech{}, Speed: &speed, Vocabulary: vocabulary})
+
+	speed = 2
+	vocabulary.Terms[0] = "changed"
+	vocabulary.Replacements["wasch tisch"] = "changed"
+	vocabulary.Fuzzy = true
+
+	if got := *pipeline.options.Speed; got != 1.25 {
+		t.Errorf("Speed = %v, want 1.25", got)
+	}
+	kept := pipeline.options.Vocabulary
+	if kept.Terms[0] != "Waschtisch" || kept.Replacements["wasch tisch"] != "Waschtisch" || kept.Fuzzy {
+		t.Errorf("Vocabulary = %+v, want the one passed to New", kept)
+	}
+}
+
 func TestRun_FailedChunkDoesNotEndTheTurn(t *testing.T) {
 	t.Parallel()
 	chat := llmtest.NewStubClient(replyTurn(0, firstAnswer+secondAnswer))

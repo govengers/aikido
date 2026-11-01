@@ -50,7 +50,7 @@ From [voice/example_test.go](../../voice/example_test.go) (`ExamplePipeline_Run`
 | `SpeechConcurrency` | 2 | parallel synthesis calls; chunks still arrive in order |
 | `SpokenStyle` | none | appended to the system prompt for speech turns; `voice.DefaultSpokenStyle` asks for short plain sentences |
 
-`New` needs at least a `Transcriber` or a `Speech` generator. `Run(ctx, runner, input)` takes any `voice.Runner` (`*agent.Session` is one) and a `voice.Input{Text | Audio + ContentType, Language, Output}`; invalid input is refused up front with `llm.ErrInvalidRequest`. `voice.Speakable(markdown)` is what turns a reply into speakable text: code, URLs and markup dropped.
+`New` needs at least a `Transcriber` or a `Speech` generator. It copies the options, `Speed` and `Vocabulary` included, so changing them afterwards does not reach the Pipeline. `Run(ctx, runner, input)` takes any `voice.Runner` (`*agent.Session` is one) and a `voice.Input{Text | Audio + ContentType, Language, Output}`; invalid input is refused up front with `llm.ErrInvalidRequest`. `voice.Speakable(markdown)` is what turns a reply into speakable text: code, URLs and markup dropped.
 
 ## Events
 

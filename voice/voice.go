@@ -16,6 +16,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -100,8 +102,8 @@ type Pipeline struct {
 }
 
 // New builds a Pipeline. It returns an error if options is nil or has neither
-// a Transcriber nor a Speech generator. options is copied; later changes do
-// not reach the Pipeline.
+// a Transcriber nor a Speech generator. options is copied, with Speed and
+// Vocabulary; later changes do not reach the Pipeline.
 func New(options *Options) (*Pipeline, error) {
 	if options == nil {
 		return nil, errors.New("aikido/voice: nil Options")
@@ -110,6 +112,17 @@ func New(options *Options) (*Pipeline, error) {
 		return nil, errors.New("aikido/voice: Options need a Transcriber, a Speech generator, or both")
 	}
 	configured := *options
+	if options.Speed != nil {
+		speed := *options.Speed
+		configured.Speed = &speed
+	}
+	if options.Vocabulary != nil {
+		configured.Vocabulary = &llm.Vocabulary{
+			Terms:        slices.Clone(options.Vocabulary.Terms),
+			Replacements: maps.Clone(options.Vocabulary.Replacements),
+			Fuzzy:        options.Vocabulary.Fuzzy,
+		}
+	}
 	if configured.SpeechModel == "" {
 		configured.SpeechModel = DefaultSpeechModel
 	}
