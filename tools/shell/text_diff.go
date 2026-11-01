@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/govengers/aikido/vfs"
 )
 
 var diffTool = &textTool{
@@ -294,6 +292,9 @@ func (d *differ) compareChild(ctx context.Context, left, right string, child dif
 		return 0, err
 	}
 	switch {
+	case d.settings.recursive && (leftEntry.directory || leftEntry.missing) && (rightEntry.directory || rightEntry.missing):
+		// With -N a directory on one side only compares with an empty one.
+		return d.compareDirectories(ctx, leftPath, rightPath)
 	case leftEntry.directory && rightEntry.directory:
 		if !d.settings.recursive {
 			fmt.Fprintf(&d.output, "Common subdirectories: %s and %s\n", leftPath, rightPath)
@@ -308,34 +309,22 @@ func (d *differ) compareChild(ctx context.Context, left, right string, child dif
 	return d.compareFiles(ctx, leftEntry, rightEntry, true)
 }
 
-// children lists the names directly below a directory.
+// children lists the names directly below a directory: files and the
+// directories made with mkdir.
 func (d *differ) children(ctx context.Context, directory string) ([]string, error) {
 	resolved, err := Resolve(d.invocation.Directory, directory)
 	if err != nil {
 		return nil, nil //nolint:nilerr // an unresolvable directory has no children
 	}
-	files, err := d.invocation.Storage.ListFiles(ctx)
+	entries, err := workspaceOf(d.invocation).children(ctx, resolved)
 	if err != nil {
 		return nil, fmt.Errorf("list files: %w", err)
 	}
-	return childNames(files, resolved), nil
-}
-
-// childNames are the first path segments below prefix, sorted and unique.
-func childNames(files []vfs.FileMetadata, directory string) []string {
-	prefix := directory + "/"
-	if directory == "" {
-		prefix = ""
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.name)
 	}
-	var names []string
-	for _, file := range files {
-		if rest, ok := strings.CutPrefix(file.Path, prefix); ok {
-			first, _, _ := strings.Cut(rest, "/")
-			names = append(names, first)
-		}
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
+	return names, nil
 }
 
 // diffPrinter renders hunks in normal or unified format.

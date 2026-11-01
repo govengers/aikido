@@ -350,10 +350,14 @@ func parseTrClass(name string, second bool) (trToken, int, string) {
 	return trToken{isGroup: true, expansion: expansion}, len(name) + 4, ""
 }
 
-// parseTrRepeat parses [c*n] or [c*] (second set only).
+// parseTrRepeat parses [c*n] or [c*] (second set only); a "[" that ends
+// the set is an ordinary character.
 func parseTrRepeat(text string, second bool) (trToken, int, string) {
+	if len(text) < 2 {
+		return trToken{}, 0, ""
+	}
 	character, consumed := text[1], 2
-	if len(text) > 1 && text[1] == '\\' {
+	if text[1] == '\\' {
 		var escapeLength int
 		character, escapeLength = trEscape(text[1:])
 		consumed = 1 + escapeLength

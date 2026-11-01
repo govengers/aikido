@@ -372,7 +372,7 @@ func (p *sedScriptParser) readDelimited(delimiter byte, regex bool) (string, boo
 			}
 		case character == '[' && regex:
 			text.WriteByte('[')
-			if !p.copyBracket(&text) {
+			if !p.copyBracket(&text, delimiter) {
 				return "", false
 			}
 		default:
@@ -382,7 +382,9 @@ func (p *sedScriptParser) readDelimited(delimiter byte, regex bool) (string, boo
 }
 
 // copyBracket copies a bracket expression after its "[" through its "]".
-func (p *sedScriptParser) copyBracket(text *strings.Builder) bool {
+// "\delimiter" becomes the bare delimiter there too, as in GNU; "\\"
+// stays a pair so it cannot escape the delimiter.
+func (p *sedScriptParser) copyBracket(text *strings.Builder, delimiter byte) bool {
 	start := p.position
 	if p.position < len(p.text) && p.text[p.position] == '^' {
 		p.position++
@@ -390,7 +392,9 @@ func (p *sedScriptParser) copyBracket(text *strings.Builder) bool {
 	if p.position < len(p.text) && p.text[p.position] == ']' {
 		p.position++
 	}
+	text.WriteString(p.text[start:p.position])
 	for p.position < len(p.text) {
+		start = p.position
 		character := p.text[p.position]
 		p.position++
 		switch {
@@ -400,12 +404,19 @@ func (p *sedScriptParser) copyBracket(text *strings.Builder) bool {
 			if end >= 0 {
 				p.position += end + 3
 			}
+		case character == '\\' && p.position < len(p.text) && p.text[p.position] == delimiter:
+			p.position++
+			text.WriteByte(delimiter)
+			continue
+		case character == '\\' && p.position < len(p.text) && p.text[p.position] == '\\':
+			p.position++
 		case character == ']':
-			text.WriteString(p.text[start:p.position])
+			text.WriteByte(']')
 			return true
 		case character == '\n':
 			return false
 		}
+		text.WriteString(p.text[start:p.position])
 	}
 	return false
 }

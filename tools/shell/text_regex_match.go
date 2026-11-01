@@ -2,7 +2,10 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -59,8 +62,9 @@ func alternatives(parts []translation) translation {
 // match, the longest one there (unless leftmostFirst), searched from any
 // offset with the line around it as context for ^, \b, \< and \>.
 // Directional word boundaries are verified on each candidate; when one
-// fails, shorter matches at the same start and then later starts are
-// tried. Not safe for concurrent use (the variants compile lazily).
+// fails, other matches of the same extent, shorter matches at the same
+// start and then later starts are tried. Not safe for concurrent use (the
+// variants compile lazily).
 type posixRegexp struct {
 	translation
 	options regexOptions
@@ -71,6 +75,9 @@ type posixRegexp struct {
 	from  *regexp.Regexp
 	at    *regexp.Regexp
 	exact [2][2]*regexp.Regexp
+	// without are the variants with some boundaries made unmatchable, by
+	// their captures.
+	without map[string]*posixRegexp
 }
 
 // compilePOSIX compiles a translation with the flags of options.
@@ -142,8 +149,8 @@ func (r *posixRegexp) findFrom(ctx context.Context, text string, offset int) []i
 		if r.boundariesHold(text, match) {
 			return r.posixIndexes(match)
 		}
-		if shorter := r.shorterMatch(ctx, text, match[0], match[1]); shorter != nil {
-			return r.posixIndexes(shorter)
+		if holding := r.longestHolding(ctx, text, match[0], match[1]); holding != nil {
+			return r.posixIndexes(holding)
 		}
 		if match[0] == len(text) {
 			return nil
@@ -153,19 +160,19 @@ func (r *posixRegexp) findFrom(ctx context.Context, text string, offset int) []i
 	return nil
 }
 
-// shorterMatch tries the ends before end, longest first, for a match at
+// longestHolding tries the ends from end down to begin for a match at
 // begin whose word boundaries hold.
 // ponytail: one RE2 run per candidate end, quadratic in the line; only a
 // failing \< or \> gets here, and ctx stops it.
-func (r *posixRegexp) shorterMatch(ctx context.Context, text string, begin, end int) []int {
-	for candidate := end - 1; candidate >= begin; candidate-- {
+func (r *posixRegexp) longestHolding(ctx context.Context, text string, begin, end int) []int {
+	for candidate := end; candidate >= begin; candidate-- {
 		if ctx.Err() != nil {
 			return nil
 		}
 		if candidate < len(text) && !utf8.RuneStart(text[candidate]) {
 			continue
 		}
-		if match := r.exactMatch(text, begin, candidate); match != nil && r.boundariesHold(text, match) {
+		if match := r.holdingMatch(text, begin, candidate); match != nil {
 			return match
 		}
 	}
@@ -175,8 +182,65 @@ func (r *posixRegexp) shorterMatch(ctx context.Context, text string, begin, end 
 // matchesExactly reports whether text[begin:end] is a match, with the text
 // around it as context.
 func (r *posixRegexp) matchesExactly(text string, begin, end int) bool {
-	match := r.exactMatch(text, begin, end)
-	return match != nil && r.boundariesHold(text, match)
+	return r.holdingMatch(text, begin, end) != nil
+}
+
+// holdingMatch is the Go match of exactly text[begin:end] whose word
+// boundaries hold, or nil. RE2 picks one way to match an extent; when it
+// puts a \< or \> where it fails, the extent is matched again with those
+// boundaries made unmatchable, so an alternative of equal extent wins.
+// ponytail: a failed boundary is dropped for the whole extent, so a match
+// that puts the same \< elsewhere in it (under a repetition, next to a
+// variable-length part) is missed; exact needs boundaries inside RE2.
+func (r *posixRegexp) holdingMatch(text string, begin, end int) []int {
+	for current := r; ; {
+		match := current.exactMatch(text, begin, end)
+		if match == nil {
+			return nil
+		}
+		failed := current.failedBoundaries(text, match)
+		if len(failed) == 0 {
+			return match
+		}
+		current = current.withoutBoundaries(failed)
+	}
+}
+
+// withoutBoundaries is the variant of r in which the boundaries of the
+// given captures never match; it keeps the capture numbering.
+func (r *posixRegexp) withoutBoundaries(captures []int) *posixRegexp {
+	key := fmt.Sprint(captures)
+	if variant, ok := r.without[key]; ok {
+		return variant
+	}
+	// The pattern compiled once already, so it parses and compiles again.
+	parsed, err := syntax.Parse(goFlags(r.options)+r.pattern, syntax.Perl)
+	if err != nil {
+		panic("aikido/tools/shell: parse of a valid pattern: " + strconv.Quote(r.pattern))
+	}
+	disableCaptures(parsed, captures)
+	source := r.translation
+	source.pattern = parsed.String()
+	variant, err := compilePOSIX(source, r.options)
+	if err != nil {
+		panic("aikido/tools/shell: variant of a valid pattern: " + strconv.Quote(r.pattern))
+	}
+	if r.without == nil {
+		r.without = map[string]*posixRegexp{}
+	}
+	r.without[key] = variant
+	return variant
+}
+
+// disableCaptures makes the given capture groups of node unmatchable.
+func disableCaptures(node *syntax.Regexp, captures []int) {
+	if node.Op == syntax.OpCapture && slices.Contains(captures, node.Cap) {
+		node.Sub[0] = &syntax.Regexp{Op: syntax.OpNoMatch}
+		return
+	}
+	for _, sub := range node.Sub {
+		disableCaptures(sub, captures)
+	}
 }
 
 // search is the leftmost(-longest) Go match starting at or after start,
@@ -241,6 +305,13 @@ func (r *posixRegexp) variant(compiled *regexp.Regexp, prefix, suffix string, le
 
 // boundariesHold checks the \< and \> a Go match passed.
 func (r *posixRegexp) boundariesHold(text string, match []int) bool {
+	return len(r.failedBoundaries(text, match)) == 0
+}
+
+// failedBoundaries are the captures of the \< and \> a Go match passed
+// where they do not hold.
+func (r *posixRegexp) failedBoundaries(text string, match []int) []int {
+	var failed []int
 	for _, boundary := range r.boundaries {
 		position := match[2*boundary.capture]
 		if position < 0 {
@@ -249,10 +320,10 @@ func (r *posixRegexp) boundariesHold(text string, match []int) bool {
 		wordBefore := position > 0 && isWordByte(text[position-1])
 		wordAfter := position < len(text) && isWordByte(text[position])
 		if boundary.start && (wordBefore || !wordAfter) || !boundary.start && (!wordBefore || wordAfter) {
-			return false
+			failed = append(failed, boundary.capture)
 		}
 	}
-	return true
+	return failed
 }
 
 // posixIndexes keeps the whole match and the POSIX groups of a Go match.

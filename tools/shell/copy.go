@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -71,7 +72,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 		return usage(invocation, mode.command, fmt.Errorf("missing destination file operand after '%s'", operands[0]), errFailed)
 	}
 	files := workspaceOf(invocation)
-	transfers, err := planTransfers(ctx, invocation, files, operands, mode.move)
+	transfers, err := planTransfers(ctx, invocation, files, operands)
 	if err != nil {
 		complain(invocation, mode.command, "%v", err)
 		return errFailed
@@ -98,7 +99,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 
 // planTransfers pairs every source with its target: into the last operand
 // when it is a directory, else the one source onto it.
-func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string, move bool) ([]transfer, error) {
+func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string) ([]transfer, error) {
 	sources, last := operands[:len(operands)-1], operands[len(operands)-1]
 	lastName, err := resolve(invocation, last)
 	if err != nil {
@@ -109,18 +110,13 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 		return nil, err
 	}
 	intoDirectory := lastEntry.kind == entryDirectory
-	switch {
-	case len(sources) > 1 && !intoDirectory:
-		return nil, fmt.Errorf("target '%s' is not a directory", last)
-	case strings.HasSuffix(last, "/") && !intoDirectory:
-		// "out/" names a directory; GNU never creates a file for it.
-		switch {
-		case lastEntry.kind != entryMissing:
-			return nil, fmt.Errorf("failed to access '%s': %w", last, errNotDirectory)
-		case move:
-			return nil, fmt.Errorf("cannot move '%s' to '%s': %w", sources[0], last, errNotDirectory)
+	if len(sources) > 1 && !intoDirectory {
+		// GNU's "target 'x': " with why x cannot be opened as a directory.
+		reason := errNotDirectory
+		if lastEntry.kind == entryMissing {
+			reason = errNotFound
 		}
-		return nil, fmt.Errorf("cannot create regular file '%s': %w", last, errNotDirectory)
+		return nil, fmt.Errorf("target '%s': %w", last, reason)
 	}
 	transfers := make([]transfer, 0, len(sources))
 	for _, source := range sources {
@@ -148,13 +144,22 @@ func (m transferMode) run(ctx context.Context, files workspace, directory string
 	if planned.sourceEntry, err = files.stat(ctx, planned.source); err != nil {
 		return err
 	}
+	// "out/" names a directory: a missing one is created only for a
+	// directory source, a non-directory fails GNU's stat of the target.
+	slashedTarget := strings.HasSuffix(planned.targetOperand, "/") && planned.targetEntry.kind != entryDirectory
 	switch {
 	case planned.sourceEntry.kind == entryMissing:
 		return fmt.Errorf("cannot stat '%s': %w", planned.sourceOperand, errNotFound)
+	case strings.HasSuffix(planned.sourceOperand, "/") && planned.sourceEntry.kind != entryDirectory:
+		return fmt.Errorf("cannot stat '%s': %w", planned.sourceOperand, errNotDirectory)
+	case slashedTarget && planned.targetEntry.kind != entryMissing:
+		return fmt.Errorf("cannot stat '%s': %w", planned.targetOperand, errNotDirectory)
 	case planned.source == planned.target:
 		return fmt.Errorf("'%s' and '%s' are the same file", planned.sourceOperand, planned.targetOperand)
 	case planned.sourceEntry.kind == entryDirectory:
 		return m.transferDirectory(ctx, files, planned)
+	case slashedTarget:
+		return m.targetError(planned, errNotDirectory)
 	case planned.targetEntry.kind == entryDirectory:
 		return fmt.Errorf("cannot overwrite directory '%s' with non-directory", planned.targetOperand)
 	case m.noClobber && planned.targetEntry.kind != entryMissing:
@@ -198,28 +203,12 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	if err := m.checkDirectoryTarget(ctx, files, planned); err != nil {
 		return err
 	}
-	below, err := files.filesBelow(ctx, planned.source)
+	subdirectories, err := m.transferContents(ctx, files, planned)
 	if err != nil {
 		return err
 	}
-	var problems []error
-	for _, file := range below {
-		relative := strings.TrimPrefix(file.Path, planned.source+"/")
-		inner := transfer{
-			source: file.Path, sourceOperand: path.Join(planned.sourceOperand, relative),
-			target: path.Join(planned.target, relative), targetOperand: path.Join(planned.targetOperand, relative),
-		}
-		if err := m.transferBelow(ctx, files, inner, file.ContentType); err != nil {
-			problems = append(problems, err)
-		}
-	}
-	if len(problems) > 0 {
-		return errors.Join(problems...)
-	}
-	for _, directory := range files.directories.list() {
-		if rest, ok := relativeTo(directory, planned.source); ok {
-			files.directories.add(path.Join(planned.target, rest))
-		}
+	for _, rest := range subdirectories {
+		files.directories.add(path.Join(planned.target, rest))
 	}
 	files.directories.add(planned.target)
 	if m.move {
@@ -228,20 +217,56 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	return nil
 }
 
-// transferBelow copies or moves one file of a recursive transfer, with the
-// checks GNU makes per destination: no file over a directory or below a
-// file, and -n keeps an existing file.
+// transferContents transfers the files below a directory source and
+// returns its subdirectories (relative paths) for the caller to create once
+// everything went well. A failure is every problem, each reported once:
+// all files below a directory that clashes with a target file share one.
+func (m transferMode) transferContents(ctx context.Context, files workspace, planned transfer) ([]string, error) {
+	below, err := files.filesBelow(ctx, planned.source)
+	if err != nil {
+		return nil, err
+	}
+	clashes := directoryClashes{planned: planned, checked: map[string]bool{}}
+	var problems []error
+	report := func(err error) {
+		if !slices.ContainsFunc(problems, func(known error) bool { return known.Error() == err.Error() }) {
+			problems = append(problems, err)
+		}
+	}
+	for _, file := range below {
+		relative := strings.TrimPrefix(file.Path, planned.source+"/")
+		if err := clashes.check(ctx, files, path.Dir(relative)); err != nil {
+			report(err)
+			continue
+		}
+		inner := transfer{
+			source: file.Path, sourceOperand: path.Join(planned.sourceOperand, relative),
+			target: path.Join(planned.target, relative), targetOperand: path.Join(planned.targetOperand, relative),
+		}
+		if err := m.transferBelow(ctx, files, inner, file.ContentType); err != nil {
+			report(err)
+		}
+	}
+	var subdirectories []string
+	for _, directory := range files.directories.list() {
+		if rest, ok := relativeTo(directory, planned.source); ok {
+			if err := clashes.check(ctx, files, rest); err != nil {
+				report(err)
+			}
+			subdirectories = append(subdirectories, rest)
+		}
+	}
+	return subdirectories, errors.Join(problems...)
+}
+
+// transferBelow copies or moves one file of a recursive transfer whose
+// directories passed directoryClashes, with the checks GNU makes per
+// destination: no file over a directory, and -n keeps an existing file.
 func (m transferMode) transferBelow(ctx context.Context, files workspace, inner transfer, contentType string) error {
 	targetEntry, err := files.stat(ctx, inner.target)
-	if err != nil {
-		return err
-	}
-	parent, err := files.stat(ctx, parentOf(inner.target))
 	switch {
 	case err != nil:
 		return err
-	case parent.kind == entryFile:
-		return fmt.Errorf("cannot overwrite non-directory '%s' with directory '%s'", path.Dir(inner.targetOperand), path.Dir(inner.sourceOperand))
 	case targetEntry.kind == entryDirectory:
 		return fmt.Errorf("cannot overwrite directory '%s' with non-directory", inner.targetOperand)
 	case m.noClobber && targetEntry.kind != entryMissing:
@@ -256,6 +281,40 @@ func (m transferMode) transferBelow(ctx context.Context, files workspace, inner 
 	}
 	if err != nil {
 		return m.targetError(inner, err)
+	}
+	return nil
+}
+
+// directoryClashes finds the directories of a recursive transfer that would
+// land on a non-directory below the target: GNU refuses to write beneath a
+// file at any depth, Storage would not.
+type directoryClashes struct {
+	planned transfer
+	checked map[string]bool // target directories known not to be files
+}
+
+// check returns GNU's error for the first directory on the relative path
+// rest (from the top) whose target is not a directory.
+func (c directoryClashes) check(ctx context.Context, files workspace, rest string) error {
+	if rest == "." {
+		return nil
+	}
+	prefix := ""
+	for segment := range strings.SplitSeq(rest, "/") {
+		prefix = path.Join(prefix, segment)
+		target := path.Join(c.planned.target, prefix)
+		if c.checked[target] {
+			continue
+		}
+		found, err := files.stat(ctx, target)
+		switch {
+		case err != nil:
+			return err
+		case found.kind == entryFile || found.kind == entryDevice:
+			return fmt.Errorf("cannot overwrite non-directory '%s' with directory '%s'",
+				path.Join(c.planned.targetOperand, prefix), path.Join(c.planned.sourceOperand, prefix))
+		}
+		c.checked[target] = true
 	}
 	return nil
 }

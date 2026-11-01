@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -383,7 +384,9 @@ func runSleep(ctx context.Context, invocation *Invocation) error {
 		if err != nil {
 			return usage(invocation, "sleep", fmt.Errorf("invalid time interval '%s'", argument), errFailed)
 		}
-		total += duration
+		// Each duration saturates at math.MaxInt64; so does their sum, or
+		// `sleep inf inf` would wrap negative and return at once.
+		total += min(duration, math.MaxInt64-total)
 	}
 	timer := time.NewTimer(total)
 	defer timer.Stop()
@@ -449,55 +452,111 @@ func runBase64(ctx context.Context, invocation *Invocation) error {
 	if len(operands) == 1 {
 		source = operands[0]
 	}
-	input, err := readInput(ctx, invocation, source)
+	input, err := openInput(ctx, invocation, source)
 	if err != nil {
 		complain(invocation, "base64", "%s: %v", source, err)
 		return errFailed
 	}
+	output := bufio.NewWriter(invocation.Stdout)
 	if parsed.has("d") {
-		return decodeBase64(invocation, input, parsed.has("i"))
+		err = decodeBase64(invocation, output, input, parsed.has("i"))
+	} else {
+		err = encodeBase64(output, input, wrap)
 	}
-	_, err = io.WriteString(invocation.Stdout, wrapText(base64.StdEncoding.EncodeToString(input), wrap))
+	if flushErr := output.Flush(); flushErr != nil && err == nil {
+		err = fmt.Errorf("write output: %w", flushErr)
+	}
 	return err
 }
 
-// wrapText breaks encoded text into lines of width characters (0: one
-// line) and ends it with a newline unless it is empty.
-func wrapText(encoded string, width int) string {
-	if encoded == "" {
-		return ""
+// encodeBase64 streams input as base64 in lines of wrap characters (0:
+// one line); an empty input prints nothing.
+func encodeBase64(output io.Writer, input io.Reader, wrap int) error {
+	wrapped := &lineWrapper{output: output, width: wrap}
+	encoder := base64.NewEncoder(base64.StdEncoding, wrapped)
+	if _, err := io.Copy(encoder, input); err != nil {
+		return fmt.Errorf("encode: %w", err)
 	}
-	if width == 0 {
-		return encoded + "\n"
+	if err := encoder.Close(); err != nil {
+		return fmt.Errorf("encode: %w", err)
 	}
-	var wrapped strings.Builder
-	for len(encoded) > width {
-		wrapped.WriteString(encoded[:width] + "\n")
-		encoded = encoded[width:]
-	}
-	wrapped.WriteString(encoded + "\n")
-	return wrapped.String()
+	return wrapped.end()
 }
 
-func decodeBase64(invocation *Invocation, input []byte, ignoreGarbage bool) error {
-	cleaned := strings.Map(func(character rune) rune {
-		switch {
-		case character == '\n' || character == '\r':
-			return -1
-		case ignoreGarbage && !strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=", character):
-			return -1
+// lineWrapper breaks what is written into lines of width bytes (0: one
+// line); end terminates the last line, if anything was written.
+type lineWrapper struct {
+	output        io.Writer
+	width, column int
+}
+
+func (w *lineWrapper) Write(data []byte) (int, error) {
+	written := 0
+	for written < len(data) {
+		if w.width > 0 && w.column == w.width {
+			if _, err := io.WriteString(w.output, "\n"); err != nil {
+				return written, err
+			}
+			w.column = 0
 		}
-		return character
-	}, string(input))
-	decoded, err := base64.StdEncoding.DecodeString(cleaned)
-	if _, writeErr := invocation.Stdout.Write(decoded); writeErr != nil {
-		return writeErr
+		chunk := data[written:]
+		if w.width > 0 {
+			chunk = chunk[:min(len(chunk), w.width-w.column)]
+		}
+		count, err := w.output.Write(chunk)
+		written += count
+		w.column += count
+		if err != nil {
+			return written, err
+		}
 	}
-	if err != nil {
+	return written, nil
+}
+
+func (w *lineWrapper) end() error {
+	if w.column == 0 {
+		return nil
+	}
+	_, err := io.WriteString(w.output, "\n")
+	return err
+}
+
+// decodeBase64 streams the decoded input; line breaks are skipped, with
+// ignoreGarbage every byte outside the alphabet.
+func decodeBase64(invocation *Invocation, output *bufio.Writer, input io.Reader, ignoreGarbage bool) error {
+	if ignoreGarbage {
+		input = &base64Alphabet{reader: input}
+	}
+	_, err := io.Copy(output, base64.NewDecoder(base64.StdEncoding, input))
+	var corrupt base64.CorruptInputError
+	if errors.As(err, &corrupt) || errors.Is(err, io.ErrUnexpectedEOF) {
+		// What was decoded comes first, as GNU writes it before the error.
+		if err := output.Flush(); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
 		complain(invocation, "base64", "invalid input")
 		return errFailed
 	}
-	return nil
+	return err
+}
+
+// base64Alphabet reads only the bytes of the base64 alphabet, for -i.
+type base64Alphabet struct{ reader io.Reader }
+
+func (f *base64Alphabet) Read(data []byte) (int, error) {
+	for {
+		count, err := f.reader.Read(data)
+		kept := 0
+		for _, character := range data[:count] {
+			if isASCIILetter(character) || isDigit(character) || strings.IndexByte("+/=", character) >= 0 {
+				data[kept] = character
+				kept++
+			}
+		}
+		if kept > 0 || err != nil {
+			return kept, err
+		}
+	}
 }
 
 func sha256sumCommand() Command {
@@ -514,13 +573,23 @@ func runSha256sum(ctx context.Context, invocation *Invocation) error {
 	}
 	var status error
 	for _, operand := range operands {
-		content, err := readInput(ctx, invocation, operand)
+		input, err := openInput(ctx, invocation, operand)
 		if err != nil {
 			complain(invocation, "sha256sum", "%s: %v", operand, err)
 			status = errFailed
 			continue
 		}
-		fmt.Fprintf(invocation.Stdout, "%x  %s\n", sha256.Sum256(content), operand)
+		hash := sha256.New()
+		if _, err := io.Copy(hash, input); err != nil {
+			return fmt.Errorf("read %s: %w", operand, err)
+		}
+		if err := ctx.Err(); err != nil {
+			// A pipe cut short by the timeout has no checksum.
+			return err
+		}
+		if _, err := fmt.Fprintf(invocation.Stdout, "%x  %s\n", hash.Sum(nil), operand); err != nil {
+			return fmt.Errorf("write output: %w", err)
+		}
 	}
 	return status
 }

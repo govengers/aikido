@@ -53,11 +53,14 @@ func parseMountFlags(values []string) ([]mountSpec, error) {
 // is the in-memory store of old; every directory sits behind an overlay, so
 // nothing reaches the disk unless the run ends with --apply.
 type workspace struct {
-	direct   bool // directories are used without an overlay
-	storage  vfs.Storage
-	memory   *vfsmem.Storage // the in-memory root without --dir, else nil
-	overlays []directoryOverlay
-	disks    []*osfs.Storage
+	direct bool // directories are used without an overlay
+	// refuseSymlinks keeps the disk from following links, under
+	// --hide-hidden: a visible link could reach a hidden file.
+	refuseSymlinks bool
+	storage        vfs.Storage
+	memory         *vfsmem.Storage // the in-memory root without --dir, else nil
+	overlays       []directoryOverlay
+	disks          []*osfs.Storage
 }
 
 // directoryOverlay is one directory's overlay and where the agent sees it.
@@ -68,9 +71,10 @@ type directoryOverlay struct {
 }
 
 // openWorkspace opens --dir and the --mount directories, each behind an
-// overlay, or directly on disk with direct.
-func openWorkspace(directory string, mounts []mountSpec, direct bool) (*workspace, error) {
-	opened := &workspace{direct: direct}
+// overlay, or directly on disk with direct; with refuseSymlinks no path
+// through a symbolic link is reachable.
+func openWorkspace(directory string, mounts []mountSpec, direct, refuseSymlinks bool) (*workspace, error) {
+	opened := &workspace{direct: direct, refuseSymlinks: refuseSymlinks}
 	root, err := opened.openRoot(directory)
 	if err != nil {
 		return nil, err
@@ -114,7 +118,7 @@ func (w *workspace) mountAll(root vfs.Storage, specs []mountSpec) (vfs.Storage, 
 // is direct. Read-only mounts get an overlay too:
 // it never holds a change, but gives them the same search as the rest.
 func (w *workspace) openDirectory(prefix, directory string) (vfs.Storage, error) {
-	disk, err := osfs.New(&osfs.Options{Directory: directory})
+	disk, err := osfs.New(&osfs.Options{Directory: directory, RefuseSymlinks: w.refuseSymlinks})
 	if err != nil {
 		return nil, err
 	}

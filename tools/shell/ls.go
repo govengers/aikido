@@ -78,6 +78,9 @@ func (l listing) run(ctx context.Context, operands []string) error {
 		case err != nil || found.kind == entryMissing:
 			complain(l.invocation, "ls", "cannot access '%s': %v", operand, errNotFound)
 			status = errSeriousTrouble
+		case strings.HasSuffix(operand, "/") && found.kind != entryDirectory:
+			complain(l.invocation, "ls", "cannot access '%s': %v", operand, errNotDirectory)
+			status = errSeriousTrouble
 		case found.kind == entryDirectory && !l.itself:
 			directories = append(directories, listItem{display: operand, entry: found})
 		default:

@@ -20,6 +20,7 @@ var reviewCases = []scriptCase{
 	{name: "sed multibyte starred", script: `echo 'aééb' | sed 's/é*b/X/'`, want: "aX\n"},
 	{name: "grep multibyte collating element", script: `printf 'é\n' | grep '[[=é=]]'`, want: "é\n"},
 	{name: "find multibyte name", files: map[string]string{"café.txt": ""}, script: `find . -name 'caf\é*'; find . -name 'café*'`, want: "./café.txt\n./café.txt\n"},
+	{name: "tr lone bracket", script: `echo 'a[' | tr '[' x; echo 'a[' | tr -d '['; echo 'a[b' | tr 'a[' '[x'`, want: "ax\na\n[xb\n"},
 	{name: "tr repeat of a high byte", script: `printf ab | tr ab '[\351*2]' | base64`, want: "6ek=\n"},
 	{name: "grep non-UTF-8 pattern", script: `echo x | grep -F $'\xe9'`, want: "grep: pattern is not valid UTF-8\n", status: 2},
 	{name: "grep interval above 255", script: `printf 'xxx\n' | grep -cE 'x{300}'; printf '%0300d\n' 0 | tr 0 x | grep -cE '^x{300}$'`, want: "0\n1\n", status: 0},
@@ -34,6 +35,9 @@ var reviewCases = []scriptCase{
 	{name: "sed newline in a bracket", script: `printf 'line1\nline2\n' | sed 'N;s/[^\n]*\n//'`, want: "line2\n"},
 	{name: "sed tab in a bracket", script: `printf 'a\tb\n' | sed 's/[\t]/T/'`, want: "aTb\n"},
 	{name: "sed other backslash in a bracket", script: `printf 'a\\b\n' | sed 's/[\\]/S/'`, want: "aSb\n"},
+	{name: "sed escaped delimiter in a negated bracket", script: `echo 'a\b/c' | sed 's/[^\/]*/X/'`, want: "X/c\n"},
+	{name: "sed escaped delimiter in a bracket", script: `echo 'a\b/c' | sed 's/[\/]/X/g'; echo 'a|b' | sed 's|[\|]|X|'`, want: "a\\bXc\naXb\n"},
+	{name: "sed backslash closes a bracket", script: `echo 'a]b\]' | sed 's/[\]]/X/g'`, want: "a]bX\n"},
 	{name: "grep backslash n in a bracket", script: `printf 'n\n' | grep '[\n]'`, want: "n\n"},
 	{name: "sed M flag dot stops at newline", script: `printf 'a\nb\n' | sed 'N;s/a.*/X/M'`, want: "X\nb\n"},
 	{name: "sed M flag negated bracket", script: `printf 'a\nb\n' | sed 'N;s/a[^x]*/X/M'`, want: "X\nb\n"},
@@ -43,6 +47,9 @@ var reviewCases = []scriptCase{
 	{name: "sed word end", script: `echo foo | sed 's/\>/X/g'`, want: "fooX\n"},
 	{name: "sed word edges", script: `echo 'foo bar' | sed 's/\</[/g; s/\>/]/g'`, want: "[foo] [bar]\n"},
 	{name: "sed word end shortens the match", script: `echo 'ab cd-' | sed 's/\<a.*\>/X/'`, want: "X-\n"},
+	{name: "sed word start in a failing alternative", script: `echo ab | sed 's/a\<b\|ab/X/'`, want: "X\n"},
+	{name: "sed word start loses to an equal alternative", script: `echo 'a .' | sed 's/a\< \|a /X/'; echo 'A .' | sed 's/a\< \|a /X/I'`, want: "X.\nX.\n"},
+	{name: "grep word start loses to an equal alternative", script: `echo 'a b' | grep -o 'a\< b\|a b'`, want: "a b\n"},
 	{name: "sed anchored word start", script: `echo 'a a' | sed 's/^\<a/X/g'`, want: "X a\n"},
 	{name: "sed word start group numbering", script: `echo 'ab' | sed 's/\<\(a\)\(b\)/\2\1/'`, want: "ba\n"},
 	{name: "grep word start", script: `echo 'xfoo foo' | grep -o '\<foo'`, want: "foo\n"},
@@ -80,6 +87,8 @@ var reviewCases = []scriptCase{
 	{name: "awk print to /dev/null", script: `env -i awk 'BEGIN{print "x" > "/dev/null"; print "y" > "/dev/stdout"}'; find . -path ./dev`, want: "y\n"},
 	{name: "awk print without parent", script: `env -i awk 'BEGIN{print "x" > "nodir/f"}'; echo $?`, want: "awk: can't redirect to `nodir/f' (No such file or directory)\n2\n"},
 	{name: "awk print stores the file", script: `env -i awk 'BEGIN{print "x" > "f"; print "y" >> "f"}'; cat f`, want: "x\ny\n"},
+	{name: "diff -r sees a made directory", script: `mkdir -p a/empty b; diff -r a b; echo $?; mkdir b/empty; diff -r a b; echo $?`, want: "Only in a: empty\n1\n0\n"},
+	{name: "diff -rN descends into a one-sided directory", script: `mkdir -p c/sub d; echo hi > c/sub/f; diff -rN c d; echo $?`, want: "diff -rN c/sub/f d/sub/f\n1d0\n< hi\n1\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
@@ -114,6 +123,7 @@ func TestRunawayCommandsStop(t *testing.T) {
 	}, &Options{Timeout: time.Second})
 	runScriptCases(t, []scriptCase{
 		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
+		{name: "endless append queue", script: `echo x | sed -e ':a;a foo' -e 'ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
 		{
 			name: "sed -i result cap", files: map[string]string{"f": "x\n"},
 			script: "sed -i '" + strings.Repeat("h;G;", 20) + strings.Repeat("p;", 40) + "' f; echo $?; cat f",
@@ -196,4 +206,47 @@ func TestInputBudget(t *testing.T) {
 		{name: "sed N across the stream", files: big, script: `cat big | sed -n '$!N;$p'`, want: "end\n"},
 		{name: "uniq streams", files: big, script: `cat big | uniq -c | cut -c1-12`, want: "  70000 xxxx\n      1 end\n"},
 	}, nil)
+}
+
+// TestGrepBeforeContextBudget: -B holds its context within the input
+// budget instead of growing with an endless producer (the review used
+// seq 1 1000000000000; long lines reach the budget sooner).
+func TestGrepBeforeContextBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("pipes 64 MiB")
+	}
+	lines := map[string]string{"f": strings.Repeat(strings.Repeat("x", 999)+"\n", 1000)}
+	runScriptCases(t, []scriptCase{
+		{name: "huge -B", files: lines, script: `while cat f; do :; done | grep -B 1000000000 NEVER; echo $?`, want: "grep: input exceeds 67108864 bytes\n2\n"},
+	}, &Options{Timeout: time.Minute})
+}
+
+// TestGrepStopsOnWriteError: grep stops at the first failed write, not at
+// the end of its input.
+func TestGrepStopsOnWriteError(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "closed pipe", script: `seq 1 1000000000000 | grep . | head -1`, want: "1\n"},
+	}, &Options{Timeout: 20 * time.Second})
+}
+
+// TestWholeInputCommandsStream: base64 and sha256sum stream an endless
+// input instead of reading it whole; bash reads a script from a pipe
+// within the input budget.
+func TestWholeInputCommandsStream(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "base64 encodes as it reads", script: `seq 1 1000000000000 | base64 | head -c 8`, want: "MQoyCjMK"},
+		{name: "base64 decodes as it reads", script: `seq 1 1000000000000 | base64 | base64 -d | head -n 2`, want: "1\n2\n"},
+		{name: "base64 of nothing prints no line", script: `printf '' | base64 | cat -n; printf '' | base64 -w0 | wc -c`, want: "0\n"},
+		{name: "sha256sum of several inputs", files: map[string]string{"a": "abc"}, script: `printf abc | sha256sum - a`, want: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  -\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a\n"},
+	}, &Options{Timeout: 20 * time.Second})
+	runScriptCases(t, []scriptCase{
+		{name: "sha256sum of an endless pipe", script: `seq 1 1000000000000 | sha256sum`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+	}, &Options{Timeout: time.Second})
+	if testing.Short() {
+		return
+	}
+	lines := map[string]string{"f": strings.Repeat(strings.Repeat("x", 999)+"\n", 1000)}
+	runScriptCases(t, []scriptCase{
+		{name: "bash script beyond the budget", files: lines, script: `while cat f; do :; done | bash; echo $?`, want: "bash: input exceeds 67108864 bytes\n2\n"},
+	}, &Options{Timeout: time.Minute})
 }

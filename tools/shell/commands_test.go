@@ -56,7 +56,38 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "mv keeps empty directories", files: files, script: "mkdir -p dir/empty; mv dir moved; ls moved", want: "b.txt\ndeep\nempty\n"},
 		{name: "cp -v, -n and into itself", files: files, script: "cp -v a.txt c.txt; cp -n dir/b.txt c.txt; cat c.txt; cp -r dir dir/deep", want: "'a.txt' -> 'c.txt'\nalpha\ncp: cannot copy a directory, 'dir', into itself, 'dir/deep/dir'\n", status: 1},
 		{name: "cp onto a directory name inside a directory", files: map[string]string{"a": "1", "d/a/x": "2"}, script: "cp a d", want: "cp: cannot overwrite directory 'd/a' with non-directory\n", status: 1},
+		{
+			name: "mv and cp with several sources need a directory", files: files,
+			script: "mv a.txt dir/b.txt nodir; cp a.txt dir/b.txt nodir/; cp a.txt dir/b.txt a.txt; mv dir a.txt dir/b.txt; ls",
+			want: "mv: target 'nodir': No such file or directory\ncp: target 'nodir/': No such file or directory\n" +
+				"cp: target 'a.txt': Not a directory\nmv: target 'dir/b.txt': Not a directory\n" +
+				"a.txt\ndir\n",
+		},
+		{name: "mv onto a file with a trailing slash", files: files, script: "mv dir/b.txt a.txt/; cat a.txt", want: "mv: cannot stat 'a.txt/': Not a directory\nalpha\n"},
+		// Regression of 87b5636: a trailing slash refused even a directory source.
+		{name: "cp -r and mv a directory onto a missing 'out/'", files: files, script: "cp -r dir copy/; mv dir moved/; cp dir/ x/; ls; ls copy moved", want: "cp: cannot stat 'dir/': No such file or directory\na.txt\ncopy\nmoved\ncopy:\nb.txt\ndeep\n\nmoved:\nb.txt\ndeep\n"},
+		// The review's F13: a trailing slash on a source was cleaned away.
+		{
+			name: "a file source with a trailing slash", files: files,
+			script: "cp a.txt/ x; mv a.txt/ y; cp -r dir/ z; ls a.txt/ dir/ nope/; echo $?; ls",
+			want: "cp: cannot stat 'a.txt/': Not a directory\nmv: cannot stat 'a.txt/': Not a directory\n" +
+				"ls: cannot access 'a.txt/': Not a directory\nls: cannot access 'nope/': No such file or directory\ndir/:\nb.txt\ndeep\n2\na.txt\ndir\nz\n",
+		},
+		// The review's C15: only the immediate parent was checked, so dst/src/a/b/f landed beneath the file dst/src/a.
+		{
+			name:   "cp -r checks every ancestor of a destination",
+			files:  map[string]string{"src/a/b/f": "1\n", "src/a/b/g": "2\n", "src/e/x": "3\n", "dst/src/a": "file\n", "dst/src/e": "file\n"},
+			script: "mkdir -p src/e/empty; rm src/e/x; cp -r src dst; echo $?; cat dst/src/a; find dst | sort",
+			want: "cp: cannot overwrite non-directory 'dst/src/a' with directory 'src/a'\n" +
+				"cp: cannot overwrite non-directory 'dst/src/e' with directory 'src/e'\n1\nfile\ndst\ndst/src\ndst/src/a\ndst/src/e\n",
+		},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
+		{
+			name: "touch with a trailing slash or under a file", files: files,
+			script: "touch dir/ nodir/x/ a.txt/x; touch -c new/ nodir/x a.txt/x a.txt/; ls",
+			want: "touch: cannot touch 'nodir/x/': No such file or directory\ntouch: cannot touch 'a.txt/x': Not a directory\n" +
+				"touch: setting times of 'a.txt/x': Not a directory\ntouch: setting times of 'a.txt/': Not a directory\na.txt\ndir\n",
+		},
 		{
 			name: "cp -rn checks every destination (review S13)",
 			files: map[string]string{
@@ -71,14 +102,23 @@ func TestFileCommandCases(t *testing.T) {
 			name: "a trailing slash names a directory (review S31)", files: files,
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
-				"cp: failed to access 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
-				"touch: cannot touch 'a.txt/': Not a directory\nbash: c/: Is a directory\nbash: a.txt/: Not a directory\n" +
+				"cp: cannot stat 'a.txt/': Not a directory\ntouch: setting times of 'b/': No such file or directory\n" +
+				"touch: setting times of 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Is a directory\n" +
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},
+		// The review's S31: output files resolved through path.Clean, so "out/" created a file out.
+		// awk's print > "out/" still does: GoAWK path.Cleans the name before its FileSystem sees it.
+		{
+			name: "output files with a trailing slash are never created", files: files,
+			script: "sort -o out/ a.txt; uniq a.txt out/; tee out/ a.txt/ nodir/x/ </dev/null; echo $?; sort -o a.txt/ a.txt; ls",
+			want: "sort: open failed: out/: Is a directory\nuniq: out/: Is a directory\n" +
+				"tee: out/: Is a directory\ntee: a.txt/: Is a directory\ntee: nodir/x/: No such file or directory\n1\n" +
+				"sort: open failed: a.txt/: Is a directory\na.txt\ndir\n",
+		},
 		{name: "cat /dev/stdin", files: files, script: "echo piped | cat /dev/stdin", want: "piped\n"},
 		{name: "redirect to /dev/stdout and /dev/stderr", files: files, script: "echo out > /dev/stdout; echo err > /dev/stderr", want: "out\nerr\n"},
-		{name: "redirect read of a directory", files: files, script: "cat < dir", want: "bash: dir: Is a directory\n", status: 1},
+		{name: "redirect read of a directory", files: files, script: "cat < dir", want: "bash: line 1: dir: Is a directory\n", status: 1},
 		{name: "find -exec with a missing command", files: files, script: "find a.txt -exec nosuch {} \\;; echo $?", want: "find: 'nosuch': No such file or directory\n0\n"},
 		{name: "find -exec + failing", files: files, script: "find a.txt -exec false {} +; echo $?", want: "1\n"},
 		{name: "find -delete a directory", files: files, script: "find dir -delete; ls", want: "a.txt\n"},
@@ -128,6 +168,8 @@ func TestUtilityCommandCases(t *testing.T) {
 		{name: "sleep is cancelled by the timeout", files: files, script: "sleep 1m", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
 		// The review's S30: inf and 1e30 overflowed the duration and returned at once.
 		{name: "sleep inf and 1e30 last until the timeout", files: files, script: "sleep 1e30 || sleep inf", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
+		// The sum of saturated durations wrapped negative and returned at once.
+		{name: "sleep inf inf lasts until the timeout", files: files, script: "sleep inf inf", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
 		{name: "seq stops before int64 wraps (review S30)", files: files, script: "seq 9223372036854775806 9223372036854775807; seq -9223372036854775807 -1 -9223372036854775808", want: "9223372036854775806\n9223372036854775807\n-9223372036854775807\n-9223372036854775808\n"},
 	}, &Options{Commands: []Command{dateCommand(func() time.Time { return time.Unix(0, 0) })}, Timeout: 50 * time.Millisecond})
 }

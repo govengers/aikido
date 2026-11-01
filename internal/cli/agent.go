@@ -128,7 +128,7 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 	if err := validateWorkerOptions(options); err != nil {
 		return err
 	}
-	workspace, err := openWorkspace(options.directory, options.mounts, options.worker.direct)
+	workspace, err := openWorkspace(options.directory, options.mounts, options.worker.direct, options.hideHidden)
 	if err != nil {
 		return err
 	}

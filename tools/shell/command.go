@@ -14,7 +14,7 @@
 // absolute paths below it are workspace paths, other paths and
 // climbing above it are "No such file or directory". /tmp is a memory
 // scratch area of the Shell (never the Storage) that keeps its files from
-// one Run to the next, at most 64 MiB together; /dev/null, /dev/stdin, /dev/stdout
+// one Run to the next, within the Shell's 128 MiB memory budget; /dev/null, /dev/stdin, /dev/stdout
 // and /dev/stderr work. A Storage holds only files, so a directory exists
 // while a file lies below it or after mkdir created it in this Shell.
 // Redirects collect what is written and store it with one WriteFile when
@@ -40,6 +40,14 @@ type Command struct {
 	// Run executes one invocation. It returns nil for exit status 0, an
 	// ExitError for another status, and any other error for a failure the
 	// shell reports on stderr with status 1. Run must honour ctx.
+	//
+	// Run is called concurrently: the commands of a pipeline and background
+	// jobs run at once, and one Command may be registered with several
+	// Shells, so it must be safe for concurrent use. The Invocation and its
+	// streams belong to that call only: the shell owns Stdin, Stdout and
+	// Stderr (Run must not close them) and they must not be used after Run
+	// returns; a goroutine Run starts must end before Run returns. A panic is
+	// reported as an internal error with status 2.
 	Run func(ctx context.Context, invocation *Invocation) error
 }
 

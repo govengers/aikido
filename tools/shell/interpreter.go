@@ -30,8 +30,8 @@ const (
 	// internalFailure prints Arguments[0] to stderr and exits with the
 	// status in Arguments[1].
 	internalFailure = "\x00failure"
-	// internalLookup answers "command -v" (Arguments[0] == "command") or
-	// "type" for registered commands.
+	// internalLookup answers command -v/-V and type from the shell's own
+	// commands, builtins, keywords and functions (see lookup).
 	internalLookup = "\x00lookup"
 )
 
@@ -55,8 +55,13 @@ type session struct {
 	root        string
 	directories *directorySet
 	commands    map[string]Command
-	// processFiles counts the /dev/fd paths <(list) has used in this Run.
-	processFiles atomic.Int64
+	// budget is the Shell's memory budget, which buffered redirects count
+	// against.
+	budget *memoryBudget
+	// processFiles is /dev/fd for this Run; processFileCount counts the
+	// names it has handed out.
+	processFiles     processFileStorage
+	processFileCount atomic.Int64
 	// functions holds the names of the functions the session's scripts
 	// define, for command -v and type.
 	functions sync.Map
@@ -128,10 +133,28 @@ func stdinFile(stdin io.Reader) io.Reader {
 	return stdin
 }
 
-// redirectStoreTimeout bounds the store of a redirect target when it
-// closes. The store runs without the script's context, so a timed-out
-// script still keeps what it wrote; a variable for tests.
+// redirectStoreTimeout bounds the stores of redirect targets: each runs
+// without the script's context, so a timed-out script still keeps what it
+// wrote, but ends this long after the script's deadline at the latest, and
+// the stores at the end of a script share one such period. A variable for
+// tests.
 var redirectStoreTimeout = 30 * time.Second
+
+// storeContext returns the context a redirect store runs with: detached
+// from ctx, ending redirectStoreTimeout from now or after ctx's deadline,
+// whichever comes first.
+func storeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), redirectStoreTimeout)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return detached, cancel
+	}
+	bounded, cancelBounded := context.WithDeadline(detached, deadline.Add(redirectStoreTimeout))
+	return bounded, func() {
+		cancelBounded()
+		cancel()
+	}
+}
 
 // jobCleanupTimeout bounds the wait for background jobs after a script:
 // they are cancelled first, so only a job stuck in something that ignores
@@ -148,7 +171,7 @@ func runFile(ctx context.Context, runner *scriptRunner, file *syntax.File) (stri
 	stopJobs()
 	directory := runner.Dir
 	awaitJobs(ctx, runner.Runner)
-	runner.targets.closeAll()
+	runner.targets.closeAll(ctx)
 	return directory, err
 }
 
@@ -178,6 +201,16 @@ func awaitJobs(ctx context.Context, runner *interp.Runner) {
 	}
 }
 
+// recoverHandler turns a panic in an interpreter handler into its error,
+// which stops the script: handlers run on the interpreter's goroutines
+// (pipelines, background jobs), where a panic would end the host process.
+// The deferred call must be the handler's first.
+func recoverHandler(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("aikido/tools/shell: internal error: %v", recovered)
+	}
+}
+
 // exitStatusOf returns the exit status a Run error carries, and whether the
 // error is one (nil is status 0).
 func exitStatusOf(err error) (int, bool) {
@@ -198,7 +231,8 @@ func workspaceDirectory(directory string) string {
 
 // execute is the interpreter's exec handler: every simple command that is
 // not a function or a shell builtin.
-func (s *session) execute(ctx context.Context, arguments []string) error {
+func (s *session) execute(ctx context.Context, arguments []string) (err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
 	invocation := &Invocation{
 		Arguments:   arguments[1:],
@@ -220,6 +254,9 @@ func (s *session) execute(ctx context.Context, arguments []string) error {
 	status := s.dispatch(ctx, arguments[0], invocation, handler.Pos)
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if status == 0 {
+		status = flushOwned(handler)
 	}
 	if status == 0 {
 		return nil
@@ -250,10 +287,15 @@ func (s *session) dispatch(ctx context.Context, name string, invocation *Invocat
 		status, _ := strconv.Atoi(invocation.Arguments[1])
 		return uint8(status) //nolint:gosec // G115: the shell itself writes statuses 1, 2 and 127 here
 	case internalLookup:
-		if len(invocation.Arguments) == 0 {
+		if len(invocation.Arguments) < 2 {
 			return statusInternalError
 		}
 		return s.lookup(invocation, position)
+	case internalOutput:
+		if len(invocation.Arguments) == 0 {
+			return statusInternalError
+		}
+		return runOutput(invocation, position)
 	}
 	if command, ok := s.commands[name]; ok {
 		return runCommand(ctx, command, invocation)
@@ -335,42 +377,120 @@ func runCommand(ctx context.Context, command Command, invocation *Invocation) (s
 // rewrite is the interpreter's call handler. It runs before every simple
 // command, builtins included, and changes the few builtins that would
 // otherwise consult the host: lookups in PATH, symlink resolution, and the
-// wording of cd's errors.
-func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, error) {
+// wording of cd's errors. A builtin reached through command, builtin or exec
+// is rewritten like a direct call: normalizeCall resolves those wrappers
+// first, in every form the interpreter accepts.
+func (s *session) rewrite(ctx context.Context, arguments []string) (_ []string, err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
-	if strings.ContainsRune(arguments[0], 0) {
+	call, failure := normalizeCall(arguments)
+	switch {
+	case failure != "":
+		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + failure, strconv.Itoa(statusUnsupported)}, nil
+	case len(call.arguments) > 0 && strings.ContainsRune(call.arguments[0], 0):
 		// Only these rewrites may name an internal command. A script can
 		// still spell a NUL byte (read puts one in $REPLY); bash cuts the
 		// name there.
-		name, _, _ := strings.Cut(arguments[0], "\x00")
+		name, _, _ := strings.Cut(call.arguments[0], "\x00")
 		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + name + ": command not found", strconv.Itoa(statusNotFound)}, nil
+	case call.show != "":
+		return append(call.prefix(), append([]string{internalLookup, "command " + call.show, ""}, call.arguments...)...), nil
+	case len(call.arguments) == 0:
+		return append(call.prefix(), call.arguments...), nil
+	case call.builtinOnly && !interp.IsBuiltin(call.arguments[0]):
+		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + "builtin: " + call.arguments[0] + ": not a shell builtin", "1"}, nil
+	case routesOutput(handler, call.arguments):
+		return append(call.prefix(), append([]string{internalOutput}, call.arguments...)...), nil
 	}
-	wrappers := builtinWrappers(arguments)
-	if wrappers == len(arguments) {
-		return arguments, nil
-	}
-	rewritten := s.rewriteCall(ctx, handler, arguments[wrappers:])
-	if rewritten[0] == internalFailure || rewritten[0] == internalLookup {
-		return rewritten, nil
-	}
-	return append(slices.Clone(arguments[:wrappers]), rewritten...), nil
+	return append(call.prefix(), s.rewriteCall(ctx, handler, call.arguments)...), nil
 }
 
-// builtinWrappers counts the leading "builtin" and "command" words (command
-// without an option) that run the builtin after them, so "builtin pwd -P"
-// is rewritten like "pwd -P".
-func builtinWrappers(arguments []string) int {
-	index := 0
-	for index < len(arguments) {
-		switch {
-		case arguments[index] == "builtin":
-		case arguments[index] == "command" && index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "-"):
-		default:
-			return index
-		}
-		index++
+// wrappedCall is a simple command with its leading command, builtin and
+// exec words resolved.
+type wrappedCall struct {
+	// arguments are the command that runs and its arguments; with show, the
+	// names to look up.
+	arguments []string
+	// exec and command record the wrappers that were present: the rewritten
+	// call keeps their meaning (exec ends the shell, command and builtin skip
+	// functions) in the one form the interpreter parses without options.
+	exec, command bool
+	// builtinOnly is set when the last wrapper was builtin: the command must
+	// be a shell builtin.
+	builtinOnly bool
+	// show is "-v" or "-V" when command looks the names up instead.
+	show string
+}
+
+// prefix returns the wrapper words the rewritten call starts with.
+func (c wrappedCall) prefix() []string {
+	switch {
+	case c.exec:
+		return []string{"exec"}
+	case c.command:
+		return []string{"command"}
 	}
-	return index
+	return nil
+}
+
+// normalizeCall resolves the wrappers in front of a command like bash does:
+// any sequence of "command [-pvV]... [--]", "builtin [--]" and "exec [--]",
+// with combined flags (-pv) and repetitions. It returns the message for an
+// invalid option of command, without the "bash: " prefix.
+func normalizeCall(arguments []string) (wrappedCall, string) {
+	var call wrappedCall
+	for len(arguments) > 1 {
+		switch arguments[0] {
+		case "builtin":
+			call.command, call.builtinOnly = true, true
+			arguments = skipDoubleDash(arguments[1:])
+		case "exec":
+			call.exec, call.builtinOnly = true, false
+			arguments = skipDoubleDash(arguments[1:])
+		case "command":
+			call.command, call.builtinOnly = true, false
+			var failure string
+			arguments, failure = commandOptions(&call, arguments[1:])
+			if failure != "" || call.show != "" {
+				call.arguments = arguments
+				return call, failure
+			}
+		default:
+			call.arguments = arguments
+			return call, ""
+		}
+	}
+	call.arguments = arguments
+	return call, ""
+}
+
+// commandOptions consumes the options of command: -p (the default PATH,
+// which changes nothing here), -v and -V (the last one counts), up to "--".
+func commandOptions(call *wrappedCall, arguments []string) ([]string, string) {
+	for len(arguments) > 0 && len(arguments[0]) > 1 && arguments[0][0] == '-' {
+		option := arguments[0]
+		arguments = arguments[1:]
+		if option == "--" {
+			break
+		}
+		for _, letter := range option[1:] {
+			switch letter {
+			case 'p':
+			case 'v', 'V':
+				call.show = "-" + string(letter)
+			default:
+				return arguments, "command: -" + string(letter) + ": invalid option\ncommand: usage: command [-pVv] command [arg ...]"
+			}
+		}
+	}
+	return arguments, ""
+}
+
+func skipDoubleDash(arguments []string) []string {
+	if len(arguments) > 0 && arguments[0] == "--" {
+		return arguments[1:]
+	}
+	return arguments
 }
 
 // rewriteCall rewrites one builtin call without its wrappers.
@@ -390,8 +510,8 @@ func (s *session) rewriteCall(ctx context.Context, handler interp.HandlerContext
 	case "pwd":
 		// -P resolves symlinks on the host; workspace paths have none.
 		return []string{"pwd"}
-	case "command", "type":
-		return s.rewriteLookup(arguments)
+	case "type":
+		return s.rewriteType(handler, arguments)
 	case "shift":
 		// The interpreter slices the parameters with a negative count and
 		// panics, in a goroutine for "shift -1 &".
@@ -444,19 +564,75 @@ func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.Han
 }
 
 // pathError is how a handler reports a file error: the interpreter prints
-// it as "bash: name: reason".
-func pathError(name string, err error) error {
-	return &os.PathError{Op: "bash:", Path: name, Err: describe(err)}
+// it as "<prefix>name: reason", prefix being "bash: " or "bash: line N: ".
+func pathError(prefix, name string, err error) error {
+	return &os.PathError{Op: strings.TrimSuffix(prefix, " "), Path: name, Err: describe(err)}
+}
+
+// redirectLineMarker separates a redirect's word from what
+// markRedirectLines appends. The interpreter cuts words at a NUL byte, so
+// the marker starts with a byte that is never valid UTF-8 instead; a script
+// that spells it only changes a message or skips an early store.
+const redirectLineMarker = "\xffline="
+
+// markRedirectLines appends to the word of every file redirect its line and
+// the offset+1 of the simple command its statement runs (0 for a compound
+// statement): the interpreter gives the open handler no position, bash's
+// message for a failed redirect starts with "bash: line N: ", and
+// flushOwned stores the targets of a simple command when it ends. The
+// marker goes at the end so a leading ~ still expands; open takes it off.
+func markRedirectLines(file *syntax.File) {
+	syntax.Walk(file, func(node syntax.Node) bool {
+		statement, ok := node.(*syntax.Stmt)
+		if !ok {
+			return true
+		}
+		owner := uint(0)
+		if call, ok := statement.Cmd.(*syntax.CallExpr); ok && len(call.Args) > 0 {
+			owner = call.Args[0].Pos().Offset() + 1
+		}
+		for _, redirect := range statement.Redirs {
+			if slices.Contains(fileRedirects, redirect.Op) {
+				end := redirect.Word.End()
+				marker := fmt.Sprintf("%s%d,%d", redirectLineMarker, redirect.OpPos.Line(), owner)
+				redirect.Word.Parts = append(redirect.Word.Parts, &syntax.Lit{ValuePos: end, ValueEnd: end, Value: marker})
+			}
+		}
+		return true
+	})
+}
+
+// fileRedirects are the redirect operators the interpreter opens a file for.
+var fileRedirects = []syntax.RedirOperator{syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrAll, syntax.AppAll}
+
+// redirectName splits a redirect name marked by markRedirectLines into
+// bash's message prefix, the name itself and the owning command's offset+1.
+func redirectName(marked string) (prefix, name string, owner uint) {
+	index := strings.LastIndex(marked, redirectLineMarker)
+	if index < 0 {
+		return "bash: ", marked, 0
+	}
+	line, offset, _ := strings.Cut(marked[index+len(redirectLineMarker):], ",")
+	parsed, err := strconv.ParseUint(offset, 10, 0)
+	if err != nil {
+		parsed = 0
+	}
+	return "bash: line " + line + ": ", marked[:index], uint(parsed)
 }
 
 // open is the interpreter's open handler for redirects and source. Reads get
 // a pipe filled from the file; writes are buffered and stored with one
 // WriteFile when the redirect closes.
-func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (io.ReadWriteCloser, error) {
+func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (_ io.ReadWriteCloser, err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
+	prefix, name, owner := redirectName(name)
+	if name == processFileMarker && flag&os.O_WRONLY != 0 {
+		return s.openProcessFile(ctx, prefix, handler, targets)
+	}
 	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
 	if err != nil {
-		return nil, pathError(name, errNotFound)
+		return nil, pathError(prefix, name, errNotFound)
 	}
 	if isDevice(resolved) {
 		return openDevice(resolved, flag, handler)
@@ -464,19 +640,24 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 	switch flag & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) {
 	case os.O_RDONLY:
 		content, err := readFile(ctx, s.files(), resolved)
-		if err != nil {
-			return nil, pathError(name, err)
+		if err == nil && strings.HasSuffix(name, "/") {
+			err = errNotDirectory // "< f/" with f a file
 		}
+		if err != nil {
+			return nil, pathError(prefix, name, err)
+		}
+		s.processFiles.consume(ctx, resolved)
 		return pipeReader(content)
 	case os.O_WRONLY:
-		file, err := s.openForWriting(ctx, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+		file, err := s.openForWriting(ctx, prefix, name, resolved, flag&os.O_APPEND != 0)
 		if err != nil {
 			return nil, err
 		}
+		file.owner = owner
 		targets.add(file)
 		return file, nil
 	}
-	return nil, pathError(name, errUnsupported)
+	return nil, pathError(prefix, name, errUnsupported)
 }
 
 // openForWriting opens a redirect target like bash: ">" truncates the file
@@ -484,42 +665,64 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 // read-only mount) fails the redirect before the command runs and before
 // && or || decide. The returned file collects what is written and stores
 // it on Close.
-func (s *session) openForWriting(ctx context.Context, name, resolved string, appending bool, stderr io.Writer) (*bufferedFile, error) {
+func (s *session) openForWriting(ctx context.Context, prefix, name, resolved string, appending bool) (*bufferedFile, error) {
 	files := s.files()
 	if err := files.checkWritable(ctx, resolved); err != nil {
-		return nil, pathError(name, err)
+		return nil, pathError(prefix, name, err)
 	}
 	if strings.HasSuffix(name, "/") {
-		// "out/" names a directory: bash cannot open it as a file.
-		if found, err := files.stat(ctx, resolved); err == nil && found.kind == entryFile {
-			return nil, pathError(name, errNotDirectory)
-		}
-		return nil, pathError(name, errIsDirectory)
+		// "out/" names a directory, which cannot be created as a file:
+		// Linux refuses O_CREAT with a trailing slash with EISDIR, also
+		// when out is a file.
+		return nil, pathError(prefix, name, errIsDirectory)
 	}
-	file := &bufferedFile{name: name, stderr: stderr}
+	file := s.newBufferedFile(ctx, prefix+name, interp.HandlerCtx(ctx).Stderr)
 	if appending {
 		content, _, err := files.storage.ReadFile(ctx, resolved)
 		switch {
-		case err == nil:
-			file.content = content
-		case !errors.Is(err, vfs.ErrFileNotFound):
-			return nil, pathError(name, err)
+		case errors.Is(err, vfs.ErrFileNotFound):
+		case err != nil:
+			return nil, pathError(prefix, name, err)
+		case !s.budget.reserve(len(content)):
+			return nil, pathError(prefix, name, errNoSpace)
+		default:
+			file.content, file.reserved = content, len(content)
 		}
 	}
 	contentType := contentTypeFor(resolved)
 	if err := files.storage.WriteFile(ctx, resolved, file.content, contentType); err != nil {
-		return nil, pathError(name, err)
+		s.budget.release(file.reserved)
+		return nil, pathError(prefix, name, err)
 	}
-	// A script that timed out still stores what it wrote, as bash would
-	// have, but a Storage that hangs cannot hold the shell past
-	// redirectStoreTimeout.
-	detached := context.WithoutCancel(ctx)
-	file.commit = func(content []byte) error {
-		storeContext, cancel := context.WithTimeout(detached, redirectStoreTimeout)
-		defer cancel()
-		return files.storage.WriteFile(storeContext, resolved, content, contentType)
+	file.commit = func(ctx context.Context, content []byte) error {
+		return files.storage.WriteFile(ctx, resolved, content, contentType)
 	}
 	return file, nil
+}
+
+// newBufferedFile returns an empty redirect target that counts against the
+// session's budget and stores with storeContext(ctx).
+func (s *session) newBufferedFile(ctx context.Context, label string, stderr io.Writer) *bufferedFile {
+	return &bufferedFile{
+		label: label, stderr: stderr, budget: s.budget,
+		storeContext: func() (context.Context, context.CancelFunc) { return storeContext(ctx) },
+	}
+}
+
+// flushOwned stores the redirect targets of the simple command that just
+// ran through the exec handler when its statement opened them (cmd >file):
+// a failed store then fails the command, before && or || decide. Targets of
+// compound statements ({ ...; } >file, loops) are stored when they close;
+// a failure there is reported but cannot change a status any more.
+func flushOwned(handler interp.HandlerContext) uint8 {
+	status := uint8(0)
+	for _, stream := range []io.Writer{handler.Stdout, handler.Stderr} {
+		file, ok := stream.(*bufferedFile)
+		if ok && file.owner != 0 && file.owner == handler.Pos.Offset()+1 && file.flush() != nil {
+			status = statusCommandFailure
+		}
+	}
+	return status
 }
 
 // redirectTargets are the redirect files one interpreter (with its
@@ -531,21 +734,33 @@ type redirectTargets struct {
 	files []*bufferedFile
 }
 
+// add tracks file until it closes, so a closed file and its content are
+// released at once.
 func (r *redirectTargets) add(file *bufferedFile) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.files = append(r.files, file)
+	file.onClose = r.remove
 }
 
-// closeAll stores every file still open; Close is a no-op for closed ones,
-// and reports a failed store on stderr itself.
-func (r *redirectTargets) closeAll() {
+func (r *redirectTargets) remove(file *bufferedFile) {
 	r.mutex.Lock()
-	files := r.files
-	r.files = nil
+	defer r.mutex.Unlock()
+	if index := slices.Index(r.files, file); index >= 0 {
+		r.files = slices.Delete(r.files, index, index+1)
+	}
+}
+
+// closeAll stores every file still open, all within one store period
+// (storeContext of ctx); each reports a failed store on stderr itself.
+func (r *redirectTargets) closeAll(ctx context.Context) {
+	r.mutex.Lock()
+	files := slices.Clone(r.files)
 	r.mutex.Unlock()
+	shared, cancel := storeContext(ctx)
+	defer cancel()
 	for _, file := range files {
-		_ = file.Close()
+		_ = file.closeWith(shared)
 	}
 }
 
@@ -567,7 +782,8 @@ func openDevice(name string, flag int, handler interp.HandlerContext) (io.ReadWr
 
 // stat is the interpreter's stat handler (test -e/-f/-d, cd); name is a
 // virtual absolute path.
-func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, error) {
+func (s *session) stat(ctx context.Context, name string, _ bool) (_ fs.FileInfo, err error) {
+	defer recoverHandler(&err)
 	resolved := workspaceDirectory(name)
 	found, err := s.files().stat(ctx, resolved)
 	if err != nil {
@@ -581,7 +797,8 @@ func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, e
 
 // readDirectory is the interpreter's glob handler; name is a virtual
 // absolute path.
-func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry, error) {
+func (s *session) readDirectory(ctx context.Context, name string) (_ []fs.DirEntry, err error) {
+	defer recoverHandler(&err)
 	resolved := workspaceDirectory(name)
 	if s.root != resolved && within(s.root, resolved) {
 		// The interpreter globs /work/repo/* one directory at a time; an
@@ -612,7 +829,8 @@ func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry
 
 // access is the interpreter's access handler (test -r/-w/-x, cd): every
 // existing path is readable and writable, only directories are executable.
-func (s *session) access(ctx context.Context, name string, mode interp.AccessMode) error {
+func (s *session) access(ctx context.Context, name string, mode interp.AccessMode) (err error) {
+	defer recoverHandler(&err)
 	found, err := s.files().stat(ctx, workspaceDirectory(name))
 	switch {
 	case err != nil:

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strings"
 
 	"github.com/govengers/aikido/vfs"
 )
@@ -25,7 +26,8 @@ import (
 // Storage is the local-disk implementation. It is safe for concurrent use;
 // Close it when done.
 type Storage struct {
-	root *os.Root
+	root           *os.Root
+	refuseSymlinks bool
 }
 
 var _ vfs.Storage = (*Storage)(nil)
@@ -35,6 +37,14 @@ type Options struct {
 	// Directory is the storage root, required. It must exist; nothing outside it
 	// is reachable, symlinks included (os.Root).
 	Directory string
+	// RefuseSymlinks makes a path that passes through a symbolic link, at
+	// the final name or at a parent directory, unreachable: ReadFile and
+	// DeleteFile return vfs.ErrFileNotFound, WriteFile vfs.ErrPathInvalid.
+	// Set it under a hidden-path policy that checks the spelled path
+	// (agent.VFSToolOptions.HideHiddenPaths, shell.Options.HideHiddenPaths):
+	// a visible link such as public -> .env would otherwise read or write
+	// the hidden target. ListFiles never lists links either way.
+	RefuseSymlinks bool
 }
 
 // New opens options.Directory as the storage root. It returns an error if
@@ -48,7 +58,7 @@ func New(options *Options) (*Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aikido/vfs/osfs: open root %q: %w", options.Directory, err)
 	}
-	return &Storage{root: root}, nil
+	return &Storage{root: root, refuseSymlinks: options.RefuseSymlinks}, nil
 }
 
 // Close releases the root directory handle. The Storage must not be used
@@ -100,6 +110,9 @@ func (s *Storage) ReadFile(ctx context.Context, filePath string) ([]byte, vfs.Fi
 	if err := vfs.ValidatePath(filePath); err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
+	if s.throughSymlink(filePath) {
+		return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s passes through a symbolic link", vfs.ErrFileNotFound, filePath)
+	}
 	info, err := s.regularFile(filePath)
 	if err != nil {
 		return nil, vfs.FileMetadata{}, err
@@ -124,6 +137,9 @@ func (s *Storage) WriteFile(ctx context.Context, filePath string, content []byte
 	}
 	if err := vfs.ValidatePath(filePath); err != nil {
 		return err
+	}
+	if s.throughSymlink(filePath) {
+		return fmt.Errorf("%w: %s passes through a symbolic link", vfs.ErrPathInvalid, filePath)
 	}
 	directory := path.Dir(filePath)
 	if directory != "." {
@@ -151,6 +167,9 @@ func (s *Storage) DeleteFile(ctx context.Context, filePath string) error {
 	}
 	if err := vfs.ValidatePath(filePath); err != nil {
 		return err
+	}
+	if s.throughSymlink(filePath) {
+		return fmt.Errorf("%w: %s passes through a symbolic link", vfs.ErrFileNotFound, filePath)
 	}
 	if _, err := s.regularFile(filePath); err != nil {
 		return err
@@ -191,6 +210,27 @@ func (s *Storage) writeNewFile(filePath string, content []byte, mode fs.FileMode
 		return err
 	}
 	return nil
+}
+
+// throughSymlink reports, with RefuseSymlinks, whether filePath or one of
+// its parent directories is a symbolic link; the check ends at the first
+// component that does not exist.
+func (s *Storage) throughSymlink(filePath string) bool {
+	if !s.refuseSymlinks {
+		return false
+	}
+	current := ""
+	for segment := range strings.SplitSeq(filePath, "/") {
+		current = path.Join(current, segment)
+		info, err := s.root.Lstat(current)
+		if err != nil {
+			return false
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // regularFile stats filePath (following symlinks inside the root) and reports

@@ -13,7 +13,6 @@ import (
 	"mvdan.cc/sh/v3/interp"
 
 	"github.com/govengers/aikido/vfs"
-	"github.com/govengers/aikido/vfs/memory"
 	"github.com/govengers/aikido/vfs/mount"
 )
 
@@ -40,7 +39,10 @@ type Options struct {
 	// with "." or "_" (.env, .git/hooks, _private), the rule of
 	// agent.VFSToolOptions.HideHiddenPaths: listings, globs, ls, find and
 	// grep -r leave them out, and reading, writing or deleting one fails
-	// with "No such file or directory". /tmp is not affected.
+	// with "No such file or directory". /tmp is not affected. The rule
+	// checks the path as spelled: over a Storage that follows symbolic
+	// links, a visible link (public -> .env) reaches a hidden file, so pair
+	// it with osfs.Options.RefuseSymlinks (the CLI does).
 	HideHiddenPaths bool
 	// Commands are added to the built-in commands (Builtins); a Command with
 	// the name of a built-in replaces it. Names must be unique, and must not
@@ -55,7 +57,8 @@ type Options struct {
 	Timeout time.Duration
 	// MaximumOutputBytes bounds Result.Output (stdout and stderr together):
 	// the first and the last half are kept, the middle is cut with a marker
-	// that counts against the limit.
+	// that counts against the limit (a limit too small for the marker keeps
+	// the halves without it).
 	// Zero means DefaultMaximumOutputBytes, negative keeps everything.
 	MaximumOutputBytes int
 	// ToolName is the name Register gives the tool; empty means
@@ -77,14 +80,15 @@ type Result struct {
 }
 
 // Shell runs bash scripts over a vfs.Storage. The working directory, the
-// directories mkdir created and the files in /tmp (memory, at most 64 MiB
-// together) persist from one Run to the next; variables and functions do
-// not. Run calls are serialized, so a Shell is safe
-// for concurrent use.
+// directories mkdir created and the files in /tmp persist from one Run to
+// the next; variables and functions do not. /tmp, the files of <(list) and
+// redirect output not stored yet share one memory budget of 128 MiB. Run
+// calls are serialized, so a Shell is safe for concurrent use.
 type Shell struct {
 	options     Options
 	commands    map[string]Command
 	directories *directorySet
+	budget      *memoryBudget   // /tmp, /dev/fd and buffered redirects
 	scratch     *scratchStorage // /tmp
 	// root is the MountPoint as a path of the session Storage: "" for "/".
 	root string
@@ -130,9 +134,10 @@ func New(options *Options) (*Shell, error) {
 		configured.ToolName = DefaultToolName
 	}
 	root := strings.TrimPrefix(mountPoint, "/")
+	budget := newMemoryBudget(maximumSessionBytes)
 	return &Shell{
 		options: configured, commands: commands, root: root, directory: root,
-		directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes), turn: make(chan struct{}, 1),
+		directories: newDirectorySet(), budget: budget, scratch: newScratchStorage(budget), turn: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -228,6 +233,7 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
+	defer call.processFiles.files.clear(context.WithoutCancel(ctx))
 	file, err := call.parse(script, "")
 	if err != nil {
 		fmt.Fprintf(stderr, "bash: %v\n", err)
@@ -266,15 +272,19 @@ func (s *Shell) newSession() (*session, error) {
 	if s.options.HideHiddenPaths {
 		workspace = hiddenFilter{workspace}
 	}
+	processFiles := processFileStorage{newScratchStorage(s.budget)}
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
 		{Prefix: s.root, Storage: workspace},
 		{Prefix: scratchDirectory, Storage: s.scratch},
-		{Prefix: processFileDirectory, Storage: processFileStorage{memory.New()}},
+		{Prefix: processFileDirectory, Storage: processFiles},
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp and /dev/fd: %w", err)
 	}
-	return &session{storage: storage, root: s.root, directories: s.directories, commands: s.commands}, nil
+	return &session{
+		storage: storage, root: s.root, directories: s.directories, commands: s.commands,
+		budget: s.budget, processFiles: processFiles,
+	}, nil
 }
 
 // recoverDirectory moves back to the mount point when the working directory

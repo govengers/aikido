@@ -448,6 +448,9 @@ type grepSearcher struct {
 	// printedLines says some line was printed, so a later non-adjacent
 	// context group needs a "--" separator.
 	printedLines bool
+	// writeErr is the first failed write; the search stops on it (a
+	// closed pipe after head -1).
+	writeErr error
 }
 
 // grepInput is one file to search: the name grep prints and how to read it.
@@ -643,8 +646,10 @@ type grepScan struct {
 	selected                int
 	lastPrinted             int
 	afterRemaining          int
-	// recent are the last lines not selected, for -B.
-	recent []grepLine
+	// recent are the last lines not selected, for -B; recentBytes is
+	// their size, held within the input budget.
+	recent      []grepLine
+	recentBytes int
 	// stop ends the search of the file (-q, -l, -m, a binary match).
 	stop bool
 }
@@ -676,27 +681,30 @@ func (g *grepSearcher) searchLines(ctx context.Context, name string, lines *line
 			// A NUL after the first buffer makes the rest binary, as in GNU.
 			scan.binary, scan.printLines = true, false
 		}
-		g.scanLine(ctx, scan, grepLine{index: index, text: text})
+		if err := g.scanLine(ctx, scan, grepLine{index: index, text: text}); err != nil {
+			return false, err
+		}
+		if g.writeErr != nil {
+			return false, fmt.Errorf("write output: %w", g.writeErr)
+		}
 	}
 	g.printSummary(name, scan.selected)
 	return scan.selected > 0, nil
 }
 
-// scanLine decides one line: selected, context or nothing.
-func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) {
+// scanLine decides one line: selected, context or nothing. The -B
+// context beyond the input budget is errInputTooLarge.
+func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) error {
 	settings := g.settings
 	if settings.maximum >= 0 && scan.selected >= settings.maximum {
 		scan.stop = !g.trailingContext(scan, line.index, line.text)
-		return
+		return nil
 	}
 	if g.matcher.matches(ctx, line.text) == settings.invert {
-		if !g.trailingContext(scan, line.index, line.text) && settings.before > 0 {
-			scan.recent = append(scan.recent, line)
-			if len(scan.recent) > settings.before {
-				scan.recent = scan.recent[1:]
-			}
+		if g.trailingContext(scan, line.index, line.text) || settings.before <= 0 {
+			return nil
 		}
-		return
+		return g.keepBefore(scan, line)
 	}
 	scan.selected++
 	switch {
@@ -710,6 +718,22 @@ func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLi
 		g.printSelected(ctx, scan, line.index, line.text)
 		scan.afterRemaining = settings.after
 	}
+	return nil
+}
+
+// keepBefore keeps an unselected line as -B context of a later match;
+// beyond the input budget it is errInputTooLarge.
+func (g *grepSearcher) keepBefore(scan *grepScan, line grepLine) error {
+	scan.recent = append(scan.recent, line)
+	scan.recentBytes += len(line.text)
+	if len(scan.recent) > g.settings.before {
+		scan.recentBytes -= len(scan.recent[0].text)
+		scan.recent = scan.recent[1:]
+	}
+	if scan.recentBytes > maximumInputBytes {
+		return errInputTooLarge
+	}
+	return nil
 }
 
 // trailingContext prints a line of -A context if one is due.
@@ -737,7 +761,7 @@ func (g *grepSearcher) printBefore(scan *grepScan) {
 			g.printLine(scan, line.index, line.text, '-')
 		}
 	}
-	scan.recent = scan.recent[:0]
+	scan.recent, scan.recentBytes = scan.recent[:0], 0
 }
 
 // printSelected prints a selected line, or its matches with -o.
@@ -760,14 +784,13 @@ func (g *grepSearcher) printSelected(ctx context.Context, scan *grepScan, index 
 // suppresses the text of context lines, not their place in a group.
 func (g *grepSearcher) startLine(scan *grepScan, index int) {
 	if g.settings.context && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) {
-		fmt.Fprint(g.output, "--\n")
+		g.write("--\n")
 	}
 	scan.lastPrinted = index
 	g.printedLines = true
 }
 
-// printLine writes one output line with its prefixes. Write errors surface
-// at Flush.
+// printLine writes one output line with its prefixes.
 func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
 	g.startLine(scan, index)
 	if g.settings.onlyMatches && separator == '-' {
@@ -784,7 +807,15 @@ func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separat
 	}
 	line.WriteString(text)
 	line.WriteByte(g.lineEnd())
-	fmt.Fprint(g.output, line.String())
+	g.write(line.String())
+}
+
+// write writes text to the output and keeps the first error, which ends
+// the search after the current line.
+func (g *grepSearcher) write(text string) {
+	if _, err := g.output.WriteString(text); err != nil && g.writeErr == nil {
+		g.writeErr = err
+	}
 }
 
 // printSummary prints the -c count and the -l / -L name of one file.
@@ -795,12 +826,12 @@ func (g *grepSearcher) printSummary(name string, selectedCount int) {
 	}
 	if settings.count && settings.listing == listNone {
 		if g.withFilename {
-			fmt.Fprintf(g.output, "%s%c", name, g.nameEnd(':'))
+			g.write(fmt.Sprintf("%s%c", name, g.nameEnd(':')))
 		}
-		fmt.Fprintf(g.output, "%d\n", selectedCount)
+		g.write(fmt.Sprintf("%d\n", selectedCount))
 	}
 	if settings.listing == listMatching && selectedCount > 0 || settings.listing == listNonMatching && selectedCount == 0 {
-		fmt.Fprintf(g.output, "%s%c", name, g.nameEnd('\n'))
+		g.write(fmt.Sprintf("%s%c", name, g.nameEnd('\n')))
 	}
 }
 

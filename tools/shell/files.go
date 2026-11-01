@@ -279,30 +279,49 @@ func runTouch(ctx context.Context, invocation *Invocation) error {
 	var status error
 	for _, operand := range operands {
 		if err := touch(ctx, files, invocation.Directory, operand, parsed.has("c")); err != nil {
-			complain(invocation, "touch", "cannot touch '%s': %v", operand, err)
+			complain(invocation, "touch", "%v", err)
 			status = errFailed
 		}
 	}
 	return status
 }
 
+// touch creates operand when it is missing; times are not modelled. The
+// error is GNU's: "cannot touch" when creating the file fails, "setting
+// times of" when only the timestamp update is left to fail, as for "x/",
+// which open(O_CREAT) never creates.
 func touch(ctx context.Context, files workspace, directory, operand string, noCreate bool) error {
+	cannotTouch := func(err error) error { return fmt.Errorf("cannot touch '%s': %w", operand, describe(err)) }
+	settingTimes := func(err error) error { return fmt.Errorf("setting times of '%s': %w", operand, err) }
 	name, err := Resolve(directory, operand)
 	if err != nil {
-		return errNotFound
+		return cannotTouch(errNotFound)
 	}
 	found, err := files.stat(ctx, name)
+	slashed := strings.HasSuffix(operand, "/")
 	switch {
 	case err != nil:
-		return err
-	case strings.HasSuffix(operand, "/") && found.kind == entryMissing:
-		return errNotFound // "b/" names a directory; touch creates files only
-	case strings.HasSuffix(operand, "/") && found.kind == entryFile:
-		return errNotDirectory
-	case found.kind != entryMissing || noCreate:
+		return cannotTouch(err)
+	case found.kind == entryDirectory || (found.kind != entryMissing && !slashed):
 		return nil
+	case found.kind != entryMissing:
+		return settingTimes(errNotDirectory)
 	}
-	return files.writeFile(ctx, name, nil)
+	parentErr := files.checkWritable(ctx, name) // name is missing: only its parent can fail
+	switch {
+	case noCreate && errors.Is(parentErr, errNotDirectory):
+		return settingTimes(parentErr)
+	case noCreate:
+		return nil
+	case parentErr != nil:
+		return cannotTouch(parentErr)
+	case slashed:
+		return settingTimes(errNotFound)
+	}
+	if err := files.writeFile(ctx, name, nil); err != nil {
+		return cannotTouch(err)
+	}
+	return nil
 }
 
 func teeCommand() Command {
@@ -338,30 +357,18 @@ type teeTarget struct {
 	appending  bool
 }
 
-// write writes what tee read to one operand.
+// write writes what tee read to one operand, through storeOutput like any
+// command's output file; -a puts the operand's current content first.
 func (t teeTarget) write(ctx context.Context, operand string) error {
-	invocation, files, content := t.invocation, t.files, t.content
-	name, err := resolve(invocation, operand)
-	if err != nil {
-		return err
-	}
-	switch name {
-	case "dev/null":
-		return nil
-	case "dev/stdout":
-		_, err := io.WriteString(invocation.Stdout, content)
-		return err
-	case "dev/stderr":
-		_, err := io.WriteString(invocation.Stderr, content)
-		return err
-	}
+	content := t.content
 	if t.appending {
-		existing, _, err := files.storage.ReadFile(ctx, name)
-		if err == nil {
-			content = string(existing) + content
+		if name, err := resolve(t.invocation, operand); err == nil {
+			if existing, _, err := t.files.storage.ReadFile(ctx, name); err == nil {
+				content = string(existing) + content
+			}
 		}
 	}
-	return files.writeFile(ctx, name, []byte(content))
+	return storeOutput(ctx, t.invocation, operand, []byte(content))
 }
 
 // limitedBuilder collects up to maximumBufferedFileBytes and then fails
