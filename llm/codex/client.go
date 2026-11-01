@@ -7,9 +7,10 @@
 // messages (as instructions), user and assistant text, image input and
 // structured output (llm.Request.ResponseFormat). Tools, tool results, audio
 // input and Thinking are not supported and fail with llm.ErrInvalidRequest;
-// MaxTokens, Temperature, StopSequences, Modalities and ImageConfig are ignored.
+// MaximumTokens, Temperature, StopSequences, Modalities and
+// ImageConfiguration are ignored.
 //
-// Log in with StartDeviceLogin + PollDeviceLogin (or ParseAuthJSON), wrap the
+// Log in with StartDeviceLogin + PollDeviceLogin (or ParseLogin), wrap the
 // login in a TokenSource that persists every refresh, and pass it in Options.
 package codex
 
@@ -35,6 +36,12 @@ const (
 	DefaultBaseURL = "https://chatgpt.com/backend-api/codex"
 	// clientVersion gates the models list; older versions hide newer models.
 	clientVersion = "0.155.0"
+	// maximumErrorDetailBytes is how much of a failed response ends up in the error.
+	maximumErrorDetailBytes = 512
+	streamBufferSize        = 16
+	// maximumStreamLineBytes fits a large structured-output delta in one SSE line.
+	maximumStreamLineBytes = 4 << 20
+	initialLineBufferBytes = 64 << 10
 )
 
 // Options configure the Client.
@@ -52,149 +59,175 @@ type Options struct {
 	HTTPClient *http.Client
 }
 
-// Client is a Codex-backend implementation of llm.Client.
+// Client is a Codex-backend implementation of llm.Client. It is safe for
+// concurrent use.
 type Client struct {
-	o Options
+	options Options
 }
 
 var _ llm.Client = (*Client)(nil)
 
-// NewClient builds a Client.
-func NewClient(o *Options) (*Client, error) {
-	if o == nil || o.Tokens == nil || o.Originator == "" {
+// NewClient builds a Client. It returns an error if options is nil or lacks
+// Tokens or Originator. options is copied; later changes do not reach the
+// Client.
+func NewClient(options *Options) (*Client, error) {
+	if options == nil || options.Tokens == nil || options.Originator == "" {
 		return nil, errors.New("codex: Tokens and Originator are required")
 	}
-	c := &Client{o: *o}
-	if c.o.UserAgent == "" {
-		c.o.UserAgent = o.Originator + "/aikido"
+	client := &Client{options: *options}
+	if client.options.UserAgent == "" {
+		client.options.UserAgent = options.Originator + "/aikido"
 	}
-	if c.o.BaseURL == "" {
-		c.o.BaseURL = DefaultBaseURL
+	if client.options.BaseURL == "" {
+		client.options.BaseURL = DefaultBaseURL
 	}
-	c.o.BaseURL = strings.TrimRight(c.o.BaseURL, "/")
-	if c.o.HTTPClient == nil {
-		c.o.HTTPClient = &http.Client{}
+	client.options.BaseURL = strings.TrimRight(client.options.BaseURL, "/")
+	if client.options.HTTPClient == nil {
+		client.options.HTTPClient = &http.Client{}
 	}
-	return c, nil
+	return client, nil
 }
 
-// Stream sends one request and returns its events; EventEnd comes last.
-// 429 and 5xx at stream start are retried, mid-stream errors are not.
-func (c *Client) Stream(ctx context.Context, req llm.Request) (<-chan llm.Event, error) {
+// Stream sends one request and returns its events; EventEnd comes last, then
+// the channel closes. The caller must drain the channel or cancel ctx.
+// 429 and 5xx at stream start are retried, mid-stream errors are not. Errors
+// wrap the llm sentinels (llm.ErrInvalidRequest for unsupported request
+// features).
+func (c *Client) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
 	start := time.Now()
-	body, err := buildBody(req)
+	body, err := buildBody(request)
 	if err != nil {
 		return nil, err
 	}
-	var resp *http.Response
+	var response *http.Response
 	err = retry.Do(ctx, retryPolicy(), func(int) error {
-		r, err := c.do(ctx, http.MethodPost, "/responses", body, "text/event-stream") //nolint:bodyclose // closed by the stream goroutine
-		if err != nil {
-			return err
-		}
-		resp = r
-		return nil
+		var attemptError error
+		response, attemptError = c.do(ctx, http.MethodPost, "/responses", body, "text/event-stream") //nolint:bodyclose // closed by the stream goroutine
+		return attemptError
 	})
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan llm.Event, 16)
+	events := make(chan llm.Event, streamBufferSize)
+	// No recover here: processStream recovers its own panics (CON-001). The
+	// goroutine ends with the body or with ctx.
 	go func() {
-		defer close(out)
-		defer resp.Body.Close()
-		processStream(ctx, resp.Body, out, start)
+		defer close(events)
+		defer response.Body.Close()
+		processStream(ctx, response.Body, events, start)
 	}()
-	return out, nil
+	return events, nil
 }
 
-// Complete drains Stream: the backend has no non-streaming mode.
-func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	events, err := c.Stream(ctx, req)
+// Complete drains Stream: the backend has no non-streaming mode. On a stream
+// error the Response holds what arrived before it.
+func (c *Client) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
+	events, err := c.Stream(ctx, request)
 	if err != nil {
 		return llm.Response{}, err
 	}
 	var (
-		res llm.Response
-		sb  strings.Builder
+		response llm.Response
+		text     strings.Builder
 	)
-	for ev := range events {
-		switch ev.Kind {
+	for event := range events {
+		switch event.Kind {
 		case llm.EventTextDelta:
-			sb.WriteString(ev.Text)
+			text.WriteString(event.Text)
 		case llm.EventUsage:
-			res.Usage = ev.Usage
+			response.Usage = event.Usage
 		case llm.EventError:
-			err = ev.Err
+			err = event.Err
 		case llm.EventEnd:
-			res.FinishReason = ev.FinishReason
+			response.FinishReason = event.FinishReason
+		case llm.EventToolCall, llm.EventThinking, llm.EventImage:
+			// processStream emits none of these
 		}
 	}
-	res.Text = sb.String()
+	response.Text = text.String()
 	if err == nil {
 		err = ctx.Err()
 	}
-	return res, err
+	return response, err
 }
 
 // Models lists the model ids the subscription offers, in the backend's order,
-// hidden ones left out.
+// hidden ones left out. Errors wrap the llm sentinels.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/models?client_version="+clientVersion, nil, "application/json")
+	response, err := c.do(ctx, http.MethodGet, "/models?client_version="+clientVersion, nil, "application/json")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	var list struct {
+	defer response.Body.Close()
+	var catalog struct {
 		Models []struct {
 			Slug       string `json:"slug"`
 			Visibility string `json:"visibility"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
 		return nil, fmt.Errorf("codex: models: %w", err)
 	}
 	var ids []string
-	for _, m := range list.Models {
-		if m.Slug != "" && m.Visibility != "hide" && m.Visibility != "hidden" {
-			ids = append(ids, m.Slug)
+	for _, model := range catalog.Models {
+		if model.Slug != "" && model.Visibility != "hide" && model.Visibility != "hidden" {
+			ids = append(ids, model.Slug)
 		}
 	}
 	return ids, nil
 }
 
 // do sends one authenticated request and returns a 200 response, or an error
-// wrapping an llm sentinel (closing the body).
+// wrapping an llm sentinel or ctx.Err() (closing the body).
 func (c *Client) do(ctx context.Context, method, path string, body []byte, accept string) (*http.Response, error) {
-	tok, err := c.o.Tokens.Token(ctx)
+	tokens, err := c.options.Tokens.Token(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("codex: access token: %w", err)
 	}
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.o.BaseURL+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, c.options.BaseURL+path, reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("codex: build request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
-	req.Header.Set("ChatGPT-Account-ID", tok.AccountID)
-	req.Header.Set("originator", c.o.Originator)
-	req.Header.Set("User-Agent", c.o.UserAgent)
-	req.Header.Set("Accept", accept)
+	request.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	request.Header.Set("ChatGPT-Account-ID", tokens.AccountID)
+	request.Header.Set("originator", c.options.Originator)
+	request.Header.Set("User-Agent", c.options.UserAgent)
+	request.Header.Set("Accept", accept)
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.o.HTTPClient.Do(req)
+	response, err := c.options.HTTPClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("codex: http error: %v: %w", err, llm.ErrServerError)
+		return nil, transportError(ctx, "codex: http error", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		resp.Body.Close()
-		return nil, fmt.Errorf("codex: status %d: %s: %w", resp.StatusCode, strings.TrimSpace(string(raw)), statusSentinel(resp.StatusCode))
+	if response.StatusCode != http.StatusOK {
+		return nil, statusError(response)
 	}
-	return resp, nil
+	return response, nil
+}
+
+// transportError wraps ctx.Err() when the request failed because ctx ended,
+// so a cancelled call is neither reported nor retried as a server error, and
+// llm.ErrServerError otherwise. LIB-010: the transport error itself is not
+// part of the API, only its text is kept.
+func transportError(ctx context.Context, operation string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", operation, ctx.Err())
+	}
+	return fmt.Errorf("%s: %s: %w", operation, err.Error(), llm.ErrServerError)
+}
+
+// statusError turns a non-200 response into an error and closes its body.
+// The status alone picks the sentinel; the body only adds detail, so its read
+// and close errors carry nothing worth returning.
+func statusError(response *http.Response) error {
+	detail, _ := io.ReadAll(io.LimitReader(response.Body, maximumErrorDetailBytes))
+	_ = response.Body.Close()
+	return fmt.Errorf("codex: status %d: %s: %w", response.StatusCode, strings.TrimSpace(string(detail)), statusSentinel(response.StatusCode))
 }
 
 func statusSentinel(status int) error {
@@ -203,7 +236,7 @@ func statusSentinel(status int) error {
 		return llm.ErrAuthentication
 	case status == http.StatusTooManyRequests:
 		return llm.ErrRateLimited
-	case status >= 500 || status == http.StatusRequestTimeout:
+	case status >= http.StatusInternalServerError || status == http.StatusRequestTimeout:
 		return llm.ErrServerError
 	default:
 		return llm.ErrInvalidRequest
@@ -211,14 +244,12 @@ func statusSentinel(status int) error {
 }
 
 func retryPolicy() retry.Policy {
-	p := retry.DefaultPolicy()
-	p.ShouldRetry = func(err error) bool {
+	policy := retry.DefaultPolicy()
+	policy.ShouldRetry = func(err error) bool {
 		return errors.Is(err, llm.ErrRateLimited) || errors.Is(err, llm.ErrServerError)
 	}
-	return p
+	return policy
 }
-
-// --- request ---
 
 type contentPart struct {
 	Type     string `json:"type"`
@@ -239,167 +270,257 @@ type textFormat struct {
 	Schema json.RawMessage `json:"schema"`
 }
 
-type request struct {
-	Model        string      `json:"model"`
-	Instructions string      `json:"instructions,omitempty"`
-	Input        []inputItem `json:"input"`
-	Store        bool        `json:"store"`
-	Stream       bool        `json:"stream"`
-	Text         *struct {
-		Format textFormat `json:"format"`
-	} `json:"text,omitempty"`
+type textOptions struct {
+	Format textFormat `json:"format"`
 }
 
-func buildBody(req llm.Request) ([]byte, error) {
-	if len(req.Tools) > 0 || req.Thinking != nil {
+type requestBody struct {
+	Model        string       `json:"model"`
+	Instructions string       `json:"instructions,omitempty"`
+	Input        []inputItem  `json:"input"`
+	Store        bool         `json:"store"`
+	Stream       bool         `json:"stream"`
+	Text         *textOptions `json:"text,omitempty"`
+}
+
+func buildBody(request llm.Request) ([]byte, error) {
+	if len(request.Tools) > 0 || request.Thinking != nil {
 		return nil, fmt.Errorf("codex: tools and thinking are not supported: %w", llm.ErrInvalidRequest)
 	}
-	r := request{Model: req.Model, Stream: true, Input: []inputItem{}}
+	body := requestBody{Model: request.Model, Stream: true, Input: []inputItem{}}
 	var instructions []string
-	for _, m := range req.Messages {
-		switch m.Role {
-		case llm.RoleSystem:
-			instructions = append(instructions, m.Content)
-		case llm.RoleUser, llm.RoleAssistant:
-			if len(m.ToolCalls) > 0 {
-				return nil, fmt.Errorf("codex: tool calls are not supported: %w", llm.ErrInvalidRequest)
-			}
-			if len(m.Audio) > 0 {
-				return nil, fmt.Errorf("codex: audio input is not supported: %w", llm.ErrInvalidRequest)
-			}
-			textType := "input_text"
-			if m.Role == llm.RoleAssistant {
-				textType = "output_text"
-			}
-			item := inputItem{Type: "message", Role: string(m.Role)}
-			if m.Content != "" {
-				item.Content = append(item.Content, contentPart{Type: textType, Text: m.Content})
-			}
-			for _, img := range m.Images {
-				u := img.URL
-				if u == "" && len(img.Data) > 0 {
-					mime := img.ContentType
-					if mime == "" {
-						mime = http.DetectContentType(img.Data)
-					}
-					u = "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
-				}
-				item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: u})
-			}
-			r.Input = append(r.Input, item)
-		default:
-			return nil, fmt.Errorf("codex: %s messages are not supported: %w", m.Role, llm.ErrInvalidRequest)
+	for _, message := range request.Messages {
+		if message.Role == llm.RoleSystem {
+			instructions = append(instructions, message.Content)
+			continue
 		}
+		item, err := toInputItem(message)
+		if err != nil {
+			return nil, err
+		}
+		body.Input = append(body.Input, item)
 	}
-	r.Instructions = strings.Join(instructions, "\n\n")
-	if f := req.ResponseFormat; f != nil {
-		r.Text = &struct {
-			Format textFormat `json:"format"`
-		}{textFormat{Type: "json_schema", Name: f.Name, Strict: f.Strict, Schema: f.Schema}}
+	body.Instructions = strings.Join(instructions, "\n\n")
+	body.Text = toTextOptions(request.ResponseFormat)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("codex: encode request: %w", err)
 	}
-	return json.Marshal(r)
+	return raw, nil
 }
 
-// --- response stream ---
+// toInputItem converts a user or assistant message; every other role and
+// every non-text, non-image part is rejected with llm.ErrInvalidRequest.
+func toInputItem(message llm.Message) (inputItem, error) {
+	textType := "input_text"
+	switch message.Role {
+	case llm.RoleUser:
+	case llm.RoleAssistant:
+		textType = "output_text"
+	default:
+		return inputItem{}, fmt.Errorf("codex: %s messages are not supported: %w", message.Role, llm.ErrInvalidRequest)
+	}
+	if len(message.ToolCalls) > 0 {
+		return inputItem{}, fmt.Errorf("codex: tool calls are not supported: %w", llm.ErrInvalidRequest)
+	}
+	if len(message.Audio) > 0 {
+		return inputItem{}, fmt.Errorf("codex: audio input is not supported: %w", llm.ErrInvalidRequest)
+	}
+	item := inputItem{Type: "message", Role: string(message.Role)}
+	if message.Content != "" {
+		item.Content = append(item.Content, contentPart{Type: textType, Text: message.Content})
+	}
+	for _, image := range message.Images {
+		item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: imageURL(image)})
+	}
+	return item, nil
+}
+
+// imageURL is the image's URL, or its data inlined as a data URL.
+func imageURL(image llm.ImagePart) string {
+	if image.URL != "" || len(image.Data) == 0 {
+		return image.URL
+	}
+	contentType := image.ContentType
+	if contentType == "" {
+		contentType = http.DetectContentType(image.Data)
+	}
+	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
+}
+
+func toTextOptions(schema *llm.JSONSchema) *textOptions {
+	if schema == nil {
+		return nil
+	}
+	return &textOptions{Format: textFormat{Type: "json_schema", Name: schema.Name, Strict: schema.Strict, Schema: schema.Schema}}
+}
 
 type streamEvent struct {
-	Type     string `json:"type"`
-	Delta    string `json:"delta"`
-	Text     string `json:"text"`
-	Message  string `json:"message"`
-	Code     string `json:"code"`
-	Response *struct {
-		Usage *struct {
-			InputTokens        int `json:"input_tokens"`
-			OutputTokens       int `json:"output_tokens"`
-			InputTokensDetails *struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
-		} `json:"usage"`
-		Error *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-		IncompleteDetails *struct {
-			Reason string `json:"reason"`
-		} `json:"incomplete_details"`
-	} `json:"response"`
+	Type     string          `json:"type"`
+	Delta    string          `json:"delta"`
+	Text     string          `json:"text"`
+	Message  string          `json:"message"`
+	Code     string          `json:"code"`
+	Response *streamResponse `json:"response"`
+}
+
+type streamResponse struct {
+	Usage *responseUsage `json:"usage"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+	IncompleteDetails *struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details"`
+}
+
+type responseUsage struct {
+	InputTokens        int `json:"input_tokens"`
+	OutputTokens       int `json:"output_tokens"`
+	InputTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+}
+
+// streamReader turns one Responses SSE body into llm events.
+type streamReader struct {
+	events      chan<- llm.Event
+	start       time.Time
+	firstOutput time.Time
+	sawDelta    bool
+	finished    bool
+	finish      string
 }
 
 // processStream turns the Responses SSE into llm events and always ends with
-// exactly one EventEnd. Text arrives as output_text deltas; the .done event
-// only counts when no delta came (response.completed carries no output).
-func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, start time.Time) {
-	finish := ""
-	defer func() { emit(ctx, out, llm.Event{Kind: llm.EventEnd, FinishReason: finish}) }()
-
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
-	sawDelta := false
-	var firstOutput time.Time
-	for scanner.Scan() {
-		data, ok := strings.CutPrefix(scanner.Text(), "data:")
-		if !ok {
-			continue // "event:" lines repeat the type that data carries anyway
-		}
-		var ev streamEvent
-		if json.Unmarshal([]byte(strings.TrimSpace(data)), &ev) != nil {
-			continue
-		}
-		switch ev.Type {
-		case "response.output_text.delta":
-			sawDelta = true
-			if firstOutput.IsZero() {
-				firstOutput = time.Now()
-			}
-			if !emit(ctx, out, llm.Event{Kind: llm.EventTextDelta, Text: ev.Delta}) {
-				return
-			}
-		case "response.output_text.done":
-			if !sawDelta && ev.Text != "" {
-				emit(ctx, out, llm.Event{Kind: llm.EventTextDelta, Text: ev.Text})
-			}
-		case "response.completed", "response.incomplete":
-			finish = "stop"
-			if r := ev.Response; r != nil {
-				if r.IncompleteDetails != nil && r.IncompleteDetails.Reason != "" {
-					finish = r.IncompleteDetails.Reason
-				}
-				if u := r.Usage; u != nil {
-					usage := &llm.Usage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens}
-					if u.InputTokensDetails != nil {
-						usage.CacheReadTokens = u.InputTokensDetails.CachedTokens
-					}
-					usage.SetTiming(start, firstOutput, time.Now())
-					emit(ctx, out, llm.Event{Kind: llm.EventUsage, Usage: usage})
-				}
-			}
-			return
-		case "response.failed", "error":
-			msg, code := ev.Message, ev.Code
-			if r := ev.Response; r != nil && r.Error != nil {
-				msg, code = r.Error.Message, r.Error.Code
-			}
-			sentinel := llm.ErrServerError
-			if strings.Contains(code, "content") || strings.Contains(code, "safety") {
-				sentinel, finish = llm.ErrContentFiltered, "content_filter"
-			} else {
-				finish = "error"
-			}
-			emit(ctx, out, llm.Event{Kind: llm.EventError, Err: fmt.Errorf("codex: %s %s: %w", code, msg, sentinel)})
-			return
-		}
-	}
-	// completed, failed and error all return above; reaching here means a cut stream
-	if ctx.Err() == nil {
-		finish = "error"
-		emit(ctx, out, llm.Event{Kind: llm.EventError, Err: fmt.Errorf("codex: stream ended before completion: %w", llm.ErrServerError)})
+// exactly one EventEnd, also when reading the body panics. Text arrives as
+// output_text deltas; the .done event only counts when no delta came
+// (response.completed carries no output).
+func processStream(ctx context.Context, body io.Reader, events chan<- llm.Event, start time.Time) {
+	reader := &streamReader{events: events, start: start}
+	defer reader.end(ctx)
+	reader.read(ctx, body)
+	if !reader.finished && ctx.Err() == nil {
+		reader.fail(ctx, "error", fmt.Errorf("codex: stream ended before completion: %w", llm.ErrServerError))
 	}
 }
 
-func emit(ctx context.Context, out chan<- llm.Event, ev llm.Event) bool {
+// end emits EventEnd. It recovers a panic of the stream goroutine, which would
+// otherwise crash the consumer's process (CON-001), and reports it as an error.
+func (r *streamReader) end(ctx context.Context) {
+	if recovered := recover(); recovered != nil {
+		r.fail(ctx, "error", fmt.Errorf("codex: reading the stream panicked: %v: %w", recovered, llm.ErrServerError))
+	}
+	emit(ctx, r.events, llm.Event{Kind: llm.EventEnd, FinishReason: r.finish})
+}
+
+// read handles data lines until the response finished, the body ended or ctx
+// ended.
+func (r *streamReader) read(ctx context.Context, body io.Reader) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, initialLineBufferBytes), maximumStreamLineBytes)
+	for scanner.Scan() {
+		event, ok := parseStreamLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if !r.handle(ctx, event) {
+			return
+		}
+	}
+}
+
+// parseStreamLine decodes an SSE data line. "event:" lines repeat the type
+// that data carries anyway, and an undecodable line carries nothing usable,
+// so both report false.
+func parseStreamLine(line string) (streamEvent, bool) {
+	data, ok := strings.CutPrefix(line, "data:")
+	if !ok {
+		return streamEvent{}, false
+	}
+	var event streamEvent
+	if json.Unmarshal([]byte(strings.TrimSpace(data)), &event) != nil {
+		return streamEvent{}, false
+	}
+	return event, true
+}
+
+// handle emits what event carries and reports whether reading goes on.
+func (r *streamReader) handle(ctx context.Context, event streamEvent) bool {
+	switch event.Type {
+	case "response.output_text.delta":
+		r.sawDelta = true
+		if r.firstOutput.IsZero() {
+			r.firstOutput = time.Now()
+		}
+		return emit(ctx, r.events, llm.Event{Kind: llm.EventTextDelta, Text: event.Delta})
+	case "response.output_text.done":
+		if !r.sawDelta && event.Text != "" {
+			emit(ctx, r.events, llm.Event{Kind: llm.EventTextDelta, Text: event.Text})
+		}
+	case "response.completed", "response.incomplete":
+		r.complete(ctx, event.Response)
+		return false
+	case "response.failed", "error":
+		finish, failure := streamFailure(event)
+		r.fail(ctx, finish, failure)
+		return false
+	}
+	return true
+}
+
+func (r *streamReader) complete(ctx context.Context, response *streamResponse) {
+	r.finished = true
+	r.finish = finishReason(response)
+	if response == nil || response.Usage == nil {
+		return
+	}
+	usage := toUsage(response.Usage)
+	usage.SetTiming(r.start, r.firstOutput, time.Now())
+	emit(ctx, r.events, llm.Event{Kind: llm.EventUsage, Usage: usage})
+}
+
+func (r *streamReader) fail(ctx context.Context, finish string, failure error) {
+	r.finished = true
+	r.finish = finish
+	emit(ctx, r.events, llm.Event{Kind: llm.EventError, Err: failure})
+}
+
+// finishReason is "stop", or the reason an incomplete response gives.
+func finishReason(response *streamResponse) string {
+	if response != nil && response.IncompleteDetails != nil && response.IncompleteDetails.Reason != "" {
+		return response.IncompleteDetails.Reason
+	}
+	return "stop"
+}
+
+func toUsage(usage *responseUsage) *llm.Usage {
+	converted := &llm.Usage{PromptTokens: usage.InputTokens, CompletionTokens: usage.OutputTokens}
+	if usage.InputTokensDetails != nil {
+		converted.CacheReadTokens = usage.InputTokensDetails.CachedTokens
+	}
+	return converted
+}
+
+// streamFailure maps a response.failed or error event to its finish reason
+// and an error wrapping llm.ErrContentFiltered for content and safety codes,
+// llm.ErrServerError otherwise.
+func streamFailure(event streamEvent) (string, error) {
+	message, code := event.Message, event.Code
+	if event.Response != nil && event.Response.Error != nil {
+		message, code = event.Response.Error.Message, event.Response.Error.Code
+	}
+	if strings.Contains(code, "content") || strings.Contains(code, "safety") {
+		return "content_filter", fmt.Errorf("codex: %s %s: %w", code, message, llm.ErrContentFiltered)
+	}
+	return "error", fmt.Errorf("codex: %s %s: %w", code, message, llm.ErrServerError)
+}
+
+// emit sends event unless ctx ends first, and reports whether it was sent.
+func emit(ctx context.Context, events chan<- llm.Event, event llm.Event) bool {
 	select {
-	case out <- ev:
+	case events <- event:
 		return true
 	case <-ctx.Done():
 		return false

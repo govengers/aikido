@@ -24,7 +24,8 @@ import (
 	"github.com/govengers/aikido/llm"
 )
 
-// DefaultSpeechModel and DefaultVoice are used when Options name none.
+// DefaultSpeechModel, DefaultVoice and DefaultFormat are used when Options
+// name none.
 const (
 	DefaultSpeechModel = "elevenlabs/eleven-v4-turbo"
 	DefaultVoice       = "sarah"
@@ -49,9 +50,20 @@ const (
 	OutputSpeech Output = "speech"
 )
 
+const (
+	defaultSpeechConcurrency = 2
+	eventBufferSize          = 32
+	// speechQueueSize bounds the sentences waiting for synthesis before the
+	// turn waits for the speaker.
+	speechQueueSize = 256
+	// terminalGrace bounds how long Run waits to hand over the final EventDone
+	// once ctx is over and the consumer's buffer is full.
+	terminalGrace = 5 * time.Second
+)
+
 // Runner runs one agent turn. *agent.Session implements it.
 type Runner interface {
-	RunWithOptions(ctx context.Context, userText string, opts *agent.RunOptions) (<-chan agent.Event, error)
+	RunWithOptions(ctx context.Context, userText string, options *agent.RunOptions) (<-chan agent.Event, error)
 }
 
 // Options configure a Pipeline. Transcriber is required for audio input,
@@ -81,38 +93,36 @@ type Options struct {
 	SpokenStyle string
 }
 
-// terminalGrace bounds how long Run waits to hand over the final EventDone
-// once ctx is over and the consumer's buffer is full.
-const terminalGrace = 5 * time.Second
-
-// Pipeline runs voice turns. Safe for concurrent use.
+// Pipeline runs voice turns. It is safe for concurrent use.
 type Pipeline struct {
-	opts          Options
+	options       Options
 	terminalGrace time.Duration
 }
 
-// New builds a Pipeline.
-func New(opts *Options) (*Pipeline, error) {
-	if opts == nil {
+// New builds a Pipeline. It returns an error if options is nil or has neither
+// a Transcriber nor a Speech generator. options is copied; later changes do
+// not reach the Pipeline.
+func New(options *Options) (*Pipeline, error) {
+	if options == nil {
 		return nil, errors.New("aikido/voice: nil Options")
 	}
-	if opts.Transcriber == nil && opts.Speech == nil {
+	if options.Transcriber == nil && options.Speech == nil {
 		return nil, errors.New("aikido/voice: Options need a Transcriber, a Speech generator, or both")
 	}
-	cp := *opts
-	if cp.SpeechModel == "" {
-		cp.SpeechModel = DefaultSpeechModel
+	configured := *options
+	if configured.SpeechModel == "" {
+		configured.SpeechModel = DefaultSpeechModel
 	}
-	if cp.Voice == "" {
-		cp.Voice = DefaultVoice
+	if configured.Voice == "" {
+		configured.Voice = DefaultVoice
 	}
-	if cp.Format == "" {
-		cp.Format = DefaultFormat
+	if configured.Format == "" {
+		configured.Format = DefaultFormat
 	}
-	if cp.SpeechConcurrency <= 0 {
-		cp.SpeechConcurrency = 2
+	if configured.SpeechConcurrency <= 0 {
+		configured.SpeechConcurrency = defaultSpeechConcurrency
 	}
-	return &Pipeline{opts: cp, terminalGrace: terminalGrace}, nil
+	return &Pipeline{options: configured, terminalGrace: terminalGrace}, nil
 }
 
 // Input is one user turn: Text, or Audio with its ContentType (a MIME type
@@ -130,6 +140,7 @@ type Input struct {
 // EventKind identifies a voice Event.
 type EventKind string
 
+// The kinds of Event; Event lists the fields each one sets.
 const (
 	EventTranscript EventKind = "transcript"
 	EventText       EventKind = "text"
@@ -148,7 +159,7 @@ const (
 //   - EventText: a delta of the agent's reply.
 //   - EventToolCall, EventToolResult: passed through from agent.Session.
 //   - EventSpeech: Speech holds one synthesized sentence. Chunks arrive in
-//     Seq order (0, 1, 2, ...).
+//     Sequence order (0, 1, 2, ...).
 //   - EventError: Err is set. With Speech set, only that chunk failed (no
 //     Audio) and the turn goes on; otherwise EventDone follows.
 //   - EventDone: EndReason (agent.EndReason* or EndReasonNoSpeech) and Usage.
@@ -176,9 +187,10 @@ type SpeechChunk struct {
 }
 
 // Usage aggregates one turn over transcription, the agent's model calls and
-// speech. CostUSD is the sum; SpeechCostUSD is SpeechChars times
-// Options.SpeechUSDPerChar. LLM sums the token and cost fields of LLMCalls;
-// the per-call provider, latency and throughput live in LLMCalls only.
+// speech. CostUSD is the sum; SpeechCostUSD is SpeechCharacters times
+// Options.SpeechUSDPerCharacter. LLM sums the token and cost fields of
+// LLMCalls; the per-call provider, latency and throughput live in LLMCalls
+// only.
 type Usage struct {
 	Transcription    *llm.Usage
 	LLM              llm.Usage
@@ -188,9 +200,27 @@ type Usage struct {
 	CostUSD          float64
 }
 
-// Run starts one turn on r and returns its events. Invalid input (nothing to
-// say, audio without a Transcriber, speech without a Speech generator, an
-// unknown audio type) is rejected up front with llm.ErrInvalidRequest.
+func (u *Usage) addLLMCall(call llm.Usage) {
+	u.LLM.PromptTokens += call.PromptTokens
+	u.LLM.CompletionTokens += call.CompletionTokens
+	u.LLM.CacheReadTokens += call.CacheReadTokens
+	u.LLM.CacheWriteTokens += call.CacheWriteTokens
+	u.LLM.CostUSD += call.CostUSD
+	u.LLMCalls = append(u.LLMCalls, call)
+}
+
+func (u *Usage) totalCostUSD() float64 {
+	total := u.LLM.CostUSD + u.SpeechCostUSD
+	if u.Transcription != nil {
+		total += u.Transcription.CostUSD
+	}
+	return total
+}
+
+// Run starts one turn on runner and returns its events. Invalid input
+// (nothing to say, audio without a Transcriber, speech without a Speech
+// generator, an unknown audio type, a nil runner) is rejected up front with
+// llm.ErrInvalidRequest.
 //
 // The caller must drain the channel. Cancelling ctx cancels the turn; a
 // server that wants the turn to finish after its client went away passes
@@ -201,244 +231,344 @@ type Usage struct {
 // EventDone is still delivered, with EndReason agent.EndReasonCancelled or
 // agent.EndReasonTimeout in place of "stop" or "error". A
 // consumer that stopped reading does not block Run forever: with a full
-// buffer and ctx over, EventDone is given up after a few seconds.
-func (p *Pipeline) Run(ctx context.Context, r Runner, in Input) (<-chan Event, error) {
-	var format string
-	switch {
-	case len(in.Audio) > 0:
-		if p.opts.Transcriber == nil {
-			return nil, fmt.Errorf("aikido/voice: audio input needs Options.Transcriber: %w", llm.ErrInvalidRequest)
-		}
-		f, err := llm.AudioFormat(in.ContentType)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", err, llm.ErrInvalidRequest)
-		}
-		format = f
-	case strings.TrimSpace(in.Text) == "":
-		return nil, fmt.Errorf("aikido/voice: input has neither text nor audio: %w", llm.ErrInvalidRequest)
+// buffer and ctx over, EventDone is given up after a few seconds. A panic in
+// the runner, the Transcriber or the Speech generator ends the turn with
+// EventError and EventDone instead of crashing the process.
+func (p *Pipeline) Run(ctx context.Context, runner Runner, input Input) (<-chan Event, error) {
+	input, format, err := p.validate(input)
+	if err != nil {
+		return nil, err
 	}
-	switch in.Output {
-	case "", OutputText:
-		in.Output = OutputText
-	case OutputSpeech:
-		if p.opts.Speech == nil {
-			return nil, fmt.Errorf("aikido/voice: speech output needs Options.Speech: %w", llm.ErrInvalidRequest)
-		}
-	default:
-		return nil, fmt.Errorf("aikido/voice: unknown output %q: %w", in.Output, llm.ErrInvalidRequest)
-	}
-	if r == nil {
+	if runner == nil {
 		return nil, fmt.Errorf("aikido/voice: nil Runner: %w", llm.ErrInvalidRequest)
 	}
-
-	out := make(chan Event, 32)
-	go p.run(ctx, r, in, format, out)
-	return out, nil
+	events := make(chan Event, eventBufferSize)
+	go p.run(ctx, runner, input, format, events)
+	return events, nil
 }
 
-func (p *Pipeline) run(ctx context.Context, r Runner, in Input, format string, out chan<- Event) {
-	defer close(out)
-	emit := func(ev Event) {
-		select {
-		case out <- ev:
-		case <-ctx.Done():
+// validate checks input against what the Pipeline can do and returns it with
+// Output defaulted, and the audio format for transcription.
+func (p *Pipeline) validate(input Input) (Input, string, error) {
+	var format string
+	switch {
+	case len(input.Audio) > 0:
+		if p.options.Transcriber == nil {
+			return Input{}, "", fmt.Errorf("aikido/voice: audio input needs Options.Transcriber: %w", llm.ErrInvalidRequest)
 		}
-	}
-	usage := &Usage{}
-	done := func(reason agent.EndReason) {
-		usage.CostUSD = usage.LLM.CostUSD + usage.SpeechCostUSD
-		if usage.Transcription != nil {
-			usage.CostUSD += usage.Transcription.CostUSD
-		}
-		// A turn cut short by ctx says so, also when the agent finished but
-		// speech did not.
-		if reason == agent.EndReasonError || reason == agent.EndReasonStop {
-			switch {
-			case errors.Is(ctx.Err(), context.Canceled):
-				reason = agent.EndReasonCancelled
-			case errors.Is(ctx.Err(), context.DeadlineExceeded):
-				reason = agent.EndReasonTimeout
-			}
-		}
-		ev := Event{Kind: EventDone, EndReason: reason, Usage: usage}
-		select {
-		case out <- ev:
-			return
-		case <-ctx.Done():
-		}
-		t := time.NewTimer(p.terminalGrace)
-		defer t.Stop()
-		select {
-		case out <- ev:
-		case <-t.C:
-		}
-	}
-
-	text := in.Text
-	if len(in.Audio) > 0 {
-		req := llm.TranscribeRequest{
-			Model:      p.opts.TranscribeModel,
-			Audio:      in.Audio,
-			Format:     format,
-			Vocabulary: p.opts.Vocabulary,
-		}
-		if in.Language != "" {
-			req.Hint = "Expected language: " + in.Language + "."
-		}
-		t, err := llm.TranscribeDetailed(ctx, p.opts.Transcriber, req)
-		usage.Transcription = t.Usage
+		audioFormat, err := llm.AudioFormat(input.ContentType)
 		if err != nil {
-			emit(Event{Kind: EventError, Err: fmt.Errorf("aikido/voice: transcribe: %w", err)})
-			done(agent.EndReasonError)
-			return
+			return Input{}, "", fmt.Errorf("%w: %w", err, llm.ErrInvalidRequest)
 		}
-		emit(Event{Kind: EventTranscript, Text: t.Text, Raw: t.Raw})
-		if t.Text == "" {
-			done(EndReasonNoSpeech)
-			return
-		}
-		text = t.Text
+		format = audioFormat
+	case strings.TrimSpace(input.Text) == "":
+		return Input{}, "", fmt.Errorf("aikido/voice: input has neither text nor audio: %w", llm.ErrInvalidRequest)
 	}
+	switch input.Output {
+	case "", OutputText:
+		input.Output = OutputText
+	case OutputSpeech:
+		if p.options.Speech == nil {
+			return Input{}, "", fmt.Errorf("aikido/voice: speech output needs Options.Speech: %w", llm.ErrInvalidRequest)
+		}
+	default:
+		return Input{}, "", fmt.Errorf("aikido/voice: unknown output %q: %w", input.Output, llm.ErrInvalidRequest)
+	}
+	return input, format, nil
+}
 
-	var ro *agent.RunOptions
-	var sp *speaker
-	if in.Output == OutputSpeech {
-		if p.opts.SpokenStyle != "" {
-			ro = &agent.RunOptions{SystemSuffix: p.opts.SpokenStyle}
-		}
-		sp = newSpeaker(ctx, p, emit)
-	}
-	events, err := r.RunWithOptions(ctx, text, ro)
-	if err != nil {
-		sp.close(usage)
-		emit(Event{Kind: EventError, Err: fmt.Errorf("aikido/voice: run: %w", err)})
-		done(agent.EndReasonError)
+func (p *Pipeline) run(ctx context.Context, runner Runner, input Input, format string, events chan<- Event) {
+	defer close(events)
+	currentTurn := &turn{options: &p.options, events: events, terminalGrace: p.terminalGrace}
+	defer currentTurn.endAfterPanic(ctx)
+	text, proceed := currentTurn.userText(ctx, input, format)
+	if !proceed {
 		return
 	}
+	currentTurn.reply(ctx, runner, text, input.Output)
+}
+
+// turn is the state of one Run, owned by its goroutine.
+type turn struct {
+	options       *Options
+	events        chan<- Event
+	terminalGrace time.Duration
+	usage         Usage
+	speaker       *speaker
+	ended         bool
+}
+
+// endAfterPanic recovers a panic of the turn's goroutine, which would
+// otherwise crash the consumer's process (CON-001), and ends the turn with
+// EventError and EventDone.
+func (t *turn) endAfterPanic(ctx context.Context) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	t.stopSpeaking(ctx)
+	if !t.ended {
+		t.fail(ctx, fmt.Errorf("aikido/voice: turn panicked: %v", recovered))
+	}
+}
+
+// userText is the text the agent runs on: the input's text, or the transcript
+// of its audio. It reports false when the turn already ended (failed
+// transcription, no speech).
+func (t *turn) userText(ctx context.Context, input Input, format string) (string, bool) {
+	if len(input.Audio) == 0 {
+		return input.Text, true
+	}
+	transcription, err := llm.TranscribeDetailed(ctx, t.options.Transcriber, transcribeRequest(t.options, input, format))
+	t.usage.Transcription = transcription.Usage
+	if err != nil {
+		t.fail(ctx, fmt.Errorf("aikido/voice: transcribe: %w", err))
+		return "", false
+	}
+	t.emit(ctx, Event{Kind: EventTranscript, Text: transcription.Text, Raw: transcription.Raw})
+	if transcription.Text == "" {
+		t.end(ctx, EndReasonNoSpeech)
+		return "", false
+	}
+	return transcription.Text, true
+}
+
+func transcribeRequest(options *Options, input Input, format string) llm.TranscribeRequest {
+	request := llm.TranscribeRequest{
+		Model:      options.TranscribeModel,
+		Audio:      input.Audio,
+		Format:     format,
+		Vocabulary: options.Vocabulary,
+	}
+	if input.Language != "" {
+		request.Hint = "Expected language: " + input.Language + "."
+	}
+	return request
+}
+
+// reply runs the agent on text, forwards its events and, for speech output,
+// speaks the reply, then ends the turn.
+func (t *turn) reply(ctx context.Context, runner Runner, text string, output Output) {
+	var runOptions *agent.RunOptions
+	if output == OutputSpeech {
+		if t.options.SpokenStyle != "" {
+			runOptions = &agent.RunOptions{SystemSuffix: t.options.SpokenStyle}
+		}
+		t.speaker = newSpeaker(t.options, func(event Event) { t.emit(ctx, event) })
+	}
+	agentEvents, err := runner.RunWithOptions(ctx, text, runOptions)
+	if err != nil {
+		t.stopSpeaking(ctx)
+		t.fail(ctx, fmt.Errorf("aikido/voice: run: %w", err))
+		return
+	}
+	reason := t.forward(ctx, agentEvents)
+	t.stopSpeaking(ctx)
+	t.end(ctx, reason)
+}
+
+// forward passes the agent's events on, feeds its text to the speaker and
+// returns the agent's end reason.
+func (t *turn) forward(ctx context.Context, agentEvents <-chan agent.Event) agent.EndReason {
 	reason := agent.EndReasonError
-	for ev := range events {
-		switch ev.Kind {
+	for event := range agentEvents {
+		switch event.Kind {
 		case agent.EventText:
-			emit(Event{Kind: EventText, Text: ev.Text})
-			sp.feed(ev.Text)
+			t.emit(ctx, Event{Kind: EventText, Text: event.Text})
+			t.speaker.feed(ctx, event.Text)
 		case agent.EventToolCall:
 			// Text before a tool call is a sentence of its own ("Let me check.").
-			sp.flush()
-			emit(Event{Kind: EventToolCall, ToolCall: ev.ToolCall})
+			t.speaker.flush(ctx)
+			t.emit(ctx, Event{Kind: EventToolCall, ToolCall: event.ToolCall})
 		case agent.EventToolResult:
-			emit(Event{Kind: EventToolResult, ToolResult: ev.ToolResult})
+			t.emit(ctx, Event{Kind: EventToolResult, ToolResult: event.ToolResult})
 		case agent.EventUsage:
-			if u := ev.Usage; u != nil {
-				usage.LLM.PromptTokens += u.PromptTokens
-				usage.LLM.CompletionTokens += u.CompletionTokens
-				usage.LLM.CacheReadTokens += u.CacheReadTokens
-				usage.LLM.CacheWriteTokens += u.CacheWriteTokens
-				usage.LLM.CostUSD += u.CostUSD
-				usage.LLMCalls = append(usage.LLMCalls, *u)
+			if event.Usage != nil {
+				t.usage.addLLMCall(*event.Usage)
 			}
 		case agent.EventError:
-			emit(Event{Kind: EventError, Err: ev.Err})
+			t.emit(ctx, Event{Kind: EventError, Err: event.Err})
 		case agent.EventEnd:
-			reason = ev.EndReason
+			reason = event.EndReason
+		case agent.EventThinking, agent.EventImage:
+			// a voice turn has no channel for thinking or images
 		}
 	}
-	sp.close(usage)
-	done(reason)
+	return reason
+}
+
+// stopSpeaking waits for every pending chunk and books the characters. It is
+// safe to call more than once.
+func (t *turn) stopSpeaking(ctx context.Context) {
+	speaker := t.speaker
+	t.speaker = nil
+	speaker.close(ctx, &t.usage)
+}
+
+func (t *turn) emit(ctx context.Context, event Event) {
+	select {
+	case t.events <- event:
+	case <-ctx.Done():
+	}
+}
+
+func (t *turn) fail(ctx context.Context, err error) {
+	t.emit(ctx, Event{Kind: EventError, Err: err})
+	t.end(ctx, agent.EndReasonError)
+}
+
+// end hands over EventDone. Once ctx is over it still waits terminalGrace for
+// room in the buffer, so a consumer that keeps reading gets it.
+func (t *turn) end(ctx context.Context, reason agent.EndReason) {
+	t.ended = true
+	t.usage.CostUSD = t.usage.totalCostUSD()
+	done := Event{Kind: EventDone, EndReason: endReason(reason, ctx.Err()), Usage: &t.usage}
+	select {
+	case t.events <- done:
+		return
+	case <-ctx.Done():
+	}
+	timer := time.NewTimer(t.terminalGrace)
+	defer timer.Stop()
+	select {
+	case t.events <- done:
+	case <-timer.C:
+	}
+}
+
+// endReason reports a turn cut short by its context as cancelled or timed
+// out, also when the agent finished but speech did not.
+func endReason(reason agent.EndReason, contextError error) agent.EndReason {
+	if reason != agent.EndReasonError && reason != agent.EndReasonStop {
+		return reason
+	}
+	switch {
+	case errors.Is(contextError, context.Canceled):
+		return agent.EndReasonCancelled
+	case errors.Is(contextError, context.DeadlineExceeded):
+		return agent.EndReasonTimeout
+	}
+	return reason
 }
 
 // speaker turns streamed text into ordered speech chunks. Synthesis runs in
 // parallel up to SpeechConcurrency; one emitter goroutine forwards results in
-// Seq order. A nil *speaker is a no-op, which is the text-output case.
+// Sequence order. A nil *speaker is a no-op, which is the text-output case.
+// It is used by its turn's goroutine only; close waits for all its goroutines.
 type speaker struct {
-	ctx   context.Context
-	p     *Pipeline
-	buf   string
-	seq   int
-	queue chan chan Event
-	sem   chan struct{}
-	done  chan struct{}
+	options     *Options
+	pending     string
+	sequence    int
+	queue       chan chan Event
+	slots       chan struct{}
+	emitterDone chan struct{}
 
-	mu    sync.Mutex
-	chars int
+	mutex      sync.Mutex
+	characters int
 }
 
-func newSpeaker(ctx context.Context, p *Pipeline, emit func(Event)) *speaker {
-	s := &speaker{
-		ctx:   ctx,
-		p:     p,
-		queue: make(chan chan Event, 256),
-		sem:   make(chan struct{}, p.opts.SpeechConcurrency),
-		done:  make(chan struct{}),
+func newSpeaker(options *Options, emit func(Event)) *speaker {
+	created := &speaker{
+		options:     options,
+		queue:       make(chan chan Event, speechQueueSize),
+		slots:       make(chan struct{}, options.SpeechConcurrency),
+		emitterDone: make(chan struct{}),
 	}
+	// No recover: the emitter only moves values between channels, nothing in
+	// it can panic (CON-001). close owns it.
 	go func() {
-		defer close(s.done)
-		for ch := range s.queue {
-			emit(<-ch)
+		defer close(created.emitterDone)
+		for result := range created.queue {
+			emit(<-result)
 		}
 	}()
-	return s
+	return created
 }
 
-func (s *speaker) feed(delta string) {
+func (s *speaker) feed(ctx context.Context, delta string) {
 	if s == nil {
 		return
 	}
-	s.buf += delta
 	var sentences []string
-	sentences, s.buf = splitSentences(s.buf)
+	sentences, s.pending = splitSentences(s.pending + delta)
 	for _, sentence := range sentences {
-		s.speak(sentence)
+		s.speak(ctx, sentence)
 	}
 }
 
-func (s *speaker) flush() {
+func (s *speaker) flush(ctx context.Context) {
 	if s == nil {
 		return
 	}
-	s.speak(s.buf)
-	s.buf = ""
+	s.speak(ctx, s.pending)
+	s.pending = ""
 }
 
-// close speaks what is left, waits for every chunk and books the characters.
-func (s *speaker) close(u *Usage) {
+// close speaks what is left, waits for every chunk and books the characters
+// on usage.
+func (s *speaker) close(ctx context.Context, usage *Usage) {
 	if s == nil {
 		return
 	}
-	s.flush()
+	s.flush(ctx)
 	close(s.queue)
-	<-s.done
-	u.SpeechCharacters = s.chars
-	u.SpeechCostUSD = float64(s.chars) * s.p.opts.SpeechUSDPerCharacter
+	<-s.emitterDone
+	usage.SpeechCharacters = s.characters
+	usage.SpeechCostUSD = float64(s.characters) * s.options.SpeechUSDPerCharacter
 }
 
-func (s *speaker) speak(text string) {
+// speak queues text for synthesis in Sequence order. Once ctx is over, it
+// queues nothing: the emitter would drop the chunk anyway.
+func (s *speaker) speak(ctx context.Context, text string) {
 	text = Speakable(text)
 	if text == "" {
 		return
 	}
-	chunk := SpeechChunk{Sequence: s.seq, Text: text}
-	s.seq++
-	ch := make(chan Event, 1)
-	s.queue <- ch
-	go func() {
-		s.sem <- struct{}{}
-		defer func() { <-s.sem }()
-		o := s.p.opts
-		resp, err := o.Speech.Speak(s.ctx, llm.SpeechRequest{
-			Model:  o.SpeechModel,
-			Input:  text,
-			Voice:  o.Voice,
-			Format: o.Format,
-			Speed:  o.Speed,
-		})
-		if err != nil {
-			ch <- Event{Kind: EventError, Speech: &chunk, Err: fmt.Errorf("aikido/voice: speak chunk %d: %w", chunk.Sequence, err)}
-			return
+	chunk := SpeechChunk{Sequence: s.sequence, Text: text}
+	s.sequence++
+	result := make(chan Event, 1)
+	select {
+	case s.queue <- result:
+	case <-ctx.Done():
+		return
+	}
+	go s.synthesize(ctx, chunk, result)
+}
+
+// synthesize speaks one chunk and sends exactly one event to result, which
+// has room for it.
+func (s *speaker) synthesize(ctx context.Context, chunk SpeechChunk, result chan<- Event) {
+	defer func() {
+		// CON-001: a panicking Speech generator fails this chunk, not the process.
+		if recovered := recover(); recovered != nil {
+			result <- chunkError(chunk, fmt.Errorf("aikido/voice: speak chunk %d panicked: %v", chunk.Sequence, recovered))
 		}
-		s.mu.Lock()
-		s.chars += len([]rune(text))
-		s.mu.Unlock()
-		chunk.Audio, chunk.ContentType, chunk.GenerationID = resp.Audio, resp.ContentType, resp.GenerationID
-		ch <- Event{Kind: EventSpeech, Speech: &chunk}
 	}()
+	select {
+	case s.slots <- struct{}{}:
+	case <-ctx.Done():
+		result <- chunkError(chunk, fmt.Errorf("aikido/voice: speak chunk %d: %w", chunk.Sequence, ctx.Err()))
+		return
+	}
+	defer func() { <-s.slots }()
+	response, err := s.options.Speech.Speak(ctx, llm.SpeechRequest{
+		Model:  s.options.SpeechModel,
+		Input:  chunk.Text,
+		Voice:  s.options.Voice,
+		Format: s.options.Format,
+		Speed:  s.options.Speed,
+	})
+	if err != nil {
+		result <- chunkError(chunk, fmt.Errorf("aikido/voice: speak chunk %d: %w", chunk.Sequence, err))
+		return
+	}
+	s.mutex.Lock()
+	s.characters += len([]rune(chunk.Text))
+	s.mutex.Unlock()
+	chunk.Audio, chunk.ContentType, chunk.GenerationID = response.Audio, response.ContentType, response.GenerationID
+	result <- Event{Kind: EventSpeech, Speech: &chunk}
+}
+
+func chunkError(chunk SpeechChunk, err error) Event {
+	return Event{Kind: EventError, Speech: &chunk, Err: err}
 }
