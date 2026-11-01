@@ -89,14 +89,18 @@ func hostCommands(options agentOptions) ([]shell.Command, error) {
 		if err != nil {
 			return nil, err
 		}
-		command, err := shell.External(&shell.ExternalOptions{
+		external := &shell.ExternalOptions{
 			Name:                   name,
 			Path:                   path,
 			Directory:              directory,
 			FollowWorkingDirectory: true,
 			Environment:            environment,
 			Summary:                "host program " + name,
-		})
+		}
+		if name == "git" || filepath.Base(path) == "git" {
+			external.Allow = gitPolicy(directory)
+		}
+		command, err := shell.External(external)
 		if err != nil {
 			return nil, fmt.Errorf("--allow %s: %w", allowed, err)
 		}

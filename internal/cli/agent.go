@@ -94,7 +94,7 @@ func agentFlags() []urfavecli.Flag {
 		&urfavecli.StringSliceFlag{Name: "mount", Usage: "Extra directory as name=path, read-only with name=path:ro (repeatable)"},
 		&urfavecli.BoolFlag{Name: "shell", Usage: "Give the agent a virtual bash over the workspace (tools/shell): no host access"},
 		&urfavecli.BoolFlag{Name: "direct", Usage: "With --dir: write changes to disk as they happen instead of through an overlay (no dry run)"},
-		&urfavecli.StringSliceFlag{Name: "allow", Usage: "Host program the bash tool may run, as name (from PATH) or name=path; needs --shell and --direct (repeatable)"},
+		&urfavecli.StringSliceFlag{Name: "allow", Usage: "Host program the bash tool may run, as name (from PATH) or name=path; gives the agent everything that program can do (git: config and program options refused); needs --shell and --direct (repeatable)"},
 		&urfavecli.StringSliceFlag{Name: "env", Usage: "Variable for the allowed host programs, as NAME (copied from this environment) or NAME=value (repeatable)"},
 		&urfavecli.StringFlag{Name: "system-file", Usage: "Read the instructions from this file (e.g. the repo's CLAUDE.md) and append them to the system prompt"},
 	}
