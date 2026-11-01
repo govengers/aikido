@@ -148,10 +148,11 @@ func readAwkPrograms(ctx context.Context, invocation *Invocation, names []string
 
 // executeAwk runs the program with the workspace as its file system.
 func executeAwk(ctx context.Context, invocation *Invocation, settings awkSettings, program *parser.Program) error {
+	files := newAwkFileSystem(ctx, invocation)
 	config := &interp.Config{
 		Stdin: invocation.Stdin, Output: invocation.Stdout, Error: invocation.Stderr,
 		Argv0: "awk", Args: settings.operands, Environ: invocation.Environment, NoExec: true,
-		FileSystem: newAwkFileSystem(ctx, invocation),
+		FileSystem: files,
 	}
 	if config.Environ == nil {
 		config.Environ = []string{}
@@ -171,6 +172,10 @@ func executeAwk(ctx context.Context, invocation *Invocation, settings awkSetting
 	status, err := interpreter.ExecuteContext(ctx, config)
 	if err != nil {
 		return reportAwkError(ctx, invocation, err)
+	}
+	if files.failure != nil {
+		fmt.Fprintf(invocation.Stderr, "awk: %v\n", files.failure)
+		return ExitError(2)
 	}
 	return exitStatus(ExitError(status & 0xff))
 }
@@ -200,6 +205,8 @@ var errAwkDirectory = errors.New("is a directory")
 type awkFileSystem struct {
 	read  func(name string) ([]byte, error)
 	write func(name string, content []byte) error
+	// failure is the first output file that could not be stored.
+	failure *awkCommitError
 }
 
 func newAwkFileSystem(ctx context.Context, invocation *Invocation) *awkFileSystem {
@@ -216,16 +223,29 @@ func newAwkFileSystem(ctx context.Context, invocation *Invocation) *awkFileSyste
 			return content, err
 		},
 		write: func(name string, content []byte) error {
-			resolved, err := Resolve(invocation.Directory, name)
-			if err != nil {
-				return &fs.PathError{Op: "create", Path: name, Err: err}
-			}
-			if err := invocation.Storage.WriteFile(ctx, resolved, content, "text/plain"); err != nil {
-				return fmt.Errorf("write %s: %w", name, err)
-			}
-			return nil
+			return storeOutput(ctx, invocation, name, content)
 		},
 	}
+}
+
+// commit stores one output file on Close and remembers the first failure:
+// GoAWK drops the errors of the files it closes itself.
+func (f *awkFileSystem) commit(name string, content []byte) error {
+	err := f.write(name, content)
+	if err != nil && f.failure == nil {
+		f.failure = &awkCommitError{name: name, reason: err}
+	}
+	return err
+}
+
+// awkCommitError is an output file awk could not store.
+type awkCommitError struct {
+	name   string
+	reason error
+}
+
+func (e *awkCommitError) Error() string {
+	return fmt.Sprintf("can't redirect to `%s' (%v)", e.name, e.reason)
 }
 
 // Open opens a workspace file for reading.
@@ -239,15 +259,17 @@ func (f *awkFileSystem) Open(name string) (fs.File, error) {
 
 // Create starts a new file that is written on Close.
 func (f *awkFileSystem) Create(name string) (io.WriteCloser, error) {
-	return &awkOutputFile{name: name, write: f.write}, nil
+	return newAwkOutputFile(name, f.commit), nil
 }
 
 // Append starts a file with its current content that is written on Close.
 func (f *awkFileSystem) Append(name string) (io.WriteCloser, error) {
-	output := &awkOutputFile{name: name, write: f.write}
+	output := newAwkOutputFile(name, f.commit)
 	content, err := f.read(name)
 	if err == nil {
-		output.buffer.Write(content)
+		if _, err := output.Write(content); err != nil {
+			return nil, err
+		}
 	}
 	return output, nil
 }
@@ -274,12 +296,22 @@ func (i awkFileInfo) ModTime() time.Time { return time.Time{} }
 func (i awkFileInfo) IsDir() bool        { return false }
 func (i awkFileInfo) Sys() any           { return nil }
 
-// awkOutputFile buffers a redirect's output and stores it on Close.
+// awkOutputFile buffers a redirect's output, up to the 64 MiB file cap, and
+// stores it on Close.
 type awkOutputFile struct {
-	name   string
-	buffer bytes.Buffer
-	write  func(name string, content []byte) error
+	name    string
+	content strings.Builder
+	buffer  limitedBuilder
+	commit  func(name string, content []byte) error
+}
+
+func newAwkOutputFile(name string, commit func(name string, content []byte) error) *awkOutputFile {
+	output := &awkOutputFile{name: name, commit: commit}
+	output.buffer.builder = &output.content
+	return output
 }
 
 func (f *awkOutputFile) Write(content []byte) (int, error) { return f.buffer.Write(content) }
-func (f *awkOutputFile) Close() error                      { return f.write(f.name, f.buffer.Bytes()) }
+func (f *awkOutputFile) Close() error {
+	return f.commit(f.name, []byte(f.content.String()))
+}

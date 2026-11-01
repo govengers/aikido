@@ -1,9 +1,13 @@
 package shell
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/govengers/aikido/vfs/memory"
+	"github.com/govengers/aikido/vfs/mount"
 )
 
 // reviewCases reproduce the scripts of the review findings on the text
@@ -71,6 +75,10 @@ var reviewCases = []scriptCase{
 	{name: "sort -o without parent", files: map[string]string{"a.txt": "b\na\n"}, script: `sort -o nodir/f a.txt; echo $?`, want: "sort: open failed: nodir/f: No such file or directory\n2\n"},
 	{name: "uniq OUTPUT onto a directory", files: map[string]string{"a.txt": "a\na\n", "d/x": ""}, script: `uniq a.txt d; echo $?`, want: "uniq: d: Is a directory\n1\n"},
 	{name: "uniq OUTPUT to /dev/null", files: map[string]string{"a.txt": "a\na\n"}, script: `uniq a.txt /dev/null; find . -path ./dev`, want: ""},
+	{name: "awk print onto a directory", files: map[string]string{"d/x": ""}, script: `env -i awk 'BEGIN{print "x" > "d"}'; echo $?; ls d`, want: "awk: can't redirect to `d' (Is a directory)\n2\nx\n"},
+	{name: "awk print to /dev/null", script: `env -i awk 'BEGIN{print "x" > "/dev/null"; print "y" > "/dev/stdout"}'; find . -path ./dev`, want: "y\n"},
+	{name: "awk print without parent", script: `env -i awk 'BEGIN{print "x" > "nodir/f"}'; echo $?`, want: "awk: can't redirect to `nodir/f' (No such file or directory)\n2\n"},
+	{name: "awk print stores the file", script: `env -i awk 'BEGIN{print "x" > "f"; print "y" >> "f"}'; cat f`, want: "x\ny\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
@@ -92,14 +100,42 @@ func TestStreamingStopsEarly(t *testing.T) {
 	}, &Options{Timeout: 20 * time.Second})
 }
 
-// TestSedLoopsStop: a backward branch without input is stopped by the
-// timeout, a growing pattern space by the input budget.
-func TestSedLoopsStop(t *testing.T) {
+// TestRunawayCommandsStop: a sed branch loop without input is stopped by the
+// timeout, a growing pattern space by the input budget, awk output by the file cap.
+func TestRunawayCommandsStop(t *testing.T) {
 	runScriptCases(t, []scriptCase{
 		{name: "branch loop", script: `echo x | sed ':again;b again'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "substitute loop", script: `echo x | sed ':a;s/^/ /;ta'`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
+		{name: "awk output file cap", script: `env -i awk 'BEGIN{while(1) print "0123456789abcdef0123456789abcdef" > "f"}'; echo $?; ls`, want: "awk: File too large\n2\nf\n"},
 	}, &Options{Timeout: time.Second})
+}
+
+// TestCommandWritesFailLoudly: an output file a command cannot store makes
+// the command fail before && decides (I4).
+func TestCommandWritesFailLoudly(t *testing.T) {
+	base := memory.New()
+	if err := base.WriteFile(context.Background(), "f.txt", []byte("a\n"), "text/plain"); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
+		{Prefix: "", Storage: memory.New()},
+		{Prefix: "ro", Storage: base, ReadOnly: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := New(&Options{Storage: storage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for script, want := range map[string]string{
+		`env -i awk 'BEGIN {print "x" > "ro/file"}' && echo stored; echo $?`: "awk: can't redirect to `ro/file' (Read-only file system)\n2\n",
+	} {
+		if result := mustRun(t, shell, script); result.Output != want {
+			t.Errorf("Run(%q) = %q, want %q", script, result.Output, want)
+		}
+	}
 }
 
 // TestInputBudget pipes more than maximumInputBytes to commands that hold

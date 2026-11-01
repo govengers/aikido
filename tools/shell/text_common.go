@@ -209,7 +209,10 @@ func storeOutput(ctx context.Context, invocation *Invocation, name string, conte
 	case "dev/stderr":
 		stream = invocation.Stderr
 	default:
-		return workspaceOf(invocation).writeFile(ctx, resolved, content)
+		if err := workspaceOf(invocation).writeFile(ctx, resolved, content); err != nil {
+			return describe(err)
+		}
+		return nil
 	}
 	if _, err := stream.Write(content); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
