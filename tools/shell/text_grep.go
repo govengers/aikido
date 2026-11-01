@@ -701,18 +701,10 @@ func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLi
 		return nil
 	}
 	if g.matcher.matches(ctx, line.text) == settings.invert {
-		if !g.trailingContext(scan, line.index, line.text) && settings.before > 0 {
-			scan.recent = append(scan.recent, line)
-			scan.recentBytes += len(line.text)
-			if len(scan.recent) > settings.before {
-				scan.recentBytes -= len(scan.recent[0].text)
-				scan.recent = scan.recent[1:]
-			}
-			if scan.recentBytes > maximumInputBytes {
-				return errInputTooLarge
-			}
+		if g.trailingContext(scan, line.index, line.text) || settings.before <= 0 {
+			return nil
 		}
-		return nil
+		return g.keepBefore(scan, line)
 	}
 	scan.selected++
 	switch {
@@ -725,6 +717,21 @@ func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLi
 		g.printBefore(scan)
 		g.printSelected(ctx, scan, line.index, line.text)
 		scan.afterRemaining = settings.after
+	}
+	return nil
+}
+
+// keepBefore keeps an unselected line as -B context of a later match;
+// beyond the input budget it is errInputTooLarge.
+func (g *grepSearcher) keepBefore(scan *grepScan, line grepLine) error {
+	scan.recent = append(scan.recent, line)
+	scan.recentBytes += len(line.text)
+	if len(scan.recent) > g.settings.before {
+		scan.recentBytes -= len(scan.recent[0].text)
+		scan.recent = scan.recent[1:]
+	}
+	if scan.recentBytes > maximumInputBytes {
+		return errInputTooLarge
 	}
 	return nil
 }
