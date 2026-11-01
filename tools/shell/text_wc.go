@@ -3,6 +3,8 @@ package shell
 import (
 	"context"
 	"fmt"
+	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -123,7 +125,7 @@ func countInputs(ctx context.Context, invocation *Invocation, operands []string)
 	results := make([]wcResult, 0, len(inputs))
 	var status ExitError
 	for _, name := range inputs {
-		content, err := readOperand(ctx, invocation, name)
+		reader, err := openOperand(ctx, invocation, name)
 		reason, isOperandError := operandReason(err)
 		switch {
 		case isOperandError:
@@ -140,7 +142,11 @@ func countInputs(ctx context.Context, invocation *Invocation, operands []string)
 			displayName = ""
 		}
 		regular := name != "-" && name != "/dev/stdin" && name != "/dev/null"
-		results = append(results, wcResult{name: displayName, counts: countText(content), printed: true, regular: regular})
+		var counter wcCounter
+		if _, err := io.Copy(&counter, reader); err != nil {
+			return nil, 0, fmt.Errorf("read %s: %w", name, err)
+		}
+		results = append(results, wcResult{name: displayName, counts: counter.result(), printed: true, regular: regular})
 	}
 	return results, status, nil
 }
@@ -184,33 +190,63 @@ func formatCounts(counts wcCounts, selection wcSelection, width int, name string
 	return line + "\n"
 }
 
-// countText counts like GNU wc: words are runs of non-space bytes, the line
-// length expands tabs to multiples of 8.
-func countText(content []byte) wcCounts {
-	counts := wcCounts{bytes: len(content), characters: utf8.RuneCount(content)}
-	inWord := false
-	lineLength := 0
-	for _, character := range content {
-		switch character {
-		case '\n':
-			counts.lines++
-			counts.maximumLineLength = max(counts.maximumLineLength, lineLength)
-			lineLength = 0
-		case '\t':
-			lineLength += 8 - lineLength%8
-		case '\r', '\f':
-			lineLength = 0
-		default:
-			if character >= ' ' && character < 0x7f || character >= 0x80 && utf8.RuneStart(character) {
-				lineLength++
+// wcCounter counts a stream like GNU wc: words are runs of non-space
+// bytes, the line length expands tabs to multiples of 8. Write never fails.
+type wcCounter struct {
+	counts     wcCounts
+	inWord     bool
+	lineLength int
+	// pending is an incomplete UTF-8 sequence at the end of the last
+	// chunk, counted as characters with the next one.
+	pending []byte
+}
+
+func (c *wcCounter) Write(chunk []byte) (int, error) {
+	c.counts.bytes += len(chunk)
+	text := slices.Concat(c.pending, chunk)
+	complete := len(text)
+	for back := 1; back <= utf8.UTFMax-1 && back <= len(text); back++ {
+		if start := len(text) - back; utf8.RuneStart(text[start]) {
+			if !utf8.FullRune(text[start:]) {
+				complete = start
 			}
+			break
 		}
-		isSpace := character == ' ' || (character >= '\t' && character <= '\r')
-		if !isSpace && !inWord {
-			counts.words++
-		}
-		inWord = !isSpace
 	}
-	counts.maximumLineLength = max(counts.maximumLineLength, lineLength)
+	c.counts.characters += utf8.RuneCount(text[:complete])
+	c.pending = append([]byte(nil), text[complete:]...)
+	for _, character := range chunk {
+		c.addByte(character)
+	}
+	return len(chunk), nil
+}
+
+func (c *wcCounter) addByte(character byte) {
+	switch character {
+	case '\n':
+		c.counts.lines++
+		c.counts.maximumLineLength = max(c.counts.maximumLineLength, c.lineLength)
+		c.lineLength = 0
+	case '\t':
+		c.lineLength += 8 - c.lineLength%8
+	case '\r', '\f':
+		c.lineLength = 0
+	default:
+		if character >= ' ' && character < 0x7f || character >= 0x80 && utf8.RuneStart(character) {
+			c.lineLength++
+		}
+	}
+	isSpace := character == ' ' || (character >= '\t' && character <= '\r')
+	if !isSpace && !c.inWord {
+		c.counts.words++
+	}
+	c.inWord = !isSpace
+}
+
+// result is the counts of everything written.
+func (c *wcCounter) result() wcCounts {
+	counts := c.counts
+	counts.characters += utf8.RuneCount(c.pending)
+	counts.maximumLineLength = max(counts.maximumLineLength, c.lineLength)
 	return counts
 }

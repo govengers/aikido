@@ -63,6 +63,9 @@ var reviewCases = []scriptCase{
 	{name: "sed -i keeps Latin-1 bytes", files: map[string]string{"f": "caf\xe9\n"}, script: `sed -i 's/.*/[&]/' f; base64 f`, want: "W2NhZuldCg==\n"},
 	{name: "sed case conversion keeps Latin-1 bytes", script: `printf 'caf\351\n' | sed 's/.*/\U&/' | base64`, want: "Q0FG6Qo=\n"},
 	{name: "sed y keeps Latin-1 bytes", script: `printf 'caf\351\n' | sed 'y/a/A/' | base64`, want: "Y0Fm6Qo=\n"},
+	{name: "wc -m across chunk boundaries", files: map[string]string{"e": strings.Repeat("é", 50000) + "\n"}, script: `cat e | wc -m -c`, want: "  50001  100001\n"},
+	{name: "uniq -D streams groups", script: `printf 'a\na\nb\nc\nc\nc\n' | uniq -D`, want: "a\na\nc\nc\nc\n"},
+	{name: "uniq -D -u prints nothing", script: `printf 'a\na\nb\n' | uniq -D -u`, want: ""},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
@@ -98,5 +101,8 @@ func TestInputBudget(t *testing.T) {
 		{name: "tail streams bytes", files: big, script: `cat big | tail -c 4`, want: "end\n"},
 		{name: "tail +N streams", files: big, script: `cat big | tail -n +36000000`, want: "x\nend\n"},
 		{name: "head -c streams", files: big, script: `cat big | head -c 4`, want: "x\nx\n"},
+		{name: "wc streams", files: big, script: `cat big | wc -l`, want: "36000001\n"},
+		{name: "cut streams", files: big, script: `cat big | cut -c1 | tail -n 1`, want: "e\n"},
+		{name: "uniq streams", files: big, script: `cat big | uniq -c`, want: "36000000 x\n      1 end\n"},
 	}, nil)
 }

@@ -1,8 +1,11 @@
 package shell
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -64,7 +67,7 @@ func runUniq(ctx context.Context, invocation *Invocation) error {
 	if len(line.operands) > 0 {
 		input = line.operands[0]
 	}
-	content, err := readOperand(ctx, invocation, input)
+	reader, err := openOperand(ctx, invocation, input)
 	if reason, ok := operandReason(err); ok {
 		if reason == reasonIsDirectory {
 			return uniqTool.fatal(invocation, 1, "error reading '%s'", input)
@@ -74,15 +77,19 @@ func runUniq(ctx context.Context, invocation *Invocation) error {
 	if err != nil {
 		return err
 	}
-	lines, _ := splitLines(string(content))
-	result := settings.filter(lines)
 	if len(line.operands) == 2 && line.operands[1] != "-" {
-		return writeOutputFile(ctx, invocation, uniqTool, line.operands[1], result)
+		var result strings.Builder
+		if err := settings.filter(ctx, newLineReader(reader), &limitedBuilder{builder: &result}); err != nil {
+			return err
+		}
+		return writeOutputFile(ctx, invocation, uniqTool, line.operands[1], result.String())
 	}
-	if _, err := fmt.Fprint(invocation.Stdout, result); err != nil {
-		return fmt.Errorf("write output: %w", err)
+	output := bufio.NewWriter(invocation.Stdout)
+	err = settings.filter(ctx, newLineReader(reader), output)
+	if flushErr := output.Flush(); err == nil && flushErr != nil {
+		err = fmt.Errorf("write output: %w", flushErr)
 	}
-	return nil
+	return err
 }
 
 func parseUniqSettings(invocation *Invocation, options []parsedOption) (uniqSettings, error) {
@@ -124,36 +131,69 @@ func parseUniqSettings(invocation *Invocation, options []parsedOption) (uniqSett
 	return settings, nil
 }
 
-// filter groups adjacent equal lines and renders the selected groups.
-func (s *uniqSettings) filter(lines []string) string {
-	var output strings.Builder
-	for start := 0; start < len(lines); {
-		end := start + 1
-		for end < len(lines) && s.equal(lines[start], lines[end]) {
-			end++
+// filter streams the lines, groups adjacent equal ones and writes the
+// selected groups as they end; -D lines are written as they arrive.
+func (s *uniqSettings) filter(ctx context.Context, lines *lineReader, output io.Writer) error {
+	var first string
+	size := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		s.render(&output, lines[start:end])
-		start = end
+		line, _, err := lines.next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if size > 0 && s.equal(first, line) {
+			size++
+			if err := s.writeRepeated(output, first, line, size); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.render(output, first, size); err != nil {
+			return err
+		}
+		first, size = line, 1
 	}
-	return output.String()
+	return s.render(output, first, size)
 }
 
-// render writes one group of equal lines as the options select it.
-func (s *uniqSettings) render(output *strings.Builder, group []string) {
-	repeated := len(group) > 1
-	if (s.repeated || s.allRepeated) && !repeated || s.unique && repeated {
-		return
+// writeRepeated writes the lines of a repeated group for -D: the first
+// once the group repeats, then each further one.
+func (s *uniqSettings) writeRepeated(output io.Writer, first, line string, size int) error {
+	if !s.allRepeated || s.unique {
+		return nil
 	}
-	if s.allRepeated {
-		for _, line := range group {
-			output.WriteString(line + "\n")
+	if size == 2 {
+		if _, err := io.WriteString(output, first+"\n"); err != nil {
+			return fmt.Errorf("write output: %w", err)
 		}
-		return
 	}
+	if _, err := io.WriteString(output, line+"\n"); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
+}
+
+// render writes a group of size equal lines that has ended, as the options
+// select it; -D groups are already written.
+func (s *uniqSettings) render(output io.Writer, first string, size int) error {
+	repeated := size > 1
+	if size == 0 || s.allRepeated || s.repeated && !repeated || s.unique && repeated {
+		return nil
+	}
+	prefix := ""
 	if s.count {
-		fmt.Fprintf(output, "%7d ", len(group))
+		prefix = fmt.Sprintf("%7d ", size)
 	}
-	output.WriteString(group[0] + "\n")
+	if _, err := io.WriteString(output, prefix+first+"\n"); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
 }
 
 // equal compares the parts of two lines uniq looks at.

@@ -1,8 +1,11 @@
 package shell
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strconv"
@@ -66,10 +69,10 @@ func runCut(ctx context.Context, invocation *Invocation) error {
 	if err != nil {
 		return err
 	}
-	var output strings.Builder
+	output := bufio.NewWriter(invocation.Stdout)
 	var status ExitError
 	for _, name := range operandsOrStdin(line.operands) {
-		content, readErr := readOperand(ctx, invocation, name)
+		reader, readErr := openOperand(ctx, invocation, name)
 		if reason, ok := operandReason(readErr); ok {
 			cutTool.complain(invocation, "%s: %s", name, reason)
 			status = 1
@@ -78,17 +81,34 @@ func runCut(ctx context.Context, invocation *Invocation) error {
 		if readErr != nil {
 			return readErr
 		}
-		lines, _ := splitLines(string(content))
-		for _, text := range lines {
-			if selected, keep := settings.cutLine(text); keep {
-				output.WriteString(selected + "\n")
-			}
+		if err := settings.cutStream(ctx, newLineReader(reader), output); err != nil {
+			return err
 		}
 	}
-	if _, err := fmt.Fprint(invocation.Stdout, output.String()); err != nil {
+	if err := output.Flush(); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}
 	return exitStatus(status)
+}
+
+// cutStream cuts every line of one input as it is read. Write errors
+// surface at the caller's Flush.
+func (s *cutSettings) cutStream(ctx context.Context, lines *lineReader, output *bufio.Writer) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		text, _, err := lines.next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if selected, keep := s.cutLine(text); keep {
+			_, _ = output.WriteString(selected + "\n")
+		}
+	}
 }
 
 func parseCutSettings(invocation *Invocation, options []parsedOption) (cutSettings, error) {
