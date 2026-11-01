@@ -28,7 +28,7 @@ type ClientFactory func() (llm.Client, error)
 func NewApp(factory ClientFactory) *urfavecli.Command {
 	return &urfavecli.Command{
 		Name:                  "aikido",
-		Usage:                 "AI KIt DOing things - chat one-shots and agent runs over an in-memory VFS",
+		Usage:                 "AI KIt DOing things - chat, agents over a workspace or a directory, images, video, decisions",
 		Version:               version(),
 		EnableShellCompletion: true,
 		Description: "aikido is a thin CLI over the aikido Go library. Subcommands run\n" +

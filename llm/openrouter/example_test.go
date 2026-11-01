@@ -2,6 +2,7 @@ package openrouter_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,6 +85,48 @@ func ExampleClient_Stream() {
 	// "Hello"
 	// ", world."
 	// end: stop
+}
+
+// Provider routing: Options.Provider is the client's default, WithProvider
+// replaces it for the calls made with that context.
+func ExampleWithProvider() {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body struct {
+			Provider json.RawMessage `json:"provider"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		fmt.Println("provider:", string(body.Provider))
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"choices":[{"index":0,"message":{"role":"assistant","content":"Hi."},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	client, err := openrouter.NewClient(&openrouter.Options{
+		APIKey:   "sk-or-...",
+		BaseURL:  server.URL,
+		Provider: &openrouter.ProviderPreferences{Sort: "price"},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	request := llm.Request{Model: "anthropic/claude-haiku-4.5", Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}}}
+
+	if _, err := client.Complete(context.Background(), request); err != nil {
+		fmt.Println(err)
+		return
+	}
+	pinned := openrouter.WithProvider(context.Background(), &openrouter.ProviderPreferences{
+		Only:           []string{"google-vertex/europe"},
+		AllowFallbacks: new(false),
+	})
+	if _, err := client.Complete(pinned, request); err != nil {
+		fmt.Println(err)
+		return
+	}
+	// Output:
+	// provider: {"sort":"price"}
+	// provider: {"allow_fallbacks":false,"only":["google-vertex/europe"]}
 }
 
 func ExampleAPIError() {

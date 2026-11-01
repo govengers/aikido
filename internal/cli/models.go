@@ -170,7 +170,7 @@ func listOrDash(values []string) string {
 func newProviderFlag() *urfavecli.StringSliceFlag {
 	return &urfavecli.StringSliceFlag{
 		Name:  "provider",
-		Usage: "OpenRouter provider slug(s) to route to; one pins it (no fallbacks), several form a fallback chain (see `aikido models author/slug`)",
+		Usage: "OpenRouter provider slug(s) to route to; one pins it (no fallbacks), several form a fallback chain (see: aikido models author/slug)",
 	}
 }
 

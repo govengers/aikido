@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/govengers/aikido/agent"
+	historymemory "github.com/govengers/aikido/agent/history/memory"
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/llm/llmtest"
 	"github.com/govengers/aikido/tools"
@@ -41,6 +43,52 @@ func ExampleSession_Run() {
 		}
 	}
 	// Output: Hello, world. (stop)
+}
+
+// A production session: History and Locker are shared by every Session of the
+// process (or replaced by persistent, cross-replica backends), the limits are
+// explicit and prompt caching stays on.
+func ExampleNewSession() {
+	history := historymemory.New()   // a Postgres-backed agent.History in production
+	locker := agent.NewLocalLocker() // a Redis-backed agent.Locker with several replicas
+
+	client := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventTextDelta, Text: "Done."},
+		{Kind: llm.EventEnd},
+	}})
+	session, err := agent.NewSession(&agent.SessionOptions{
+		ID:                     "tenant-7/conversation-1",
+		Client:                 client,
+		History:                history,
+		Locker:                 locker,
+		Model:                  "anthropic/claude-sonnet-4.6",
+		SystemPrompt:           "You keep the project notes.",
+		MaximumTurns:           10,
+		RunTimeout:             5 * time.Minute,
+		LLMCallTimeout:         2 * time.Minute,
+		ToolCallTimeout:        30 * time.Second,
+		MaximumToolResultBytes: 32 << 10,
+		Thinking:               llm.ThinkingByEffort(llm.ThinkingEffortLow),
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	events, _ := session.Run(context.Background(), "Note that the release is on Friday.")
+	for event := range events {
+		if event.Kind == agent.EventEnd {
+			fmt.Println("end:", event.EndReason)
+		}
+	}
+	stored, err := history.Read(context.Background(), "tenant-7/conversation-1")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(len(stored), "messages in History")
+	// Output:
+	// end: stop
+	// 2 messages in History
 }
 
 func ExampleSession_RunWithMessages() {
