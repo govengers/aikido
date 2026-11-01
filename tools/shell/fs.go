@@ -388,6 +388,18 @@ func (w workspace) checkWritable(ctx context.Context, name string) error {
 
 // writeFile writes content to name after checkWritable, with the content
 // type the extension implies.
+// deleteFile removes one file and keeps its directory: on a real file system a
+// directory outlives its last file, so `rm d/f; ls d` still works.
+func (w workspace) deleteFile(ctx context.Context, name string) error {
+	if err := w.storage.DeleteFile(ctx, name); err != nil {
+		return err //nolint:wrapcheck // callers describe the storage error in the command's words
+	}
+	if parent := path.Dir(name); parent != "." {
+		w.directories.add(parent)
+	}
+	return nil
+}
+
 func (w workspace) writeFile(ctx context.Context, name string, content []byte) error {
 	if err := w.checkWritable(ctx, name); err != nil {
 		return err

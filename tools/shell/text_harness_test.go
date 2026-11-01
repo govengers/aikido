@@ -264,21 +264,21 @@ func TestTextCasesAgainstHostReferences(t *testing.T) {
 // host's sed is GNU, else in Docker's debian:12; it skips the test otherwise.
 func gnuRunner(t *testing.T) func(*testing.T, string) {
 	t.Helper()
-	if output, err := exec.CommandContext(t.Context(), "sed", "--version").Output(); err == nil && bytes.Contains(output, []byte("GNU")) {
+	if hostHasGNUTools() {
 		return func(t *testing.T, directory string) {
 			t.Helper()
 			runOrFail(t, exec.CommandContext(t.Context(), "bash", filepath.Join(directory, "run.sh")), directory)
 		}
 	}
-	if os.Getenv(dockerReferenceVariable) == "" {
+	if !dockerReferenceWanted() {
 		t.Skipf("no GNU tools on the host; set %s=1 to compare in Docker", dockerReferenceVariable)
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("no GNU tools on the host and no docker")
 	}
 	image := gnuImage()
-	if err := exec.CommandContext(t.Context(), "docker", "image", "inspect", image).Run(); err != nil {
-		t.Skipf("docker image %s not present", image)
+	if !dockerImageAvailable(image) {
+		t.Skipf("docker image %s not available", image)
 	}
 	return func(t *testing.T, directory string) {
 		t.Helper()

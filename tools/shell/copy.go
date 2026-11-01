@@ -176,7 +176,7 @@ func (m transferMode) transferFile(ctx context.Context, files workspace, planned
 		return m.targetError(planned, err)
 	}
 	if m.move && planned.sourceEntry.kind == entryFile {
-		if err := files.storage.DeleteFile(ctx, planned.source); err != nil {
+		if err := files.deleteFile(ctx, planned.source); err != nil {
 			return fmt.Errorf("cannot remove '%s': %w", planned.sourceOperand, describe(err))
 		}
 	}
@@ -252,7 +252,7 @@ func (m transferMode) transferBelow(ctx context.Context, files workspace, inner 
 		err = files.storage.WriteFile(ctx, inner.target, content, contentType)
 	}
 	if err == nil && m.move {
-		err = files.storage.DeleteFile(ctx, inner.source)
+		err = files.deleteFile(ctx, inner.source)
 	}
 	if err != nil {
 		return m.targetError(inner, err)

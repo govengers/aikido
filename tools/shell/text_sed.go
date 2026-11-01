@@ -81,7 +81,7 @@ func runSed(ctx context.Context, invocation *Invocation) error {
 	program, err := parseSedProgram(settings.sources, settings.extended)
 	var problem *sedScriptError
 	if errors.As(err, &problem) {
-		return sedTool.fatal(invocation, 1, "%s", problem.message)
+		return sedTool.fatal(invocation, max(problem.status, 1), "%s", problem.message)
 	}
 	if err != nil {
 		return err
@@ -688,7 +688,7 @@ func (e *sedEditor) matchesAddress(ctx context.Context, address *sedAddress) boo
 }
 
 // errNoPreviousRegex is "//" before any regex was used, in GNU's words.
-var errNoPreviousRegex = &sedScriptError{"-e expression #1, char 0: no previous regular expression"}
+var errNoPreviousRegex = &sedScriptError{message: "-e expression #1, char 0: no previous regular expression"}
 
 // useRegex resolves "//" to the last regex used and remembers this one.
 // Without a previous regex it records errNoPreviousRegex in failure, which

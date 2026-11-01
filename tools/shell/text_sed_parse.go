@@ -92,7 +92,12 @@ type sedSource struct {
 
 // sedScriptError is a script GNU sed would refuse; the message carries
 // GNU's location prefix.
-type sedScriptError struct{ message string }
+type sedScriptError struct {
+	message string
+	// status is the exit status; zero means 1. GNU sed panics with 4 on a
+	// missing label, found only after the whole script was compiled.
+	status ExitError
+}
 
 func (e *sedScriptError) Error() string { return e.message }
 
@@ -149,9 +154,9 @@ func parseSedProgram(sources []sedSource, extended bool) ([]sedInstruction, erro
 func (p *sedScriptParser) fail(message string) error {
 	if p.source.file != "" {
 		line := strings.Count(p.text[:min(p.position, len(p.text))], "\n") + 1
-		return &sedScriptError{fmt.Sprintf("file %s line %d: %s", p.source.file, line, message)}
+		return &sedScriptError{message: fmt.Sprintf("file %s line %d: %s", p.source.file, line, message)}
 	}
-	return &sedScriptError{fmt.Sprintf("-e expression #%d, char %d: %s", p.source.expression, p.position, message)}
+	return &sedScriptError{message: fmt.Sprintf("-e expression #%d, char %d: %s", p.source.expression, p.position, message)}
 }
 
 const sedEOF = -1
@@ -784,7 +789,7 @@ func (p *sedScriptParser) resolveLabels() error {
 		}
 		target, ok := labels[command.text]
 		if !ok {
-			return &sedScriptError{fmt.Sprintf("-e expression #1, char 0: can't find label for jump to `%s'", command.text)}
+			return &sedScriptError{message: fmt.Sprintf("can't find label for jump to `%s'", command.text), status: 4}
 		}
 		command.target = target
 	}

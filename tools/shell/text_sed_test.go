@@ -110,7 +110,7 @@ var sedCases = []textCase{
 	{name: "sed zero occurrence", files: sedFiles, script: "sed s/a/b/0 a.txt", stderr: "sed: -e expression #1, char 7: number option to `s' command may not be zero\n", exit: 1},
 	{name: "sed unexpected brace", files: sedFiles, script: "sed '}' a.txt", stderr: "sed: -e expression #1, char 1: unexpected `}'\n", exit: 1},
 	{name: "sed a without text", files: sedFiles, script: "sed a a.txt", stderr: "sed: -e expression #1, char 1: expected \\ after `a', `c' or `i'\n", exit: 1},
-	{name: "sed missing label", files: sedFiles, script: "sed 'b nowhere' a.txt", stderr: "sed: -e expression #1, char 0: can't find label for jump to `nowhere'\n", exit: 1},
+	{name: "sed missing label", files: sedFiles, script: "sed 'b nowhere' a.txt", stderr: "sed: can't find label for jump to `nowhere'\n", exit: 4},
 	{name: "sed -f error location", files: sedFiles, script: "sed -f bad.sed a.txt", stderr: "sed: file bad.sed line 2: unknown command: `f'\n", exit: 1},
 	{name: "sed second expression location", files: sedFiles, script: "sed -e p -e 'k' a.txt", stderr: "sed: -e expression #2, char 1: unknown command: `k'\n", exit: 1},
 	{name: "sed -i without files", script: "sed -i s/a/b/", stderr: "sed: no input files\n", exit: 1, gnuSkip: "GNU sed 4.9 exit status for this case not validated"},

@@ -87,6 +87,39 @@ const referenceTimeout = 5 * time.Minute
 // every test run, and CI on Linux has GNU tools natively.
 const dockerReferenceVariable = "AIKIDO_GNU_DOCKER"
 
+// hostHasGNUTools reports whether the host's sed and coreutils are GNU. Since
+// Ubuntu 25.10 the default coreutils are uutils (Rust), whose messages differ
+// from GNU's, so GNU sed alone is not enough.
+func hostHasGNUTools() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), dockerProbeTimeout)
+	defer cancel()
+	sedVersion, sedError := exec.CommandContext(ctx, "sed", "--version").CombinedOutput()
+	lsVersion, lsError := exec.CommandContext(ctx, "ls", "--version").CombinedOutput()
+	return sedError == nil && lsError == nil && bytes.Contains(sedVersion, []byte("GNU")) && bytes.Contains(lsVersion, []byte("GNU coreutils"))
+}
+
+// dockerReferenceWanted reports whether the GNU reference may run in Docker:
+// on request locally, always in CI (GitHub runners start containers fast).
+func dockerReferenceWanted() bool {
+	return os.Getenv(dockerReferenceVariable) != "" || os.Getenv("CI") == "true"
+}
+
+// dockerImagePullTimeout bounds pulling a reference image in CI.
+const dockerImagePullTimeout = 3 * time.Minute
+
+// dockerImageAvailable reports whether image is present, pulling it in CI.
+func dockerImageAvailable(image string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), dockerImagePullTimeout)
+	defer cancel()
+	if exec.CommandContext(ctx, "docker", "image", "inspect", image).Run() == nil {
+		return true
+	}
+	if os.Getenv("CI") != "true" {
+		return false
+	}
+	return exec.CommandContext(ctx, "docker", "pull", "--quiet", image).Run() == nil
+}
+
 // differentialBashVariable names a GNU bash to use as the host reference
 // even without GNU tools (macOS with Homebrew bash): only meaningful for the
 // shell-semantics cases, the file commands are then the host's BSD ones.
@@ -96,16 +129,16 @@ var detectBackend = sync.OnceValue(func() differentialBackend {
 	if bash := os.Getenv(differentialBashVariable); bash != "" {
 		return differentialBackend{kind: backendHost, bash: bash}
 	}
-	if output, err := exec.Command("sed", "--version").CombinedOutput(); err == nil && bytes.Contains(output, []byte("GNU")) {
+	if hostHasGNUTools() {
 		if bash, err := exec.LookPath("bash"); err == nil {
 			return differentialBackend{kind: backendHost, bash: bash}
 		}
 	}
-	if os.Getenv(dockerReferenceVariable) == "" {
+	if !dockerReferenceWanted() {
 		return differentialBackend{kind: backendNone}
 	}
 	for _, image := range differentialImages {
-		if exec.Command("docker", "image", "inspect", image).Run() != nil {
+		if !dockerImageAvailable(image) {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), dockerProbeTimeout)

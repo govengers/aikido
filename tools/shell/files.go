@@ -216,7 +216,7 @@ func (r remover) remove(ctx context.Context, operand string) bool {
 	case found.kind == entryDevice:
 		return r.fail(operand, fileError("Permission denied"))
 	case found.kind == entryFile:
-		if err := r.files.storage.DeleteFile(ctx, name); err != nil {
+		if err := r.files.deleteFile(ctx, name); err != nil {
 			return r.fail(operand, describe(err))
 		}
 		r.report("removed '%s'", operand)
@@ -237,7 +237,7 @@ func (r remover) removeTree(ctx context.Context, operand, name string) bool {
 		return r.fail(operand, err)
 	}
 	for _, file := range files {
-		if err := r.files.storage.DeleteFile(ctx, file.Path); err != nil {
+		if err := r.files.deleteFile(ctx, file.Path); err != nil {
 			return r.fail(operand, describe(err))
 		}
 		r.report("removed '%s'", path.Join(operand, strings.TrimPrefix(file.Path, name+"/")))

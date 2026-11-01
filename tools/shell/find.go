@@ -400,7 +400,7 @@ func (f *finder) delete(ctx context.Context, item *visit) (bool, error) {
 	case item.name == "" || item.display == ".":
 		return true, nil
 	case item.kind == entryFile:
-		err = describe(f.files.storage.DeleteFile(ctx, item.name))
+		err = describe(f.files.deleteFile(ctx, item.name))
 	case item.kind == entryDirectory:
 		listed, listErr := f.files.children(ctx, item.name)
 		switch {
