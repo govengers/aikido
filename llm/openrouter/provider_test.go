@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -38,6 +39,41 @@ func TestWithProvider_OverridesClientPreferences(t *testing.T) {
 	usage := response.Usage
 	if usage == nil || usage.Provider != "Azure" || usage.Duration <= 0 || usage.Latency != usage.Duration {
 		t.Errorf("usage = %+v", usage)
+	}
+}
+
+// TestProviderPreferences_CopiedOnConstruction pins DES-001: neither the
+// Client nor a WithProvider context shares mutable state with the caller.
+func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
+	t.Parallel()
+	populated := func() *ProviderPreferences {
+		return &ProviderPreferences{
+			Order: []string{"a"}, AllowFallbacks: new(true), Only: []string{"b"}, Ignore: []string{"c"},
+			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny",
+			MaximumPrice: &MaximumPrice{Prompt: 1, Completion: 2},
+		}
+	}
+	mutate := func(preferences *ProviderPreferences) {
+		preferences.Order[0], preferences.Only[0], preferences.Ignore[0], preferences.Quantizations[0] = "x", "x", "x", "x"
+		*preferences.AllowFallbacks = false
+		preferences.MaximumPrice.Prompt = 99
+	}
+
+	callerOptions := populated()
+	client, err := NewClient(&Options{APIKey: "k", Provider: callerOptions})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerContext := populated()
+	ctx := WithProvider(context.Background(), callerContext)
+	mutate(callerOptions)
+	mutate(callerContext)
+
+	if !reflect.DeepEqual(client.provider, populated()) {
+		t.Errorf("client preferences = %+v, changed with the caller's", client.provider)
+	}
+	if got := client.providerPreferences(ctx); !reflect.DeepEqual(got, populated()) {
+		t.Errorf("context preferences = %+v, changed with the caller's", got)
 	}
 }
 

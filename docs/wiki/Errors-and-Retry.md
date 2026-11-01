@@ -10,6 +10,7 @@ Errors are matched with `errors.Is` against sentinels and read with `errors.As`;
 | `llm` | `ErrRateLimited` | 429, after the client's own attempts are used up |
 | `llm` | `ErrServerError` | 5xx, 408, a broken stream, an unexpected status; may pass on a retry |
 | `llm` | `ErrInvalidRequest` | other 4xx, or refused before sending (missing model, unsupported feature) |
+| `llm` | `ErrInvalidResponse` | a success status whose body does not decode, or an answer above the client's size caps; not transient, not retried |
 | `llm` | `ErrContentFiltered` | the provider's safety policy aborted the generation; do not retry the same prompt |
 | `llm/openrouter` | `*APIError{StatusCode, Code, Message}` | any unexpected HTTP status; `Unwrap` returns the `llm` sentinel above. A 429 with `Retry-After` arrives wrapped in a `*retry.AfterError` |
 | `llm/codex` | `ErrReauthenticationRequired`, `ErrDeviceLoginDisabled` | the login is gone for good; the issuer has no device login |
@@ -29,7 +30,8 @@ Agent runs do not return errors: they end with `EventError` plus an `EndReason` 
 | Path | Retried | Not retried |
 |---|---|---|
 | `openrouter` `Stream` | 429, 5xx and network errors before the first SSE byte, `Options.MaximumAttempts` in total (default 3), `Retry-After` honoured | anything after the stream started: it ends with `EventError` |
-| `openrouter` `Complete`, images, speech, decisions, each video submit, poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors |
+| `openrouter` video submit (`POST /videos`) | 429 only: nothing else proves the job was not created | 5xx, network errors and a broken 202 answer: the job may exist and be billed, a second submit would bill a second clip |
+| `openrouter` `Complete`, images, speech, decisions, each video poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors, a 2xx whose body does not decode (`ErrInvalidResponse`) |
 | `codex` `Stream` | 429 and 5xx at stream start (3 attempts) | mid-stream errors |
 | `llm.CollectWithRetry` | restarts the whole stream after a failure `policy.ShouldRetry` accepts (default `llm.IsTransientServerError`); every attempt is billed | |
 | `llm.CompleteWithRetry` | a fresh `Complete` per attempt, same default predicate | |

@@ -23,7 +23,9 @@ var _ llm.VideoGenerator = (*Client)(nil)
 // the file under the same bearer token. It blocks for minutes; ctx bounds it.
 //
 // An invalid request fails with llm.ErrInvalidRequest before any request.
-// Each request retries like Complete's (429, 5xx). A refusal surfaces as
+// Polls and the download retry like Complete's (429, 5xx); the submit retries
+// a 429 only, since after anything else the job may already exist and be
+// billed. A refusal surfaces as
 // ErrContentFiltered: a failed job or a 400 whose message reads like
 // moderation, and a completed job without any output, which is how some
 // providers (Veo) report a silent safety rejection. Once the job exists the
@@ -48,10 +50,11 @@ func (c *Client) GenerateVideo(ctx context.Context, request llm.VideoRequest) (l
 		response.Usage.CostUSD = job.Usage.Cost
 	}
 	response.Video, _, err = c.do(ctx, httpCall{
-		method:     http.MethodGet,
-		url:        c.baseURL + "/videos/" + escapedID + "/content?index=0",
-		accept:     "video/*",
-		wantStatus: http.StatusOK,
+		method:       http.MethodGet,
+		url:          c.baseURL + "/videos/" + escapedID + "/content?index=0",
+		accept:       "video/*",
+		wantStatus:   http.StatusOK,
+		maximumBytes: maximumVideoBytes,
 	})
 	if err != nil {
 		return response, err
@@ -64,14 +67,18 @@ func (c *Client) GenerateVideo(ctx context.Context, request llm.VideoRequest) (l
 	return response, nil
 }
 
-// submitVideo enqueues the job; the endpoint answers 202 with its id.
+// submitVideo enqueues the job; the endpoint answers 202 with its id. Only a
+// 429 proves the job was not created, so only a 429 is retried: after a 5xx,
+// a dropped connection or a 202 whose body did not arrive the job may exist
+// and be billed, and a second submit would bill a second clip (RES-004).
 func (c *Client) submitVideo(ctx context.Context, body []byte) (videoJob, error) {
 	raw, _, err := c.do(ctx, httpCall{
-		method:     http.MethodPost,
-		url:        c.baseURL + "/videos",
-		body:       body,
-		accept:     "application/json",
-		wantStatus: http.StatusAccepted,
+		method:      http.MethodPost,
+		url:         c.baseURL + "/videos",
+		body:        body,
+		accept:      "application/json",
+		wantStatus:  http.StatusAccepted,
+		shouldRetry: func(err error) bool { return errors.Is(err, llm.ErrRateLimited) },
 	})
 	if err != nil {
 		if errors.Is(err, llm.ErrInvalidRequest) && isRefusal(err.Error()) {
@@ -80,8 +87,11 @@ func (c *Client) submitVideo(ctx context.Context, body []byte) (videoJob, error)
 		return videoJob{}, err
 	}
 	var job videoJob
-	if err := json.Unmarshal(raw, &job); err != nil || job.ID == "" {
-		return videoJob{}, fmt.Errorf("openrouter: video: submit answered without a job id: %w", llm.ErrServerError)
+	if err := json.Unmarshal(raw, &job); err != nil {
+		return videoJob{}, decodeError("video: decode submit answer", err)
+	}
+	if job.ID == "" {
+		return videoJob{}, fmt.Errorf("openrouter: video: submit answered without a job id: %w", llm.ErrInvalidResponse)
 	}
 	return job, nil
 }
@@ -111,7 +121,7 @@ func (c *Client) awaitVideo(ctx context.Context, escapedID string, job videoJob)
 			return job, err
 		}
 		if err := json.Unmarshal(raw, &job); err != nil {
-			return job, fmt.Errorf("openrouter: video: decode job: %w", llm.ErrServerError)
+			return job, decodeError("video: decode job", err)
 		}
 	}
 }

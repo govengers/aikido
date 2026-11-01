@@ -3,6 +3,7 @@ package openrouter
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +11,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,6 +35,15 @@ const (
 	maximumLineSize       = 1024 * 1024
 )
 
+// The line cap bounds one fragment, these bound what a stream accumulates:
+// the arguments of all its tool calls together (16 times the agent's default
+// file size) and the number of calls. Above either, the stream fails with
+// ErrInvalidResponse and its calls are dropped.
+const (
+	maximumToolCallArgumentBytes = 16 << 20
+	maximumToolCalls             = 128
+)
+
 // processStream reads the SSE body and emits llm.Events onto out. It is
 // designed to be called from a producer goroutine; it always emits exactly
 // one EventEnd as the final event before returning. Channel close is the
@@ -45,7 +55,9 @@ const (
 //
 // Mid-stream errors (provider drops the connection mid-SSE, or the chunk
 // includes a top-level `error` envelope) are emitted as EventError followed
-// by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005).
+// by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005). A body
+// that ends cleanly before both [DONE] and any finish_reason was cut off and
+// fails the same way.
 //
 // Content-filter signals come in two forms (per ADR-028):
 //  1. finish_reason="content_filter" on a regular chunk, emitted as
@@ -80,6 +92,7 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 			continue
 		}
 		if payload == sseDoneToken {
+			decoder.sawDone = true
 			break
 		}
 		decoder.handlePayload(payload)
@@ -87,7 +100,7 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 	if ctx.Err() != nil {
 		return
 	}
-	decoder.handleReadError(scanner.Err())
+	decoder.handleStreamEnd(scanner.Err())
 }
 
 // ssePayload returns the payload of a `data:` line. Blank lines, comment
@@ -123,6 +136,8 @@ type streamDecoder struct {
 	// usage block is still emitted.
 	failed       bool
 	finishReason string
+	// sawDone is set by the [DONE] terminator.
+	sawDone bool
 }
 
 func (d *streamDecoder) handlePayload(payload string) {
@@ -141,6 +156,9 @@ func (d *streamDecoder) handlePayload(payload string) {
 		d.handleErrorEnvelope(&chunk)
 	default:
 		for _, choice := range chunk.Choices {
+			if d.failed {
+				break
+			}
 			d.handleChoice(choice)
 		}
 		// Usage may arrive on any chunk (typically the final content chunk
@@ -169,10 +187,10 @@ func (d *streamDecoder) handleChoice(choice streamChoice) {
 	d.emitPayload(choice.Delta)
 	// Some image-capable models deliver the generated image as a
 	// non-streaming `choices[0].message` payload instead of a `delta`.
-	if choice.Message != nil {
+	if choice.Message != nil && !d.failed {
 		d.emitPayload(*choice.Message)
 	}
-	if choice.FinishReason != nil {
+	if choice.FinishReason != nil && !d.failed {
 		d.handleFinishReason(*choice.FinishReason)
 	}
 }
@@ -215,7 +233,11 @@ func (d *streamDecoder) emitPayload(payload streamDelta) {
 		}
 	}
 	for _, fragment := range payload.ToolCalls {
-		d.assembler.feed(fragment)
+		if err := d.assembler.feed(fragment); err != nil {
+			d.assembler.flush() // over a cap the calls are unusable: dropped
+			d.fail(err)
+			return
+		}
 	}
 }
 
@@ -248,13 +270,21 @@ func (d *streamDecoder) fail(err error) {
 	d.failed = true
 }
 
-// handleReadError treats a read error (connection drop, a line above
-// maximumLineSize) without a prior EventError as a mid-stream drop.
-func (d *streamDecoder) handleReadError(err error) {
-	if err == nil || d.failed || errors.Is(err, io.EOF) {
-		return
+// handleStreamEnd judges how a body without a prior EventError ended. A read
+// error (connection drop, a line above maximumLineSize) and a clean EOF
+// before both [DONE] and any finish_reason are a broken stream
+// (ErrServerError); a complete stream flushes the tool calls still pending,
+// which a stream without finish_reason would otherwise lose.
+func (d *streamDecoder) handleStreamEnd(err error) {
+	switch {
+	case d.failed:
+	case err != nil:
+		d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
+	case !d.sawDone && d.finishReason == "":
+		d.fail(fmt.Errorf("openrouter mid-stream: stream ended before [DONE] or a finish_reason: %w", llm.ErrServerError))
+	default:
+		d.emitToolCalls()
 	}
-	d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
 }
 
 // recoverPanic must be deferred directly: recover only works there.
@@ -272,66 +302,86 @@ func (d *streamDecoder) end() {
 	d.send(llm.Event{Kind: llm.EventEnd, FinishReason: d.finishReason})
 }
 
-// toolCallAssembler buffers incoming fragments by index and produces complete
-// llm.ToolCalls when finalized.
+// toolCallAssembler joins streamed tool-call fragments into complete
+// llm.ToolCalls. Fragments continue the call at their index, except that a
+// fragment with a new non-empty id starts a new call: some providers send
+// several complete calls all at index 0, each with its own id.
 type toolCallAssembler struct {
-	parts map[int]*partialToolCall
+	// parts holds the calls in arrival order.
+	parts []*partialToolCall
+	// current maps a wire index to the call its fragments continue.
+	current map[int]*partialToolCall
+	// calls and argumentBytes count the whole stream, across flushes.
+	calls         int
+	argumentBytes int
 }
 
 type partialToolCall struct {
+	index     int
 	id        string
 	name      string
-	arguments bytes.Buffer
+	arguments strings.Builder
 }
 
 func newToolCallAssembler() *toolCallAssembler {
-	return &toolCallAssembler{parts: make(map[int]*partialToolCall)}
+	return &toolCallAssembler{current: make(map[int]*partialToolCall)}
 }
 
-// feed merges a single fragment into the buffer. The first non-empty id and
-// name win; argument fragments concatenate.
-func (a *toolCallAssembler) feed(fragment toolCallFragment) {
-	part, ok := a.parts[fragment.Index]
-	if !ok {
-		part = &partialToolCall{}
-		a.parts[fragment.Index] = part
+// feed merges a single fragment into the buffer. A call keeps its first
+// non-empty name; argument fragments concatenate. A fragment that would take
+// the stream above maximumToolCalls or maximumToolCallArgumentBytes is
+// refused with llm.ErrInvalidResponse.
+func (a *toolCallAssembler) feed(fragment toolCallFragment) error {
+	a.argumentBytes += len(fragment.Function.Arguments)
+	if a.argumentBytes > maximumToolCallArgumentBytes {
+		return fmt.Errorf("openrouter mid-stream: tool-call arguments above %d bytes: %w", maximumToolCallArgumentBytes, llm.ErrInvalidResponse)
 	}
-	if part.id == "" && fragment.ID != "" {
+	part, ok := a.current[fragment.Index]
+	if !ok || (part.id != "" && fragment.ID != "" && fragment.ID != part.id) {
+		a.calls++
+		if a.calls > maximumToolCalls {
+			return fmt.Errorf("openrouter mid-stream: more than %d tool calls: %w", maximumToolCalls, llm.ErrInvalidResponse)
+		}
+		part = &partialToolCall{index: fragment.Index}
+		a.parts = append(a.parts, part)
+		a.current[fragment.Index] = part
+	}
+	if part.id == "" {
 		part.id = fragment.ID
 	}
-	if part.name == "" && fragment.Function.Name != "" {
+	if part.name == "" {
 		part.name = fragment.Function.Name
 	}
 	part.arguments.WriteString(fragment.Function.Arguments)
+	return nil
 }
 
-// flush returns the assembled tool calls in ascending index order and resets
-// the buffer. Empty arguments become "{}", a missing id "call_<index>"
-// (OPENROUTER-DETAILS edge cases).
+// flush returns the assembled tool calls in ascending index order (calls
+// sharing an index in arrival order) and resets the buffer.
 func (a *toolCallAssembler) flush() []llm.ToolCall {
 	if len(a.parts) == 0 {
 		return nil
 	}
-	indexes := make([]int, 0, len(a.parts))
-	for index := range a.parts {
-		indexes = append(indexes, index)
+	slices.SortStableFunc(a.parts, func(left, right *partialToolCall) int { return cmp.Compare(left.index, right.index) })
+	calls := make([]llm.ToolCall, 0, len(a.parts))
+	for _, part := range a.parts {
+		calls = append(calls, newToolCall(part.id, part.name, part.arguments.String(), part.index))
 	}
-	sort.Ints(indexes)
-	calls := make([]llm.ToolCall, 0, len(indexes))
-	for _, index := range indexes {
-		part := a.parts[index]
-		arguments := part.arguments.String()
-		if arguments == "" {
-			arguments = "{}"
-		}
-		id := part.id
-		if id == "" {
-			id = fmt.Sprintf("call_%d", index)
-		}
-		calls = append(calls, llm.ToolCall{ID: id, Name: part.name, Arguments: arguments})
-	}
-	a.parts = make(map[int]*partialToolCall)
+	a.parts = nil
+	clear(a.current)
 	return calls
+}
+
+// newToolCall fills the gaps providers leave (OPENROUTER-DETAILS edge
+// cases): empty arguments become "{}", a missing id "call_<position>".
+func newToolCall(id, name, arguments string, position int) llm.ToolCall {
+	if arguments == "" {
+		arguments = "{}"
+	}
+	if id == "" {
+		id = fmt.Sprintf("call_%d", position)
+	}
+	return llm.ToolCall{ID: id, Name: name, Arguments: arguments}
 }
 
 // decodeDeltaContent extracts plain text and any inline images from a

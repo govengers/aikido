@@ -110,7 +110,7 @@ func validateImageRequest(request llm.ImageRequest) error {
 func parseImagesResponse(body []byte) (llm.ImageResponse, error) {
 	var decoded imagesResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return llm.ImageResponse{}, fmt.Errorf("openrouter: images: decode response: %w", llm.ErrServerError)
+		return llm.ImageResponse{}, decodeError("images: decode response", err)
 	}
 	// A 200 may still carry a top-level error envelope, same as chat completions.
 	if decoded.Error != nil {
@@ -139,7 +139,7 @@ func toImagePart(datum imagesDatum) (llm.ImagePart, bool, error) {
 	case datum.B64JSON != "":
 		data, err := base64.StdEncoding.DecodeString(datum.B64JSON)
 		if err != nil {
-			return llm.ImagePart{}, false, fmt.Errorf("bad base64 payload: %w", llm.ErrServerError)
+			return llm.ImagePart{}, false, decodeError("bad base64 payload", err)
 		}
 		contentType := datum.MediaType
 		if contentType == "" {

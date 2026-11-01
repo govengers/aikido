@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,11 +21,12 @@ var fakeMP4 = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 // fakeVideoAPI serves the three video endpoints. Polls answer statuses in
 // order, the last one repeating; a completed poll lists a URL unless noURL.
 type fakeVideoAPI struct {
-	statuses []string
-	failWith any
-	noURL    bool
-	polls    atomic.Int32
-	submit   map[string]any
+	statuses  []string
+	failWith  any
+	noURL     bool
+	clipBytes int64 // declared Content-Length of the clip; 0 sends fakeMP4 as is
+	polls     atomic.Int32
+	submit    map[string]any
 }
 
 func (api *fakeVideoAPI) client(t *testing.T) *Client {
@@ -57,6 +59,9 @@ func (api *fakeVideoAPI) client(t *testing.T) *Client {
 			t.Errorf("index = %q", request.URL.Query().Get("index"))
 		}
 		writer.Header().Set("Content-Type", "application/octet-stream")
+		if api.clipBytes > 0 {
+			writer.Header().Set("Content-Length", strconv.FormatInt(api.clipBytes, 10))
+		}
 		_, _ = writer.Write(fakeMP4)
 	})
 	server := httptest.NewServer(mux)
@@ -177,6 +182,77 @@ func TestGenerateVideo_SubmitErrors(t *testing.T) {
 		if !errors.Is(err, testCase.want) {
 			t.Errorf("%d %s: err = %v, want %v", testCase.status, testCase.body, err, testCase.want)
 		}
+	}
+}
+
+// TestGenerateVideo_SubmitRetriesOnlyRateLimits pins RES-004 for the
+// non-idempotent submit: only a 429 proves no job was created; a 5xx or a 202
+// whose body breaks off may hide a billed job and is not sent again.
+func TestGenerateVideo_SubmitRetriesOnlyRateLimits(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name        string
+		first       func(writer http.ResponseWriter)
+		wantSubmits int32
+		wantErr     error
+	}{
+		{name: "429 retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Retry-After", "0")
+			writer.WriteHeader(http.StatusTooManyRequests)
+		}, wantSubmits: 2},
+		{name: "503 not retried", first: func(writer http.ResponseWriter) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+		{name: "202 cut off not retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Content-Length", "100")
+			writer.WriteHeader(http.StatusAccepted)
+			_, _ = writer.Write([]byte(`{"id":"jo`))
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var submits atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /videos", func(writer http.ResponseWriter, _ *http.Request) {
+				if submits.Add(1) == 1 {
+					testCase.first(writer)
+					return
+				}
+				writer.WriteHeader(http.StatusAccepted)
+				_, _ = writer.Write([]byte(`{"id":"job1","status":"completed","unsigned_urls":["u"]}`))
+			})
+			mux.HandleFunc("GET /videos/job1/content", func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write(fakeMP4)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			if !errors.Is(err, testCase.wantErr) || (testCase.wantErr == nil && err != nil) {
+				t.Errorf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if got := submits.Load(); got != testCase.wantSubmits {
+				t.Errorf("submits = %d, want %d", got, testCase.wantSubmits)
+			}
+		})
+	}
+}
+
+// TestGenerateVideo_ClipAboveTheCap pins maximumVideoBytes: a clip declared
+// larger is refused before it is read, with the JobID kept.
+func TestGenerateVideo_ClipAboveTheCap(t *testing.T) {
+	t.Parallel()
+	api := &fakeVideoAPI{statuses: []string{"completed"}, clipBytes: maximumVideoBytes + 1}
+	response, err := api.client(t).GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Fatalf("err = %v, want ErrInvalidResponse", err)
+	}
+	if response.JobID != "job1" {
+		t.Errorf("JobID = %q, want job1", response.JobID)
 	}
 }
 

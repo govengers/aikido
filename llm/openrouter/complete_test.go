@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/retry"
 )
 
 func TestComplete_SimpleText(t *testing.T) {
@@ -228,6 +231,31 @@ func TestComplete_ToolCalls(t *testing.T) {
 	}
 	if response.FinishReason != "tool_calls" {
 		t.Errorf("finish_reason = %q", response.FinishReason)
+	}
+}
+
+// TestComplete_ToolCallsWithoutIndexStaySeparate pins that complete calls
+// carrying no index (all decode as index 0) are not merged into one.
+func TestComplete_ToolCallsWithoutIndexStaySeparate(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[
+		{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.md\"}"}},
+		{"id":"c2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.md\"}"}},
+		{"type":"function","function":{"name":"list_files","arguments":""}}
+	]},"finish_reason":"tool_calls"}]}`)
+	client := newTestClient(t, newTestServer(t, jsonHandler(body)))
+
+	response, err := client.Complete(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := []llm.ToolCall{
+		{ID: "c1", Name: "read_file", Arguments: `{"path":"a.md"}`},
+		{ID: "c2", Name: "read_file", Arguments: `{"path":"b.md"}`},
+		{ID: "call_2", Name: "list_files", Arguments: "{}"},
+	}
+	if !slices.Equal(response.ToolCalls, want) {
+		t.Errorf("tool calls = %+v, want %+v", response.ToolCalls, want)
 	}
 }
 
@@ -467,17 +495,48 @@ func TestComplete_NetworkError(t *testing.T) {
 	}
 }
 
-func TestComplete_MalformedJSON(t *testing.T) {
+// TestMalformedSuccessBodyIsNotTransient pins RES-002 for a 2xx that does not
+// decode: ErrInvalidResponse, not ErrServerError, so neither the client nor
+// CompleteWithRetry sends (and bills) the request again.
+func TestMalformedSuccessBodyIsNotTransient(t *testing.T) {
 	t.Parallel()
-	server := newTestServer(t, jsonHandler([]byte(`{"this is not valid json`)))
-	client := newTestClient(t, server)
-
-	_, err := client.Complete(context.Background(), llm.Request{Model: "any"})
-	if err == nil {
-		t.Fatal("expected decode error")
+	testCases := []struct {
+		name string
+		call func(client *Client) error
+	}{
+		{name: "complete", call: func(client *Client) error {
+			_, err := llm.CompleteWithRetry(context.Background(), client, llm.Request{Model: "m"}, retry.Policy{MaximumAttempts: 3})
+			return err
+		}},
+		{name: "images", call: func(client *Client) error {
+			_, err := client.GenerateImage(context.Background(), llm.ImageRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
+		{name: "decisions", call: func(client *Client) error {
+			_, err := client.Decide(context.Background(), llm.DecisionRequest{Model: "m", State: "s", Questions: map[string]llm.DecisionQuestion{"q": llm.NoulQuestion("q?")}})
+			return err
+		}},
+		{name: "models", call: func(client *Client) error {
+			_, err := client.Models(context.Background())
+			return err
+		}},
 	}
-	if !errors.Is(err, llm.ErrServerError) {
-		t.Errorf("err = %v, want ErrServerError wrap", err)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := newTestServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				_, _ = writer.Write([]byte(`{"this is not valid json`))
+			})
+			err := testCase.call(newTestClient(t, server))
+			if !errors.Is(err, llm.ErrInvalidResponse) || llm.IsTransientServerError(err) {
+				t.Errorf("err = %v, want ErrInvalidResponse and not transient", err)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Errorf("requests = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -655,6 +714,58 @@ func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
 	}
 	if !second.closed {
 		t.Error("last response body was not closed")
+	}
+}
+
+// TestComplete_OversizedBodyIsNotRead pins the response cap: a declared
+// length above maximumResponseBytes is refused before reading, as
+// ErrInvalidResponse, and not retried.
+func TestComplete_OversizedBodyIsNotRead(t *testing.T) {
+	t.Parallel()
+	transport := &recordingTransport{respond: func(int) *http.Response {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			ContentLength: maximumResponseBytes + 1,
+			Body:          io.NopCloser(bytes.NewReader([]byte(`{}`))),
+		}
+	}}
+	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: "https://example.invalid", HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = client.Complete(context.Background(), llm.Request{Model: "any"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Errorf("err = %v, want ErrInvalidResponse", err)
+	}
+	if transport.attempts != 1 {
+		t.Errorf("attempts = %d, want 1", transport.attempts)
+	}
+}
+
+// TestReadBounded pins the cap on bodies without a declared length.
+func TestReadBounded(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		body    string
+		wantErr error
+	}{
+		{name: "below the cap", body: "1234567"},
+		{name: "at the cap", body: "12345678"},
+		{name: "above the cap", body: "123456789", wantErr: llm.ErrInvalidResponse},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response := &http.Response{ContentLength: -1, Body: io.NopCloser(strings.NewReader(testCase.body))}
+			raw, err := readBounded(context.Background(), response, 8)
+			if !errors.Is(err, testCase.wantErr) {
+				t.Fatalf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if testCase.wantErr == nil && string(raw) != testCase.body {
+				t.Errorf("raw = %q, want %q", raw, testCase.body)
+			}
+		})
 	}
 }
 

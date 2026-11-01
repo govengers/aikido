@@ -2,6 +2,9 @@ package openrouter
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,13 +151,24 @@ func TestIsContentFilterErrorEnvelope(t *testing.T) {
 func TestToolCallAssembler_Flush(t *testing.T) {
 	t.Parallel()
 	assembler := newToolCallAssembler()
-	assembler.feed(toolCallFragment{Index: 1, Function: functionFragment{Name: "second"}})
-	assembler.feed(toolCallFragment{Index: 0, ID: "call_a", Function: functionFragment{Name: "first", Arguments: `{"a":`}})
-	assembler.feed(toolCallFragment{Index: 0, ID: "ignored", Function: functionFragment{Name: "ignored", Arguments: `1}`}})
+	feed := func(fragment toolCallFragment) {
+		t.Helper()
+		if err := assembler.feed(fragment); err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+	}
+	feed(toolCallFragment{Index: 1, Function: functionFragment{Name: "second"}})
+	feed(toolCallFragment{Index: 0, ID: "call_a", Function: functionFragment{Name: "first", Arguments: `{"a":`}})
+	feed(toolCallFragment{Index: 0, ID: "call_a", Function: functionFragment{Name: "ignored", Arguments: `1}`}})
+	// A new id at an index already in use is a new call (complete calls all
+	// at index 0); a fragment without id continues it.
+	feed(toolCallFragment{Index: 0, ID: "call_b", Function: functionFragment{Name: "third", Arguments: `{"b":`}})
+	feed(toolCallFragment{Index: 0, Function: functionFragment{Arguments: `2}`}})
 
 	calls := assembler.flush()
 	want := []llm.ToolCall{
 		{ID: "call_a", Name: "first", Arguments: `{"a":1}`},
+		{ID: "call_b", Name: "third", Arguments: `{"b":2}`},
 		{ID: "call_1", Name: "second", Arguments: "{}"},
 	}
 	if len(calls) != len(want) {
@@ -167,5 +181,98 @@ func TestToolCallAssembler_Flush(t *testing.T) {
 	}
 	if again := assembler.flush(); again != nil {
 		t.Errorf("second flush = %+v, want nil (flush resets)", again)
+	}
+}
+
+// TestStream_End pins how a stream may end: [DONE] or a finish_reason
+// completes it and flushes pending tool calls; a clean EOF with neither is a
+// cut-off stream and an ErrServerError.
+func TestStream_End(t *testing.T) {
+	t.Parallel()
+	const toolFragment = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n"
+	const text = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	const stop = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+	testCases := []struct {
+		name          string
+		body          string
+		wantToolCalls int
+		wantErr       error
+	}{
+		{name: "done without finish reason flushes tool calls", body: toolFragment + "data: [DONE]\n\n", wantToolCalls: 1},
+		{name: "finish reason without done", body: text + stop},
+		{name: "eof without either", body: text, wantErr: llm.ErrServerError},
+		{name: "eof with pending tool call", body: toolFragment, wantToolCalls: 1, wantErr: llm.ErrServerError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			events := streamBody(t, []byte(testCase.body))
+			assertEventOrder(t, events)
+			summary := summarize(t, events)
+			if len(summary.toolCalls) != testCase.wantToolCalls {
+				t.Errorf("tool calls = %d, want %d", len(summary.toolCalls), testCase.wantToolCalls)
+			}
+			switch {
+			case testCase.wantErr == nil && len(summary.errors) != 0:
+				t.Errorf("errors = %v, want none", summary.errors)
+			case testCase.wantErr != nil && (len(summary.errors) != 1 || !errors.Is(summary.errors[0], testCase.wantErr)):
+				t.Errorf("errors = %v, want one %v", summary.errors, testCase.wantErr)
+			}
+		})
+	}
+}
+
+// TestToolCallAssembler_Caps pins the per-stream bounds on what tool calls
+// accumulate, across flushes: the line cap alone bounds one fragment only.
+func TestToolCallAssembler_Caps(t *testing.T) {
+	t.Parallel()
+	quarter := strings.Repeat("x", maximumToolCallArgumentBytes/4)
+	testCases := []struct {
+		name      string
+		fragments []toolCallFragment
+	}{
+		{name: "argument bytes", fragments: slices.Repeat([]toolCallFragment{{Function: functionFragment{Arguments: quarter}}}, 5)},
+		{name: "calls", fragments: func() []toolCallFragment {
+			fragments := make([]toolCallFragment, maximumToolCalls+1)
+			for index := range fragments {
+				fragments[index] = toolCallFragment{Index: index, Function: functionFragment{Name: "t"}}
+			}
+			return fragments
+		}()},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			assembler := newToolCallAssembler()
+			for count, fragment := range testCase.fragments {
+				err := assembler.feed(fragment)
+				// Flushing in between does not reset the stream's budget.
+				assembler.flush()
+				last := count == len(testCase.fragments)-1
+				if last != errors.Is(err, llm.ErrInvalidResponse) {
+					t.Fatalf("fragment %d: err = %v, want ErrInvalidResponse only on the last", count, err)
+				}
+			}
+		})
+	}
+}
+
+// TestStream_TooManyToolCallsFailsTheStream pins the stream side of the cap:
+// EventError with ErrInvalidResponse, no tool calls, EventEnd last.
+func TestStream_TooManyToolCallsFailsTheStream(t *testing.T) {
+	t.Parallel()
+	var body strings.Builder
+	for index := range maximumToolCalls + 1 {
+		fmt.Fprintf(&body, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":%d,\"id\":\"c%d\",\"function\":{\"name\":\"t\",\"arguments\":\"{}\"}}]}}]}\n\n", index, index)
+	}
+	body.WriteString("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+	events := streamBody(t, []byte(body.String()))
+	assertEventOrder(t, events)
+	summary := summarize(t, events)
+	if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrInvalidResponse) {
+		t.Errorf("errors = %v, want one ErrInvalidResponse", summary.errors)
+	}
+	if len(summary.toolCalls) != 0 {
+		t.Errorf("tool calls = %d, want none", len(summary.toolCalls))
 	}
 }

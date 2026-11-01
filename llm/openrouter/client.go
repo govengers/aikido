@@ -32,6 +32,14 @@ const (
 	// eventBufferSize lets the stream producer run a few events ahead of a
 	// slow consumer.
 	eventBufferSize = 16
+
+	// maximumResponseBytes caps a non-streaming answer read into memory: a
+	// Complete with several inline base64 images, a model list, audio. Far
+	// above any legitimate answer; a body above it is llm.ErrInvalidResponse.
+	maximumResponseBytes = 64 << 20
+
+	// maximumVideoBytes caps a downloaded clip, which is read into memory too.
+	maximumVideoBytes = 512 << 20
 )
 
 // Options configure the OpenRouter Client.
@@ -55,7 +63,7 @@ type Options struct {
 	XTitle string
 
 	// Provider is the default provider-routing block for chat calls; a
-	// context from WithProvider overrides it per call.
+	// context from WithProvider overrides it per call. NewClient keeps a copy.
 	Provider *ProviderPreferences
 
 	// ProviderOrder is shorthand for Provider when only the order matters:
@@ -66,9 +74,9 @@ type Options struct {
 
 	// MaximumAttempts is the total number of HTTP attempts per call on 429, 5xx
 	// and network errors, on every path (Stream, Complete, transcription,
-	// images, speech, each video submit/poll/download request). 0 keeps the
-	// default of 3; 1 disables retry, for callers that run their own job-level
-	// retry. Negative is treated as 1.
+	// images, speech, each video submit/poll/download request); the video
+	// submit retries on 429 only. 0 keeps the default of 3; 1 disables retry,
+	// for callers that run their own job-level retry. Negative is treated as 1.
 	MaximumAttempts int
 
 	// VideoPollInterval is how often GenerateVideo polls a running job.
@@ -105,7 +113,7 @@ func NewClient(options *Options) (*Client, error) {
 		httpClient:        options.HTTPClient,
 		httpReferer:       options.HTTPReferer,
 		xTitle:            options.XTitle,
-		provider:          options.Provider,
+		provider:          options.Provider.clone(),
 		maximumAttempts:   options.MaximumAttempts,
 		videoPollInterval: options.VideoPollInterval,
 	}
@@ -231,6 +239,11 @@ type httpCall struct {
 	body       []byte
 	accept     string
 	wantStatus int
+	// maximumBytes caps the answer's body; 0 means maximumResponseBytes.
+	maximumBytes int64
+	// shouldRetry narrows the retry predicate for a request that is not
+	// idempotent; nil retries every transient error.
+	shouldRetry func(error) bool
 }
 
 // postJSON sends one JSON body to path (relative to baseURL) and returns the
@@ -250,21 +263,26 @@ func (c *Client) postJSON(ctx context.Context, path string, body []byte) ([]byte
 // do sends call with retry and returns the body and headers of the answer.
 // Every non-streaming endpoint shares it, so retry, headers and error
 // classification stay in one place. The body is read and closed inside the
-// attempt, so a body that dies mid-read retries like a 5xx.
+// attempt, so a body that dies mid-read retries like a 5xx; a body above
+// call.maximumBytes is llm.ErrInvalidResponse and is not retried.
 func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, error) {
 	var (
 		raw    []byte
 		header http.Header
 	)
-	err := retry.Do(ctx, c.retryPolicy(), func(_ int) error {
+	policy := c.retryPolicy()
+	if call.shouldRetry != nil {
+		policy.ShouldRetry = call.shouldRetry
+	}
+	err := retry.Do(ctx, policy, func(_ int) error {
 		response, err := c.send(ctx, call)
 		if err != nil {
 			return err
 		}
 		defer response.Body.Close()
-		raw, err = io.ReadAll(response.Body)
+		raw, err = readBounded(ctx, response, call.maximumBytes)
 		if err != nil {
-			return transportError(ctx, "read body", err)
+			return err
 		}
 		header = response.Header
 		return nil
@@ -273,6 +291,30 @@ func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, er
 		return nil, nil, err
 	}
 	return raw, header, nil
+}
+
+// readBounded reads the body of response, at most limit bytes (0 means
+// maximumResponseBytes). A declared or actual length above limit is
+// llm.ErrInvalidResponse; a failed read is a transportError.
+func readBounded(ctx context.Context, response *http.Response, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = maximumResponseBytes
+	}
+	if response.ContentLength > limit {
+		return nil, bodyTooLarge(limit)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, transportError(ctx, "read body", err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, bodyTooLarge(limit)
+	}
+	return raw, nil
+}
+
+func bodyTooLarge(limit int64) error {
+	return fmt.Errorf("openrouter: response body above %d bytes: %w", limit, llm.ErrInvalidResponse)
 }
 
 // send makes one HTTP attempt. It returns the response with its body open

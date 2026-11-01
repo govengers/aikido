@@ -20,7 +20,7 @@
 
 ## Response, Collect and streaming
 
-`llm.Response` holds `Text` (without reasoning), `ToolCalls`, `Images`, `Usage` (nil when the provider reported none) and `FinishReason`. `llm.Collect(ctx, client, request)` drains a stream into one; on an error or a cancelled `ctx` it returns what it gathered with the error. From [llm/example_test.go](../../llm/example_test.go) (`ExampleCollect`):
+`llm.Response` holds `Text` (without reasoning), `ToolCalls`, `Images`, `Usage` (nil when the provider reported none) and `FinishReason`. `llm.Collect(ctx, client, request)` drains a stream into one; after an `EventError` it reads on until the channel closes, so the usage of the failed (and billed) call is kept, and returns the first error. On a cancelled `ctx` it returns what it gathered with the error. From [llm/example_test.go](../../llm/example_test.go) (`ExampleCollect`):
 
 ```go
 	response, err := llm.Collect(context.Background(), client, llm.Request{
@@ -35,7 +35,7 @@
 	fmt.Println(response.FinishReason, response.Usage.CompletionTokens)
 ```
 
-The stream contract: an error before the first byte (authentication, invalid request, exhausted retries) is returned by `Stream` directly, later failures arrive as `EventError`. `EventEnd` is always last, then the client closes the channel; it closes early when `ctx` ends. Read until it closes or cancel `ctx`, otherwise the producer goroutine blocks. From [llm/openrouter/example_test.go](../../llm/openrouter/example_test.go) (`ExampleClient_Stream`):
+The stream contract: an error before the first byte (authentication, invalid request, exhausted retries) is returned by `Stream` directly, later failures arrive as `EventError`; an OpenRouter stream that stops before both `[DONE]` and a finish reason was cut off and is an `EventError` with `llm.ErrServerError`. `EventEnd` is always last, then the client closes the channel; it closes early when `ctx` ends. Read until it closes or cancel `ctx`, otherwise the producer goroutine blocks. From [llm/openrouter/example_test.go](../../llm/openrouter/example_test.go) (`ExampleClient_Stream`):
 
 ```go
 	// Drain until the channel closes; EventEnd is always the last event.
@@ -68,10 +68,12 @@ Use `Complete` instead of `Stream` for image output: a base64 image in one SSE l
 | `HTTPReferer`, `XTitle` | empty | OpenRouter attribution headers |
 | `Provider` | none | default `*openrouter.ProviderPreferences` for chat and decision calls |
 | `ProviderOrder` | none | shorthand: one entry pins it (no fallbacks), several form a fallback chain; ignored when `Provider` is set |
-| `MaximumAttempts` | 3 | HTTP attempts per call on 429, 5xx and network errors, on every path; 1 disables retry |
+| `MaximumAttempts` | 3 | HTTP attempts per call on 429, 5xx and network errors, on every path (the video submit on 429 only); 1 disables retry |
 | `VideoPollInterval` | 3 s | `GenerateVideo` polling |
 
 Every chat request asks OpenRouter for usage accounting, so `CostUSD` is set on streamed and non-streamed calls alike.
+
+Size caps (fixed, not options): a non-streaming answer (`Complete`, images, speech, decisions, model lists, video jobs) is read up to 64 MiB, a video clip up to 512 MiB; a larger answer fails with `llm.ErrInvalidResponse` and is not retried. Of an error answer at most 64 KiB is read, its message keeps 256 bytes. A stream line may be 1 MiB; one stream may carry at most 128 tool calls with 16 MiB of arguments together, beyond that it ends with `EventError` (`llm.ErrInvalidResponse`) and its tool calls are dropped.
 
 ### Provider routing
 

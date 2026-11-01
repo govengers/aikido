@@ -120,6 +120,30 @@ func TestCollect_PropagatesEventError(t *testing.T) {
 	}
 }
 
+// TestCollect_KeepsUsageAfterEventError pins that Collect reads on after an
+// EventError: the provider reports the billed usage of a failed call after
+// it, and only the first error is returned.
+func TestCollect_KeepsUsageAfterEventError(t *testing.T) {
+	first := errors.New("content filtered")
+	client := &scriptedClient{events: []Event{
+		{Kind: EventTextDelta, Text: "partial"},
+		{Kind: EventError, Err: first},
+		{Kind: EventError, Err: errors.New("second")},
+		{Kind: EventUsage, Usage: &Usage{PromptTokens: 9, CostUSD: 0.01}},
+		{Kind: EventEnd, FinishReason: "content_filter"},
+	}}
+	response, err := Collect(t.Context(), client, Request{})
+	if err != first { //nolint:errorlint // the very first error, not one wrapping it
+		t.Errorf("err = %v, want the first error", err)
+	}
+	if response.Usage == nil || response.Usage.CostUSD != 0.01 {
+		t.Errorf("usage = %+v, want the trailing usage", response.Usage)
+	}
+	if response.FinishReason != "content_filter" || response.Text != "partial" {
+		t.Errorf("response = %+v", response)
+	}
+}
+
 func TestCollect_PropagatesStreamError(t *testing.T) {
 	sentinel := errors.New("dial failure")
 	client := &scriptedClient{err: sentinel}
@@ -136,6 +160,21 @@ func TestCollect_ContextCancellation(t *testing.T) {
 	_, err := Collect(ctx, client, Request{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestCollect_CloseAfterCancelIsNotSuccess pins that a stream closing while
+// ctx is done is reported as the context error: the producer stopped early,
+// so the partial answer must not pass for a complete one. Both select cases
+// are ready, so the race is run often enough to hit the close branch.
+func TestCollect_CloseAfterCancelIsNotSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	client := &scriptedClient{events: []Event{{Kind: EventTextDelta, Text: "parti"}}}
+	for range 64 {
+		if _, err := Collect(ctx, client, Request{}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
 	}
 }
 
