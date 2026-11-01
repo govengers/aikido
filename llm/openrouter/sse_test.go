@@ -150,11 +150,16 @@ func TestToolCallAssembler_Flush(t *testing.T) {
 	assembler := newToolCallAssembler()
 	assembler.feed(toolCallFragment{Index: 1, Function: functionFragment{Name: "second"}})
 	assembler.feed(toolCallFragment{Index: 0, ID: "call_a", Function: functionFragment{Name: "first", Arguments: `{"a":`}})
-	assembler.feed(toolCallFragment{Index: 0, ID: "ignored", Function: functionFragment{Name: "ignored", Arguments: `1}`}})
+	assembler.feed(toolCallFragment{Index: 0, ID: "call_a", Function: functionFragment{Name: "ignored", Arguments: `1}`}})
+	// A new id at an index already in use is a new call (complete calls all
+	// at index 0); a fragment without id continues it.
+	assembler.feed(toolCallFragment{Index: 0, ID: "call_b", Function: functionFragment{Name: "third", Arguments: `{"b":`}})
+	assembler.feed(toolCallFragment{Index: 0, Function: functionFragment{Arguments: `2}`}})
 
 	calls := assembler.flush()
 	want := []llm.ToolCall{
 		{ID: "call_a", Name: "first", Arguments: `{"a":1}`},
+		{ID: "call_b", Name: "third", Arguments: `{"b":2}`},
 		{ID: "call_1", Name: "second", Arguments: "{}"},
 	}
 	if len(calls) != len(want) {

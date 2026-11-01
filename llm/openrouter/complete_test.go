@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -230,6 +231,31 @@ func TestComplete_ToolCalls(t *testing.T) {
 	}
 	if response.FinishReason != "tool_calls" {
 		t.Errorf("finish_reason = %q", response.FinishReason)
+	}
+}
+
+// TestComplete_ToolCallsWithoutIndexStaySeparate pins that complete calls
+// carrying no index (all decode as index 0) are not merged into one.
+func TestComplete_ToolCallsWithoutIndexStaySeparate(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[
+		{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.md\"}"}},
+		{"id":"c2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.md\"}"}},
+		{"type":"function","function":{"name":"list_files","arguments":""}}
+	]},"finish_reason":"tool_calls"}]}`)
+	client := newTestClient(t, newTestServer(t, jsonHandler(body)))
+
+	response, err := client.Complete(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := []llm.ToolCall{
+		{ID: "c1", Name: "read_file", Arguments: `{"path":"a.md"}`},
+		{ID: "c2", Name: "read_file", Arguments: `{"path":"b.md"}`},
+		{ID: "call_2", Name: "list_files", Arguments: "{}"},
+	}
+	if !slices.Equal(response.ToolCalls, want) {
+		t.Errorf("tool calls = %+v, want %+v", response.ToolCalls, want)
 	}
 }
 

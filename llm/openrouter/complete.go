@@ -66,17 +66,15 @@ func parseCompleteResponse(body []byte) (llm.Response, error) {
 	}
 
 	var response llm.Response
-	assembler := newToolCallAssembler()
 	for _, choice := range chunk.Choices {
-		absorbDelta(&response, assembler, choice.Delta)
+		absorbDelta(&response, choice.Delta)
 		if choice.Message != nil {
-			absorbDelta(&response, assembler, *choice.Message)
+			absorbDelta(&response, *choice.Message)
 		}
 		if choice.FinishReason != nil {
 			response.FinishReason = *choice.FinishReason
 		}
 	}
-	response.ToolCalls = append(response.ToolCalls, assembler.flush()...)
 	response.Usage = chunkUsage(&chunk)
 
 	// finish_reason="content_filter" without a top-level error envelope:
@@ -91,8 +89,9 @@ func parseCompleteResponse(body []byte) (llm.Response, error) {
 // absorbDelta folds one streamDelta payload (delta or message) into the
 // response. It mirrors streamDecoder.emitPayload, writing to a Response
 // rather than emitting events. llm.Response has no thinking field, so
-// reasoning is dropped.
-func absorbDelta(response *llm.Response, assembler *toolCallAssembler, payload streamDelta) {
+// reasoning is dropped. Tool calls here are complete, often without an index,
+// so each one is a call of its own rather than a fragment to join.
+func absorbDelta(response *llm.Response, payload streamDelta) {
 	text, images := decodeDeltaContent(payload.Content)
 	response.Text += text
 	response.Images = append(response.Images, images...)
@@ -102,6 +101,6 @@ func absorbDelta(response *llm.Response, assembler *toolCallAssembler, payload s
 		}
 	}
 	for _, fragment := range payload.ToolCalls {
-		assembler.feed(fragment)
+		response.ToolCalls = append(response.ToolCalls, newToolCall(fragment.ID, fragment.Function.Name, fragment.Function.Arguments, len(response.ToolCalls)))
 	}
 }

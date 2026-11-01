@@ -3,6 +3,7 @@ package openrouter
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +11,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -272,66 +273,72 @@ func (d *streamDecoder) end() {
 	d.send(llm.Event{Kind: llm.EventEnd, FinishReason: d.finishReason})
 }
 
-// toolCallAssembler buffers incoming fragments by index and produces complete
-// llm.ToolCalls when finalized.
+// toolCallAssembler joins streamed tool-call fragments into complete
+// llm.ToolCalls. Fragments continue the call at their index, except that a
+// fragment with a new non-empty id starts a new call: some providers send
+// several complete calls all at index 0, each with its own id.
 type toolCallAssembler struct {
-	parts map[int]*partialToolCall
+	// parts holds the calls in arrival order.
+	parts []*partialToolCall
+	// current maps a wire index to the call its fragments continue.
+	current map[int]*partialToolCall
 }
 
 type partialToolCall struct {
+	index     int
 	id        string
 	name      string
-	arguments bytes.Buffer
+	arguments strings.Builder
 }
 
 func newToolCallAssembler() *toolCallAssembler {
-	return &toolCallAssembler{parts: make(map[int]*partialToolCall)}
+	return &toolCallAssembler{current: make(map[int]*partialToolCall)}
 }
 
-// feed merges a single fragment into the buffer. The first non-empty id and
-// name win; argument fragments concatenate.
+// feed merges a single fragment into the buffer. A call keeps its first
+// non-empty name; argument fragments concatenate.
 func (a *toolCallAssembler) feed(fragment toolCallFragment) {
-	part, ok := a.parts[fragment.Index]
-	if !ok {
-		part = &partialToolCall{}
-		a.parts[fragment.Index] = part
+	part, ok := a.current[fragment.Index]
+	if !ok || (part.id != "" && fragment.ID != "" && fragment.ID != part.id) {
+		part = &partialToolCall{index: fragment.Index}
+		a.parts = append(a.parts, part)
+		a.current[fragment.Index] = part
 	}
-	if part.id == "" && fragment.ID != "" {
+	if part.id == "" {
 		part.id = fragment.ID
 	}
-	if part.name == "" && fragment.Function.Name != "" {
+	if part.name == "" {
 		part.name = fragment.Function.Name
 	}
 	part.arguments.WriteString(fragment.Function.Arguments)
 }
 
-// flush returns the assembled tool calls in ascending index order and resets
-// the buffer. Empty arguments become "{}", a missing id "call_<index>"
-// (OPENROUTER-DETAILS edge cases).
+// flush returns the assembled tool calls in ascending index order (calls
+// sharing an index in arrival order) and resets the buffer.
 func (a *toolCallAssembler) flush() []llm.ToolCall {
 	if len(a.parts) == 0 {
 		return nil
 	}
-	indexes := make([]int, 0, len(a.parts))
-	for index := range a.parts {
-		indexes = append(indexes, index)
+	slices.SortStableFunc(a.parts, func(left, right *partialToolCall) int { return cmp.Compare(left.index, right.index) })
+	calls := make([]llm.ToolCall, 0, len(a.parts))
+	for _, part := range a.parts {
+		calls = append(calls, newToolCall(part.id, part.name, part.arguments.String(), part.index))
 	}
-	sort.Ints(indexes)
-	calls := make([]llm.ToolCall, 0, len(indexes))
-	for _, index := range indexes {
-		part := a.parts[index]
-		arguments := part.arguments.String()
-		if arguments == "" {
-			arguments = "{}"
-		}
-		id := part.id
-		if id == "" {
-			id = fmt.Sprintf("call_%d", index)
-		}
-		calls = append(calls, llm.ToolCall{ID: id, Name: part.name, Arguments: arguments})
-	}
-	a.parts = make(map[int]*partialToolCall)
+	a.parts = nil
+	clear(a.current)
 	return calls
+}
+
+// newToolCall fills the gaps providers leave (OPENROUTER-DETAILS edge
+// cases): empty arguments become "{}", a missing id "call_<position>".
+func newToolCall(id, name, arguments string, position int) llm.ToolCall {
+	if arguments == "" {
+		arguments = "{}"
+	}
+	if id == "" {
+		id = fmt.Sprintf("call_%d", position)
+	}
+	return llm.ToolCall{ID: id, Name: name, Arguments: arguments}
 }
 
 // decodeDeltaContent extracts plain text and any inline images from a

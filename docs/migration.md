@@ -107,6 +107,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | Cancellation | a cancelled request could surface as `llm.ErrServerError` (and be retried) | `context.Canceled` / `context.DeadlineExceeded`, in `openrouter` and `codex`, on `Stream` and `Complete` |
 | Provider errors | sentinel-wrapped text | `*openrouter.APIError` with `StatusCode`, `Code`, `Message`; `errors.Is` on the sentinels and the `Error()` text are unchanged |
 | Undecodable answers | a 2xx whose body did not decode was `llm.ErrServerError` and retried | `llm.ErrInvalidResponse`, not transient, not retried (`Complete`, images, decisions, models, video) |
+| OpenRouter tool calls | complete calls without an index (`Complete`) or several at index 0 with their own ids (`Stream`) were merged into one call with broken arguments | one call each; a fragment with a new id starts a new call |
 | OpenRouter answer size | every body read in full, however large | non-streaming answers up to 64 MiB, video clips up to 512 MiB, else `llm.ErrInvalidResponse`; error bodies read up to 64 KiB ([Models](wiki/Models.md#openrouter)) |
 | OpenRouter HTTP client | no timeout at all | the default client waits at most 10 minutes for response headers (no overall timeout); a custom `HTTPClient` is used as is |
 | Stream panics | a decoding panic crashed the process | `EventError` followed by `EventEnd` |
