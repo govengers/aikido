@@ -147,6 +147,7 @@ Each needs `OPENROUTER_API_KEY`: `go run ./examples/<name>`.
 - [chat-oneshot](examples/chat-oneshot/main.go): one completion with `llm.Collect` and its cost.
 - [agent-vfs](examples/agent-vfs/main.go): an agent writes and reads notes in an in-memory workspace.
 - [agent-overlay](examples/agent-overlay/main.go): an agent edits a real directory through an overlay; you see the diff and confirm before anything is written.
+- [ops-worker](examples/ops-worker/main.go): an unattended operations agent in one binary: a runbook repo with CLAUDE.md, file tools, the virtual bash, real git, a kubectl that refuses mutations, and a Go-native Grafana Loki tool.
 - [chatbot](examples/chatbot/main.go): a read-only Q&A loop over an embedded markdown corpus.
 - [image-generation](examples/image-generation/main.go): an image from an image-capable model written to disk.
 - [voicebot](examples/voicebot/main.go): a push-to-talk web page over `voice.Handler`.
