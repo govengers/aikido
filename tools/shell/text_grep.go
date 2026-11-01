@@ -2,10 +2,10 @@ package shell
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"strconv"
@@ -603,7 +603,7 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	if input.stdin {
 		name = "-"
 	}
-	content, err := readOperand(ctx, g.invocation, name)
+	reader, err := openOperand(ctx, g.invocation, name)
 	if reason, ok := operandReason(err); ok {
 		g.complain("%s: %s", input.name, reason)
 		return false, true, nil
@@ -611,57 +611,92 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	if err != nil {
 		return false, false, err
 	}
-	binary := !g.settings.text && bytes.IndexByte(content, 0) >= 0
+	lines := newLineReader(reader)
+	binary := !g.settings.text && lines.startsBinary()
 	if binary && g.settings.skipBinary {
 		return false, false, nil
 	}
-	lines, _ := splitLines(string(content))
-	return g.searchLines(ctx, input.name, lines, binary), false, nil
+	found, err := g.searchLines(ctx, input.name, lines, binary)
+	return found, false, err
 }
 
 // grepScan is the state of searching one file.
 type grepScan struct {
 	name string
-	// printLines is false in -c, -l, -L and -q modes and for binary files.
-	printLines     bool
-	selected       int
-	lastPrinted    int
-	afterRemaining int
+	// printsLines is false in -c, -l, -L and -q modes; printLines also
+	// for a binary file.
+	printsLines, printLines bool
+	binary                  bool
+	selected                int
+	lastPrinted             int
+	afterRemaining          int
+	// recent are the last lines not selected, for -B.
+	recent []grepLine
+	// stop ends the search of the file (-q, -l, -m, a binary match).
+	stop bool
 }
 
-// searchLines prints the selected lines of one file in the chosen mode and
-// reports whether any line was selected.
-func (g *grepSearcher) searchLines(ctx context.Context, name string, lines []string, binary bool) bool {
-	settings := g.settings
-	printsLines := !settings.quiet && !settings.count && settings.listing == listNone
-	scan := &grepScan{name: name, printLines: printsLines && !binary, lastPrinted: -1}
-	for index, text := range lines {
-		if settings.maximum >= 0 && scan.selected >= settings.maximum {
-			if !g.trailingContext(scan, index, text) {
-				break
-			}
-			continue
+// grepLine is a line with its 0-based index.
+type grepLine struct {
+	index int
+	text  string
+}
+
+// searchLines streams the lines of one file, prints the selected ones in
+// the chosen mode and reports whether any line was selected. It stops
+// reading as soon as the answer is known (-q, -l, -m).
+func (g *grepSearcher) searchLines(ctx context.Context, name string, lines *lineReader, binary bool) (bool, error) {
+	printsLines := !g.settings.quiet && !g.settings.count && g.settings.listing == listNone
+	scan := &grepScan{name: name, printsLines: printsLines, printLines: printsLines && !binary, binary: binary, lastPrinted: -1}
+	for index := 0; !scan.stop; index++ {
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
-		if g.matcher.matches(ctx, text) == settings.invert {
-			g.trailingContext(scan, index, text)
-			continue
-		}
-		scan.selected++
-		if settings.quiet || settings.listing != listNone && !settings.count {
+		text, _, err := lines.next()
+		if errors.Is(err, io.EOF) {
 			break
 		}
-		if binary && printsLines {
-			g.binaryMatches(name)
-			break
+		if err != nil {
+			return false, err
 		}
-		if scan.printLines {
-			g.printBefore(scan, lines, index)
-			g.printSelected(ctx, scan, index, text)
-			scan.afterRemaining = settings.after
+		if !scan.binary && !g.settings.text && strings.IndexByte(text, 0) >= 0 {
+			// A NUL after the first buffer makes the rest binary, as in GNU.
+			scan.binary, scan.printLines = true, false
 		}
+		g.scanLine(ctx, scan, grepLine{index: index, text: text})
 	}
 	g.printSummary(name, scan.selected)
-	return scan.selected > 0
+	return scan.selected > 0, nil
+}
+
+// scanLine decides one line: selected, context or nothing.
+func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) {
+	settings := g.settings
+	if settings.maximum >= 0 && scan.selected >= settings.maximum {
+		scan.stop = !g.trailingContext(scan, line.index, line.text)
+		return
+	}
+	if g.matcher.matches(ctx, line.text) == settings.invert {
+		if !g.trailingContext(scan, line.index, line.text) && settings.before > 0 {
+			scan.recent = append(scan.recent, line)
+			if len(scan.recent) > settings.before {
+				scan.recent = scan.recent[1:]
+			}
+		}
+		return
+	}
+	scan.selected++
+	switch {
+	case settings.quiet || settings.listing != listNone && !settings.count:
+		scan.stop = true
+	case scan.binary && scan.printsLines:
+		g.binaryMatches(scan.name)
+		scan.stop = true
+	case scan.printLines:
+		g.printBefore(scan)
+		g.printSelected(ctx, scan, line.index, line.text)
+		scan.afterRemaining = settings.after
+	}
 }
 
 // trailingContext prints a line of -A context if one is due.
@@ -683,10 +718,13 @@ func (g *grepSearcher) binaryMatches(name string) {
 }
 
 // printBefore prints the -B context of a selected line.
-func (g *grepSearcher) printBefore(scan *grepScan, lines []string, index int) {
-	for context := max(index-g.settings.before, scan.lastPrinted+1); context < index; context++ {
-		g.printLine(scan, context, lines[context], '-')
+func (g *grepSearcher) printBefore(scan *grepScan) {
+	for _, line := range scan.recent {
+		if line.index > scan.lastPrinted {
+			g.printLine(scan, line.index, line.text, '-')
+		}
 	}
+	scan.recent = scan.recent[:0]
 }
 
 // printSelected prints a selected line, or its matches with -o.

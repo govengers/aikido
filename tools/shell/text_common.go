@@ -2,6 +2,7 @@ package shell
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -136,7 +137,31 @@ type lineReader struct {
 }
 
 func newLineReader(reader io.Reader) *lineReader {
-	return &lineReader{reader: bufio.NewReader(reader)}
+	return &lineReader{reader: bufio.NewReaderSize(reader, 2*binaryProbeBytes)}
+}
+
+// binaryProbeBytes is how much of an input startsBinary looks at, like the
+// first buffer GNU grep checks.
+const binaryProbeBytes = 32 << 10
+
+// startsBinary reports whether the first bytes contain a NUL. It waits for
+// them (or the end of input) without consuming anything.
+func (r *lineReader) startsBinary() bool {
+	start, _ := r.reader.Peek(binaryProbeBytes)
+	return bytes.IndexByte(start, 0) >= 0
+}
+
+// openOperand opens an input for streaming: stdin stays a stream, a file
+// is read from the Storage. Errors are readOperand's.
+func openOperand(ctx context.Context, invocation *Invocation, name string) (io.Reader, error) {
+	if name == "-" || name == "/dev/stdin" {
+		return invocation.Stdin, nil
+	}
+	content, err := readOperand(ctx, invocation, name)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.NewReader(content), nil
 }
 
 // next returns the next line without its "\n" and whether it had one; it

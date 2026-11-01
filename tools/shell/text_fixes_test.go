@@ -3,6 +3,7 @@ package shell
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // reviewCases reproduce the scripts of the review findings on the text
@@ -67,6 +68,18 @@ var reviewCases = []scriptCase{
 
 func TestReviewFixes(t *testing.T) {
 	runScriptCases(t, reviewCases, nil)
+}
+
+// TestStreamingStopsEarly runs commands that know their answer early over
+// an endless producer; the timeout turns a regression into a failure
+// instead of a hang.
+func TestStreamingStopsEarly(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "grep -q", script: `seq 1 1000000000000 | grep -q 1; echo $?`, want: "0\n"},
+		{name: "grep -m", script: `seq 1 1000000000000 | grep -m2 1`, want: "1\n10\n"},
+		{name: "grep -l", script: `seq 1 1000000000000 | grep -l 5`, want: "(standard input)\n"},
+		{name: "grep -m with context", script: `seq 1 1000000000000 | grep -m1 -B1 -A1 5`, want: "4\n5\n6\n"},
+	}, &Options{Timeout: 20 * time.Second})
 }
 
 // TestInputBudget pipes more than maximumInputBytes to commands that hold
