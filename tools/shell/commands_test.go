@@ -128,6 +128,8 @@ func TestUtilityCommandCases(t *testing.T) {
 		{name: "sleep is cancelled by the timeout", files: files, script: "sleep 1m", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
 		// The review's S30: inf and 1e30 overflowed the duration and returned at once.
 		{name: "sleep inf and 1e30 last until the timeout", files: files, script: "sleep 1e30 || sleep inf", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
+		// The sum of saturated durations wrapped negative and returned at once.
+		{name: "sleep inf inf lasts until the timeout", files: files, script: "sleep inf inf", want: "bash: timed out after 50ms; the script was stopped\n", status: 124},
 		{name: "seq stops before int64 wraps (review S30)", files: files, script: "seq 9223372036854775806 9223372036854775807; seq -9223372036854775807 -1 -9223372036854775808", want: "9223372036854775806\n9223372036854775807\n-9223372036854775807\n-9223372036854775808\n"},
 	}, &Options{Commands: []Command{dateCommand(func() time.Time { return time.Unix(0, 0) })}, Timeout: 50 * time.Millisecond})
 }

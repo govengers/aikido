@@ -383,7 +383,9 @@ func runSleep(ctx context.Context, invocation *Invocation) error {
 		if err != nil {
 			return usage(invocation, "sleep", fmt.Errorf("invalid time interval '%s'", argument), errFailed)
 		}
-		total += duration
+		// Each duration saturates at math.MaxInt64; so does their sum, or
+		// `sleep inf inf` would wrap negative and return at once.
+		total += min(duration, math.MaxInt64-total)
 	}
 	timer := time.NewTimer(total)
 	defer timer.Stop()
