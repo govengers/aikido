@@ -640,6 +640,9 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 	switch flag & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) {
 	case os.O_RDONLY:
 		content, err := readFile(ctx, s.files(), resolved)
+		if err == nil && strings.HasSuffix(name, "/") {
+			err = errNotDirectory // "< f/" with f a file
+		}
 		if err != nil {
 			return nil, pathError(prefix, name, err)
 		}
@@ -668,10 +671,9 @@ func (s *session) openForWriting(ctx context.Context, prefix, name, resolved str
 		return nil, pathError(prefix, name, err)
 	}
 	if strings.HasSuffix(name, "/") {
-		// "out/" names a directory: bash cannot open it as a file.
-		if found, err := files.stat(ctx, resolved); err == nil && found.kind == entryFile {
-			return nil, pathError(prefix, name, errNotDirectory)
-		}
+		// "out/" names a directory, which cannot be created as a file:
+		// Linux refuses O_CREAT with a trailing slash with EISDIR, also
+		// when out is a file.
 		return nil, pathError(prefix, name, errIsDirectory)
 	}
 	file := s.newBufferedFile(ctx, prefix+name, interp.HandlerCtx(ctx).Stderr)

@@ -103,7 +103,7 @@ func TestFileCommandCases(t *testing.T) {
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
 				"cp: cannot stat 'a.txt/': Not a directory\ntouch: setting times of 'b/': No such file or directory\n" +
-				"touch: setting times of 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Not a directory\n" +
+				"touch: setting times of 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Is a directory\n" +
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},

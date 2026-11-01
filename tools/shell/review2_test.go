@@ -131,6 +131,17 @@ func TestHiddenTargetsOfLinks(t *testing.T) {
 	}
 }
 
+// TestRedirectTrailingSlash checks Linux's answers for "name/" on a file:
+// creating it is EISDIR (O_CREAT with a trailing slash), reading it ENOTDIR.
+func TestRedirectTrailingSlash(t *testing.T) {
+	shell, _ := newTestShell(t, map[string]string{"a.txt": "a\n"}, nil)
+	result := mustRun(t, shell, "echo x > a.txt/; echo x >> a.txt/; cat < a.txt/; cat a.txt")
+	want := "bash: line 1: a.txt/: Is a directory\nbash: line 1: a.txt/: Is a directory\nbash: line 1: a.txt/: Not a directory\na\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}
+
 // TestRedirectErrorsCarryTheLine checks bash's "bash: line N: " in front of
 // a failed redirect (CI against GNU bash: "bash: line 1: r/: Is a
 // directory"), on the redirect's own line, and that a leading ~ still
