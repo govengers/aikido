@@ -184,6 +184,19 @@ func TestProcessSubstitution(t *testing.T) {
 	}, nil)
 }
 
+// TestTextCommandsSeeCreatedDirectories covers the review's S28: a
+// directory made with mkdir (no file below it) read as a missing file.
+func TestTextCommandsSeeCreatedDirectories(t *testing.T) {
+	shell, _ := newTestShell(t, map[string]string{"full/x": "x\n"}, nil)
+	for _, command := range []string{"head", "wc -l", "sort", "grep x"} {
+		empty := mustRun(t, shell, "mkdir -p empty; "+command+" empty")
+		full := mustRun(t, shell, command+" full")
+		if want := strings.ReplaceAll(full.Output, "full", "empty"); empty.Output != want || empty.ExitCode != full.ExitCode {
+			t.Errorf("%s on a created directory = %q (exit %d), want %q (exit %d)", command, empty.Output, empty.ExitCode, want, full.ExitCode)
+		}
+	}
+}
+
 // TestCatDisplayOptions pins GNU cat's notation; the differential cases
 // over the same files compare it with GNU when a reference is available.
 func TestCatDisplayOptions(t *testing.T) {

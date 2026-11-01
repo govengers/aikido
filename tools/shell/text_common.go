@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"github.com/govengers/aikido/vfs"
 )
 
 // textTool carries what the text commands share for reporting errors the way
@@ -100,44 +98,24 @@ func readOperand(ctx context.Context, invocation *Invocation, name string) ([]by
 	if err != nil {
 		return nil, &operandError{reasonNoSuchFile}
 	}
-	if resolved == "" {
-		return nil, &operandError{reasonIsDirectory}
-	}
 	content, _, err := invocation.Storage.ReadFile(ctx, resolved)
 	switch {
 	case err == nil:
 		return content, nil
-	case errors.Is(err, vfs.ErrFileNotFound), errors.Is(err, vfs.ErrPathInvalid):
-		isDirectory, listError := directoryExists(ctx, invocation.Storage, resolved)
-		if listError != nil {
-			return nil, listError
-		}
-		if isDirectory {
+	case isNotFile(err):
+		// The shell's view decides: directories made with mkdir, the mount
+		// point, and paths outside it.
+		found, statErr := workspaceOf(invocation).stat(ctx, resolved)
+		switch {
+		case statErr != nil:
+			return nil, fmt.Errorf("stat %s: %w", name, statErr)
+		case found.kind == entryDirectory:
 			return nil, &operandError{reasonIsDirectory}
 		}
 		return nil, &operandError{reasonNoSuchFile}
 	default:
 		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
-}
-
-// directoryExists reports whether a workspace path is a directory, that is
-// whether a file lies below it. The root always exists.
-func directoryExists(ctx context.Context, storage vfs.Storage, directory string) (bool, error) {
-	if directory == "" {
-		return true, nil
-	}
-	files, err := storage.ListFiles(ctx)
-	if err != nil {
-		return false, fmt.Errorf("list files: %w", err)
-	}
-	prefix := directory + "/"
-	for _, file := range files {
-		if strings.HasPrefix(file.Path, prefix) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // operandReason is the strerror text for err if it is an *operandError.
