@@ -1,6 +1,9 @@
 package openrouter
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // ProviderPreferences is OpenRouter's provider-routing block
 // (https://openrouter.ai/docs/features/provider-routing), sent as `provider`
@@ -44,9 +47,30 @@ type providerKey struct{}
 // everything built on them: agent runs, voice turns, Transcribe) and Decide
 // calls use preferences instead of the client's Options.Provider. The
 // preferences replace the client's, they are not merged. Nil preferences fall
-// back to the client's.
+// back to the client's. The context keeps a copy: changing preferences
+// afterwards does not affect it.
 func WithProvider(ctx context.Context, preferences *ProviderPreferences) context.Context {
-	return context.WithValue(ctx, providerKey{}, preferences)
+	return context.WithValue(ctx, providerKey{}, preferences.clone())
+}
+
+// clone deep-copies the preferences, so neither a Client nor a context shares
+// mutable state with the caller (DES-001). Nil stays nil.
+func (p *ProviderPreferences) clone() *ProviderPreferences {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	clone.Order = slices.Clone(p.Order)
+	clone.Only = slices.Clone(p.Only)
+	clone.Ignore = slices.Clone(p.Ignore)
+	clone.Quantizations = slices.Clone(p.Quantizations)
+	if p.AllowFallbacks != nil {
+		clone.AllowFallbacks = new(*p.AllowFallbacks)
+	}
+	if p.MaximumPrice != nil {
+		clone.MaximumPrice = new(*p.MaximumPrice)
+	}
+	return &clone
 }
 
 // providerPreferences resolves the routing block for one call: the context

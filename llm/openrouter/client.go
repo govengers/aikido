@@ -63,7 +63,7 @@ type Options struct {
 	XTitle string
 
 	// Provider is the default provider-routing block for chat calls; a
-	// context from WithProvider overrides it per call.
+	// context from WithProvider overrides it per call. NewClient keeps a copy.
 	Provider *ProviderPreferences
 
 	// ProviderOrder is shorthand for Provider when only the order matters:
@@ -113,7 +113,7 @@ func NewClient(options *Options) (*Client, error) {
 		httpClient:        options.HTTPClient,
 		httpReferer:       options.HTTPReferer,
 		xTitle:            options.XTitle,
-		provider:          options.Provider,
+		provider:          options.Provider.clone(),
 		maximumAttempts:   options.MaximumAttempts,
 		videoPollInterval: options.VideoPollInterval,
 	}
