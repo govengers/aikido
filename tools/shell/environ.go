@@ -14,15 +14,22 @@ const noHostTempDirectory = "/\x00aikido-no-host-temp-dir"
 
 // interpreterEnviron is the environment an interpreter starts with. While
 // the interpreter resets (it reads TMPDIR once, then), TMPDIR is
-// noHostTempDirectory; afterwards the script sees its own variables.
+// noHostTempDirectory; afterwards the script sees its own variables. A
+// missing HOME is an empty, unexported variable, as in bash started without
+// one (env -i bash): unset, the interpreter would fill in the host user's
+// home directory.
 type interpreterEnviron struct {
 	expand.Environ
 	resetting bool
 }
 
 func (e *interpreterEnviron) Get(name string) expand.Variable {
-	if e.resetting && name == "TMPDIR" {
+	switch variable := e.Environ.Get(name); {
+	case e.resetting && name == "TMPDIR":
 		return expand.Variable{Set: true, Exported: true, Kind: expand.String, Str: noHostTempDirectory}
+	case name == "HOME" && !variable.IsSet():
+		return expand.Variable{Set: true, Kind: expand.String}
+	default:
+		return variable
 	}
-	return e.Environ.Get(name)
 }

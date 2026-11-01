@@ -184,6 +184,17 @@ func TestHideHiddenPaths(t *testing.T) {
 	}
 }
 
+// TestNestedShellWithoutHomeHidesTheHostHome replays the review's S7: env -i
+// bash started an interpreter without HOME, which filled in the host
+// user's home directory.
+func TestNestedShellWithoutHomeHidesTheHostHome(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, `env -i bash -c 'echo "[$HOME]"; env'; env -u HOME bash -c 'cd; pwd'; echo "$HOME"`)
+	if result.Output != "[]\nbash: line 1: cd: HOME not set\n/\n/\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
 // TestLookupsDoNotProbeTheHost replays the review's S6 and S20: builtin
 // wrappers skipped the pwd -P rewrite (host symlinks), and command -v, type
 // and type -P searched the host PATH or stat'ed host paths.

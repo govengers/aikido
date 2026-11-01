@@ -392,6 +392,9 @@ func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.Han
 	if len(arguments) > 2 {
 		return []string{internalFailure, prefix + "too many arguments", "1"}
 	}
+	if len(arguments) < 2 && handler.Env.Get("HOME").String() == "" {
+		return []string{internalFailure, prefix + "HOME not set", "1"}
+	}
 	if len(arguments) < 2 || arguments[1] == "-" || arguments[1] == "" {
 		return arguments
 	}
