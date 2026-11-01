@@ -71,7 +71,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 | `basename` | `NAME [SUFFIX]`, `-a`, `-s SUFFIX` |
 | `dirname` | several names |
 | `realpath` | prints `/`-rooted workspace paths; `-e`, `-m`, `-s`, `--relative-to=DIR` |
-| `xargs` | `-0 -d DELIM -n N -L N -I REPLACE -r -t`; `-P` is accepted and runs one command at a time. Quotes and backslashes in input like GNU; statuses 123, 124, 126, 127 |
+| `xargs` | `-0 -d DELIM -n N -L N -I REPLACE -r -t`; `-P` is accepted and runs one command at a time. Quotes and backslashes in input like GNU (with `-I` too, where a line is one item and keeps its blanks); statuses 123 (a command failed, also with its own 126 or 127), 124, and 126 or 127 when xargs cannot start the command |
 | `env` | prints the exported variables sorted; `-i`, `-u NAME`, `NAME=value... command args` |
 | `which` | names of registered commands and shell builtins (the name, not a path); `-a` |
 | `seq` | `[FIRST [STEP]] LAST`, `-s SEP`, `-w`; integers only (a decimal argument is refused) |

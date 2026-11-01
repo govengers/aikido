@@ -152,7 +152,7 @@ func TestSplitQuoted(t *testing.T) {
 		{"\"open\n", nil, true},
 	}
 	for _, testCase := range testCases {
-		got, err := splitQuoted(testCase.line)
+		got, err := splitQuoted(testCase.line, true)
 		if (err != nil) != testCase.wantError || !slices.Equal(got, testCase.want) {
 			t.Errorf("splitQuoted(%q) = %q, %v; want %q, error %v", testCase.line, got, err, testCase.want, testCase.wantError)
 		}

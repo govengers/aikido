@@ -125,11 +125,15 @@ func (p xargsPlan) split(input string) ([][]string, error) {
 		}
 		return eachAlone(items), nil
 	case p.replace != "":
+		// One item per line: blanks inside it are kept, quotes and
+		// backslashes are processed as without -I.
 		lines := []string{}
 		for line := range strings.Lines(input) {
-			if item := strings.TrimLeft(strings.TrimSuffix(line, "\n"), " \t"); item != "" {
-				lines = append(lines, item)
+			items, err := splitQuoted(strings.TrimLeft(line, " \t"), false)
+			if err != nil {
+				return nil, err
 			}
+			lines = append(lines, items...)
 		}
 		return eachAlone(lines), nil
 	}
@@ -157,7 +161,7 @@ func eachAlone(items []string) [][]string {
 func quotedLines(input string) ([][]string, error) {
 	lines := [][]string{}
 	for line := range strings.Lines(input) {
-		items, err := splitQuoted(line)
+		items, err := splitQuoted(line, true)
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +174,7 @@ func quotedLines(input string) ([][]string, error) {
 
 // splitQuoted splits one input line on blanks, honouring '...', "..." and
 // backslash escapes like GNU xargs.
-func splitQuoted(line string) ([]string, error) {
+func splitQuoted(line string, splitBlanks bool) ([]string, error) {
 	items := []string{}
 	var current strings.Builder
 	inItem := false
@@ -192,7 +196,7 @@ func splitQuoted(line string) ([]string, error) {
 			escaped, inItem = true, true
 		case character == '\'' || character == '"':
 			quote, inItem = character, true
-		case character == ' ' || character == '\t' || character == '\n':
+		case (character == ' ' || character == '\t') && splitBlanks || character == '\n':
 			if inItem {
 				items = append(items, current.String())
 				current.Reset()
@@ -232,11 +236,14 @@ func (p xargsPlan) run(ctx context.Context, invocation *Invocation, groups [][]s
 		if p.trace {
 			fmt.Fprintln(invocation.Stderr, strings.Join(line, " "))
 		}
+		known := invocation.session != nil && invocation.session.known(line[0])
 		status := runSubcommand(ctx, invocation, "xargs", line, emptyInput())
 		switch {
 		case ctx.Err() != nil:
 			return ctx.Err()
-		case status == statusNotFound || status == statusCannotExecute:
+		case !known:
+			// xargs could not start the command; a command's own 126 or 127
+			// is an ordinary failure below.
 			return ExitError(status)
 		case status == 255:
 			complain(invocation, "xargs", "%s: exited with status 255; aborting", line[0])

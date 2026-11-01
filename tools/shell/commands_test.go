@@ -100,6 +100,15 @@ func TestUtilityCommandCases(t *testing.T) {
 		{name: "env runs builtins", files: files, script: "env X=1 printf '%s\\n' hi", want: "hi\n"},
 		{name: "xargs -t and -P", files: files, script: "echo a b | xargs -t -P 4 echo", want: "echo a b\na b\n"},
 		{name: "xargs status 255 stops", files: files, script: "printf 'a\\nb\\n' | xargs -n1 sh -c 'echo $1; exit 255' sh; echo $?", want: "a\nxargs: sh: exited with status 255; aborting\n124\n"},
+		{
+			name: "xargs: a command's own 127 does not abort (review S27)", files: files,
+			script: "printf 'a\\nb\\n' | xargs -n1 sh -c 'echo $1; exit 127' sh; echo $?; echo a | xargs nosuch; echo $?",
+			want:   "a\nb\n123\nxargs: nosuch: No such file or directory\n127\n",
+		},
+		{
+			name: "xargs -I processes quotes and keeps blanks (review T10)", files: files,
+			script: `printf "  a b\n'c d'\nx\\\\ y\n\n" | xargs -I{} echo "[{}]"`, want: "[a b]\n[c d]\n[x y]\n",
+		},
 		{name: "xargs -d", files: files, script: "printf 'a,b,c' | xargs -d , -n 2 echo", want: "a b\nc\n"},
 		{name: "xargs bad options", files: files, script: "xargs -n 0 echo; xargs -d ab echo; echo \"'a\" | xargs echo; xargs --bogus", want: "xargs: value 0 for -n option should be >= 1\nxargs: invalid input delimiter specification ab: the delimiter must be a single character\nxargs: unmatched single quote; by default quotes are special to xargs unless you use the -0 option\nxargs: unrecognized option '--bogus'\nTry 'xargs --help' for more information.\n", status: 1},
 		{name: "date conversions", files: files, script: "date +%%%n%t%Z%z%:z%h%c; date +%Q", want: "%\n\tUTC+0000+00:00JanThu Jan  1 00:00:00 1970\ndate: the format conversion %Q is not supported\n", status: 1},
