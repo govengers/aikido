@@ -268,11 +268,12 @@ func (r *grepResult) content(mode grepMode) map[string]any {
 }
 
 // matchingLines returns the indexes of the lines pattern matches, and per
-// line whether it matched.
+// line whether it matched. A line is matched without its terminator, so `$`
+// anchors at the end of every line.
 func matchingLines(pattern *regexp.Regexp, lines []string) (hits []int, isHit []bool) {
 	isHit = make([]bool, len(lines))
 	for lineIndex, line := range lines {
-		if pattern.MatchString(line) {
+		if pattern.MatchString(strings.TrimRight(line, "\r\n")) {
 			hits = append(hits, lineIndex)
 			isHit[lineIndex] = true
 		}

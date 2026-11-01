@@ -97,6 +97,26 @@ func TestGrep_ContentContextAndPolicy(t *testing.T) {
 	}
 }
 
+func TestGrep_EndAnchorMatchesBeforeLineTerminator(t *testing.T) {
+	options := seeded(t, VFSToolOptions{}, map[string]string{
+		"a.md": "TODO:\nTODO: later\n\r\nend\r\n",
+	})
+	registry := newRegistryWithVFS(t, options)
+	for _, testCase := range []struct{ pattern, want string }{
+		{`TODO:$`, "a.md:1:TODO:"},
+		{`^\s*$`, "a.md:3:"},
+		{`^end$`, "a.md:4:end"},
+	} {
+		result, err := dispatch(t, registry, "grep", fmt.Sprintf(`{"pattern":%q}`, testCase.pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(result.Content.(map[string]any)["matches"].([]string), "|"); got != testCase.want {
+			t.Errorf("grep %s = %q; want %q", testCase.pattern, got, testCase.want)
+		}
+	}
+}
+
 func TestGrep_ModesAndCaps(t *testing.T) {
 	var many strings.Builder
 	for line := range grepMaximumLines + 10 {
