@@ -54,13 +54,13 @@ func (c *diffComparison) compare(aLow, aHigh, bLow, bHigh int) {
 		c.markChanged(aLow, aHigh, bLow, bHigh)
 		return
 	}
-	x, y, ok := c.middleSnake(aLow, aHigh, bLow, bHigh)
-	if !ok || (x == aLow && y == bLow) || (x == aHigh && y == bHigh) {
+	splitOld, splitNew, ok := c.middleSnake(aLow, aHigh, bLow, bHigh)
+	if !ok || (splitOld == aLow && splitNew == bLow) || (splitOld == aHigh && splitNew == bHigh) {
 		c.markChanged(aLow, aHigh, bLow, bHigh)
 		return
 	}
-	c.compare(aLow, x, bLow, y)
-	c.compare(x, aHigh, y, bHigh)
+	c.compare(aLow, splitOld, bLow, splitNew)
+	c.compare(splitOld, aHigh, splitNew, bHigh)
 }
 
 func (c *diffComparison) markChanged(aLow, aHigh, bLow, bHigh int) {
@@ -75,48 +75,84 @@ func (c *diffComparison) markChanged(aLow, aHigh, bLow, bHigh int) {
 // middleSnake finds a point on an optimal edit path between the two ranges
 // by searching from both ends until the paths meet.
 func (c *diffComparison) middleSnake(aLow, aHigh, bLow, bHigh int) (int, int, bool) {
-	n, m := aHigh-aLow, bHigh-bLow
-	maximum := (n + m + 1) / 2
-	offset := maximum + 1
-	forward := make([]int, 2*offset+1)
-	backward := make([]int, 2*offset+1)
-	for index := range forward {
-		forward[index], backward[index] = -1, -1
+	oldLength, newLength := aHigh-aLow, bHigh-bLow
+	maximum := (oldLength + newLength + 1) / 2
+	search := &snakeSearch{
+		comparison: c, aLow: aLow, aHigh: aHigh, bLow: bLow, bHigh: bHigh,
+		oldLength: oldLength, newLength: newLength, offset: maximum + 1, delta: oldLength - newLength,
+		forward: make([]int, 2*maximum+3), backward: make([]int, 2*maximum+3),
 	}
-	forward[offset+1], backward[offset+1] = 0, 0
-	delta := n - m
-	odd := delta%2 != 0
+	for index := range search.forward {
+		search.forward[index], search.backward[index] = -1, -1
+	}
+	search.forward[search.offset+1], search.backward[search.offset+1] = 0, 0
 	for depth := 0; depth <= maximum; depth++ {
-		for diagonal := -depth; diagonal <= depth; diagonal += 2 {
-			x := c.advance(forward, offset, diagonal, depth)
-			y := x - diagonal
-			for x < n && y >= 0 && y < m && c.a[aLow+x] == c.b[bLow+y] {
-				x++
-				y++
-			}
-			forward[offset+diagonal] = x
-			if other := offset + delta - diagonal; odd && x <= n && y <= m && other >= 0 && other < len(backward) && backward[other] >= 0 && x+backward[other] >= n {
-				return aLow + x, bLow + y, true
-			}
+		if splitOld, splitNew, found := search.step(depth, true); found {
+			return splitOld, splitNew, true
 		}
-		for diagonal := -depth; diagonal <= depth; diagonal += 2 {
-			x := c.advance(backward, offset, diagonal, depth)
-			y := x - diagonal
-			for x < n && y >= 0 && y < m && c.a[aHigh-x-1] == c.b[bHigh-y-1] {
-				x++
-				y++
-			}
-			backward[offset+diagonal] = x
-			if other := offset + delta - diagonal; !odd && x <= n && y <= m && other >= 0 && other < len(forward) && forward[other] >= 0 && forward[other]+x >= n {
-				return aHigh - x, bHigh - y, true
-			}
+		if splitOld, splitNew, found := search.step(depth, false); found {
+			return splitOld, splitNew, true
 		}
 	}
 	return 0, 0, false
 }
 
+// snakeSearch is the state of one middle-snake search: the furthest
+// reaching old-file positions per diagonal, from the start and from the end.
+type snakeSearch struct {
+	comparison               *diffComparison
+	aLow, aHigh, bLow, bHigh int
+	oldLength, newLength     int
+	offset, delta            int
+	forward, backward        []int
+}
+
+// step extends every diagonal of depth in one direction and returns the
+// split point once the two searches overlap.
+func (s *snakeSearch) step(depth int, forwards bool) (int, int, bool) {
+	furthest, opposite := s.forward, s.backward
+	if !forwards {
+		furthest, opposite = s.backward, s.forward
+	}
+	checks := (s.delta%2 != 0) == forwards
+	for diagonal := -depth; diagonal <= depth; diagonal += 2 {
+		oldPosition := advance(furthest, s.offset, diagonal, depth)
+		newPosition := oldPosition - diagonal
+		for oldPosition < s.oldLength && newPosition >= 0 && newPosition < s.newLength && s.equal(oldPosition, newPosition, forwards) {
+			oldPosition++
+			newPosition++
+		}
+		furthest[s.offset+diagonal] = oldPosition
+		if !checks || !s.overlaps(opposite, diagonal, oldPosition, newPosition) {
+			continue
+		}
+		if forwards {
+			return s.aLow + oldPosition, s.bLow + newPosition, true
+		}
+		return s.aHigh - oldPosition, s.bHigh - newPosition, true
+	}
+	return 0, 0, false
+}
+
+// equal compares the lines at the positions, counted from the end when the
+// search runs backwards.
+func (s *snakeSearch) equal(oldPosition, newPosition int, forwards bool) bool {
+	if forwards {
+		return s.comparison.a[s.aLow+oldPosition] == s.comparison.b[s.bLow+newPosition]
+	}
+	return s.comparison.a[s.aHigh-oldPosition-1] == s.comparison.b[s.bHigh-newPosition-1]
+}
+
+// overlaps reports whether a path end meets the opposite search's path on
+// the corresponding diagonal.
+func (s *snakeSearch) overlaps(opposite []int, diagonal, oldPosition, newPosition int) bool {
+	other := s.offset + s.delta - diagonal
+	return oldPosition <= s.oldLength && newPosition <= s.newLength && other >= 0 && other < len(opposite) &&
+		opposite[other] >= 0 && oldPosition+opposite[other] >= s.oldLength
+}
+
 // advance picks the furthest reaching start on a diagonal for depth.
-func (c *diffComparison) advance(furthest []int, offset, diagonal, depth int) int {
+func advance(furthest []int, offset, diagonal, depth int) int {
 	if diagonal == -depth || (diagonal != depth && furthest[offset+diagonal-1] < furthest[offset+diagonal+1]) {
 		return max(furthest[offset+diagonal+1], 0)
 	}
@@ -140,23 +176,7 @@ func shiftBoundaries(lines []int, changed, otherChanged []bool) {
 		for run.end < len(lines) && changed[run.end] {
 			run.end++
 		}
-		var aligned int
-		for {
-			size := run.end - run.start
-			run.slideUp()
-			aligned = -1
-			if otherGaps[run.unchangedBefore] {
-				aligned = run.end
-			}
-			for run.slideDown() {
-				if otherGaps[run.unchangedBefore] {
-					aligned = run.end
-				}
-			}
-			if run.end-run.start == size {
-				break
-			}
-		}
+		aligned := run.settle(otherGaps)
 		for aligned >= 0 && run.end > aligned {
 			run.moveUp()
 		}
@@ -171,6 +191,27 @@ type changeRun struct {
 	changed         []bool
 	start, end      int
 	unchangedBefore int
+}
+
+// settle slides the run up and down until it stops growing and returns the
+// lowest end at which it lines up with a change in the other file, or -1.
+func (r *changeRun) settle(otherGaps []bool) int {
+	for {
+		size := r.end - r.start
+		r.slideUp()
+		aligned := -1
+		if otherGaps[r.unchangedBefore] {
+			aligned = r.end
+		}
+		for r.slideDown() {
+			if otherGaps[r.unchangedBefore] {
+				aligned = r.end
+			}
+		}
+		if r.end-r.start == size {
+			return aligned
+		}
+	}
 }
 
 // moveUp shifts the run up by one line.
@@ -225,21 +266,21 @@ func changedGaps(changed []bool) []bool {
 // collectHunks pairs the runs of changed lines of both files.
 func collectHunks(changedA, changedB []bool) []diffHunk {
 	var hunks []diffHunk
-	a, b := 0, 0
-	for a < len(changedA) || b < len(changedB) {
-		if a < len(changedA) && b < len(changedB) && !changedA[a] && !changedB[b] {
-			a++
-			b++
+	oldIndex, newIndex := 0, 0
+	for oldIndex < len(changedA) || newIndex < len(changedB) {
+		if oldIndex < len(changedA) && newIndex < len(changedB) && !changedA[oldIndex] && !changedB[newIndex] {
+			oldIndex++
+			newIndex++
 			continue
 		}
-		hunk := diffHunk{aStart: a, bStart: b}
-		for a < len(changedA) && changedA[a] {
-			a++
+		hunk := diffHunk{aStart: oldIndex, bStart: newIndex}
+		for oldIndex < len(changedA) && changedA[oldIndex] {
+			oldIndex++
 		}
-		for b < len(changedB) && changedB[b] {
-			b++
+		for newIndex < len(changedB) && changedB[newIndex] {
+			newIndex++
 		}
-		hunk.aEnd, hunk.bEnd = a, b
+		hunk.aEnd, hunk.bEnd = oldIndex, newIndex
 		hunks = append(hunks, hunk)
 	}
 	return hunks

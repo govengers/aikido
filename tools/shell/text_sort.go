@@ -180,27 +180,35 @@ func parseSortKey(definition string) (sortKey, string) {
 	}
 	rest = key.ordering.parseLetters(rest, true)
 	if strings.HasPrefix(rest, ",") {
-		field, after, ok := leadingNumber(rest[1:])
-		if !ok {
-			return sortKey{}, fmt.Sprintf("invalid number after ',': invalid count at start of '%s'", rest[1:])
+		var message string
+		if rest, message = key.parseEnd(rest[1:], definition); message != "" {
+			return sortKey{}, message
 		}
-		if field == 0 {
-			return invalid("field number is zero")
-		}
-		key.endField, rest = field-1, after
-		if strings.HasPrefix(rest, ".") {
-			character, after, ok := leadingNumber(rest[1:])
-			if !ok {
-				return sortKey{}, fmt.Sprintf("invalid number after '.': invalid count at start of '%s'", rest[1:])
-			}
-			key.endCharacter, rest = character, after
-		}
-		rest = key.ordering.parseLetters(rest, false)
 	}
 	if rest != "" {
 		return invalid("stray character in field spec")
 	}
 	return key, ""
+}
+
+// parseEnd reads the F[.C][OPTS] after a key's comma and returns the rest.
+func (k *sortKey) parseEnd(text, definition string) (string, string) {
+	field, rest, ok := leadingNumber(text)
+	if !ok {
+		return "", fmt.Sprintf("invalid number after ',': invalid count at start of '%s'", text)
+	}
+	if field == 0 {
+		return "", fmt.Sprintf("field number is zero: invalid field specification '%s'", definition)
+	}
+	k.endField = field - 1
+	if strings.HasPrefix(rest, ".") {
+		character, after, ok := leadingNumber(rest[1:])
+		if !ok {
+			return "", fmt.Sprintf("invalid number after '.': invalid count at start of '%s'", rest[1:])
+		}
+		k.endCharacter, rest = character, after
+	}
+	return k.ordering.parseLetters(rest, false), ""
 }
 
 // parseLetters consumes the ordering letters b f n r; start says whether a
@@ -324,16 +332,13 @@ func (s *sortSettings) extract(line string, key sortKey) string {
 func (s *sortSettings) fieldStart(line string, field int) int {
 	position := 0
 	for ; position < len(line) && field > 0; field-- {
-		if s.separator >= 0 {
-			for position < len(line) && int(line[position]) != s.separator {
-				position++
-			}
-			if position < len(line) {
-				position++
-			}
+		if s.separator < 0 {
+			position = skipBlankThenWord(line, position)
 			continue
 		}
-		position = skipBlankThenWord(line, position)
+		if position = s.skipToSeparator(line, position); position < len(line) {
+			position++
+		}
 	}
 	return position
 }
@@ -346,16 +351,14 @@ func (s *sortSettings) fieldLimit(line string, key sortKey) int {
 	}
 	position := 0
 	for ; position < len(line) && field > 0; field-- {
-		if s.separator >= 0 {
-			for position < len(line) && int(line[position]) != s.separator {
-				position++
-			}
-			if position < len(line) && (field > 1 || character != 0) {
-				position++
-			}
+		if s.separator < 0 {
+			position = skipBlankThenWord(line, position)
 			continue
 		}
-		position = skipBlankThenWord(line, position)
+		position = s.skipToSeparator(line, position)
+		if position < len(line) && (field > 1 || character != 0) {
+			position++
+		}
 	}
 	if character != 0 {
 		if key.ordering.blanksAtEnd {
@@ -364,6 +367,14 @@ func (s *sortSettings) fieldLimit(line string, key sortKey) int {
 			}
 		}
 		position = min(len(line), position+character)
+	}
+	return position
+}
+
+// skipToSeparator advances to the next -t separator or the end.
+func (s *sortSettings) skipToSeparator(line string, position int) int {
+	for position < len(line) && int(line[position]) != s.separator {
+		position++
 	}
 	return position
 }

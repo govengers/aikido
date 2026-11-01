@@ -132,12 +132,12 @@ func longestCommonSubsequence(left, right []string) int {
 	for index := range table {
 		table[index] = make([]int, len(right)+1)
 	}
-	for i := len(left) - 1; i >= 0; i-- {
-		for j := len(right) - 1; j >= 0; j-- {
-			if left[i] == right[j] {
-				table[i][j] = table[i+1][j+1] + 1
+	for row := len(left) - 1; row >= 0; row-- {
+		for column := len(right) - 1; column >= 0; column-- {
+			if left[row] == right[column] {
+				table[row][column] = table[row+1][column+1] + 1
 			} else {
-				table[i][j] = max(table[i+1][j], table[i][j+1])
+				table[row][column] = max(table[row+1][column], table[row][column+1])
 			}
 		}
 	}

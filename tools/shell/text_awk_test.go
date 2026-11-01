@@ -29,6 +29,10 @@ var awkCases = []textCase{
 		name: "awk redirect to file", files: awkFiles, script: "awk '{print $1 > \"names.txt\"}' t.txt",
 		wantFiles: map[string]string{"names.txt": "alice\nbob\ncarol\n"},
 	},
+	{
+		name: "awk append to file", files: awkFiles, script: "awk 'NR == 1 {print $1 >> \"c.csv\"}' t.txt",
+		wantFiles: map[string]string{"c.csv": "a,1\nb,2\nalice\n"},
+	},
 	{name: "awk getline from file", files: awkFiles, script: "awk 'BEGIN {while ((getline line < \"c.csv\") > 0) print \"got \" line}'", stdout: "got a,1\ngot b,2\n"},
 	{name: "awk ENVIRON", script: "awk 'BEGIN {print ENVIRON[\"NOPE\"] \"|\"}'", stdout: "|\n"},
 	{

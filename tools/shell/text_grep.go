@@ -460,7 +460,7 @@ func (g *grepSearcher) searchAll(ctx context.Context, operands []string) (ExitEr
 		}
 	}
 	switch {
-	case failed && !(g.settings.quiet && selected):
+	case failed && (!g.settings.quiet || !selected):
 		return 2, nil
 	case selected:
 		return 0, nil
@@ -472,41 +472,48 @@ func (g *grepSearcher) searchAll(ctx context.Context, operands []string) (ExitEr
 // -r; failed reports an operand that could not be used.
 func (g *grepSearcher) collectInputs(ctx context.Context, operands []string) ([]grepInput, bool, error) {
 	implicit := len(operands) == 0 && g.settings.recursive
-	if len(operands) == 0 {
+	switch {
+	case implicit:
+		operands = []string{"."}
+	case len(operands) == 0:
 		operands = []string{"-"}
-		if implicit {
-			operands = []string{"."}
-		}
 	}
 	var inputs []grepInput
-	failed := false
-	directories := 0
+	failed, directories := false, 0
 	for _, operand := range operands {
-		if operand == "-" {
-			inputs = append(inputs, grepInput{name: "(standard input)", stdin: true})
-			continue
-		}
-		expanded, isDirectory, err := g.expandOperand(ctx, operand, implicit)
+		expanded, isDirectory, err := g.operandInputs(ctx, operand, implicit)
 		if err != nil {
 			return nil, false, err
 		}
 		if isDirectory {
 			directories++
-		}
-		if expanded == nil && !isDirectory {
-			if !g.excluded(operand) {
-				inputs = append(inputs, grepInput{name: operand, path: operand})
-			}
-			continue
-		}
-		if isDirectory && !g.settings.recursive {
-			g.complain("%s: %s", operand, reasonIsDirectory)
-			failed = true
+			failed = failed || !g.settings.recursive
 		}
 		inputs = append(inputs, expanded...)
 	}
 	g.withFilename = g.settings.filenames == 1 || (g.settings.filenames == 0 && (len(operands) > 1 || directories > 0))
 	return inputs, failed, nil
+}
+
+// operandInputs is the input list of one operand: stdin, the file, or with
+// -r the files below a directory (without -r a directory is reported).
+func (g *grepSearcher) operandInputs(ctx context.Context, operand string, implicit bool) ([]grepInput, bool, error) {
+	if operand == "-" {
+		return []grepInput{{name: "(standard input)", stdin: true}}, false, nil
+	}
+	expanded, isDirectory, err := g.expandOperand(ctx, operand, implicit)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case isDirectory && !g.settings.recursive:
+		g.complain("%s: %s", operand, reasonIsDirectory)
+		return nil, true, nil
+	case isDirectory:
+		return expanded, true, nil
+	case g.excluded(operand):
+		return nil, false, nil
+	}
+	return []grepInput{{name: operand, path: operand}}, false, nil
 }
 
 // expandOperand lists the files below a directory operand for -r; it
@@ -606,47 +613,59 @@ func (g *grepSearcher) searchInput(ctx context.Context, input grepInput) (bool, 
 	return g.searchLines(input.name, lines, binary), false, nil
 }
 
+// grepScan is the state of searching one file.
+type grepScan struct {
+	name string
+	// printLines is false in -c, -l, -L and -q modes and for binary files.
+	printLines     bool
+	selected       int
+	lastPrinted    int
+	afterRemaining int
+}
+
 // searchLines prints the selected lines of one file in the chosen mode and
 // reports whether any line was selected.
 func (g *grepSearcher) searchLines(name string, lines []string, binary bool) bool {
 	settings := g.settings
-	printLines := !settings.quiet && !settings.count && settings.listing == listNone
-	selectedCount := 0
-	lastPrinted := -1
-	afterRemaining := 0
+	printsLines := !settings.quiet && !settings.count && settings.listing == listNone
+	scan := &grepScan{name: name, printLines: printsLines && !binary, lastPrinted: -1}
 	for index, text := range lines {
-		if settings.maximum >= 0 && selectedCount >= settings.maximum {
-			if printLines && !binary && afterRemaining > 0 {
-				g.printLine(name, index, text, '-', &lastPrinted)
-				afterRemaining--
-				continue
-			}
-			break
-		}
-		if g.matcher.matches(text) == settings.invert {
-			if printLines && !binary && afterRemaining > 0 {
-				g.printLine(name, index, text, '-', &lastPrinted)
-				afterRemaining--
+		if settings.maximum >= 0 && scan.selected >= settings.maximum {
+			if !g.trailingContext(scan, index, text) {
+				break
 			}
 			continue
 		}
-		selectedCount++
+		if g.matcher.matches(text) == settings.invert {
+			g.trailingContext(scan, index, text)
+			continue
+		}
+		scan.selected++
 		if settings.quiet || settings.listing != listNone && !settings.count {
 			break
 		}
-		if !printLines {
-			continue
-		}
-		if binary {
+		if binary && printsLines {
 			g.binaryMatches(name)
 			break
 		}
-		g.printBefore(name, lines, index, &lastPrinted)
-		g.printSelected(name, index, text, &lastPrinted)
-		afterRemaining = settings.after
+		if scan.printLines {
+			g.printBefore(scan, lines, index)
+			g.printSelected(scan, index, text)
+			scan.afterRemaining = settings.after
+		}
 	}
-	g.printSummary(name, selectedCount)
-	return selectedCount > 0
+	g.printSummary(name, scan.selected)
+	return scan.selected > 0
+}
+
+// trailingContext prints a line of -A context if one is due.
+func (g *grepSearcher) trailingContext(scan *grepScan, index int, text string) bool {
+	if !scan.printLines || scan.afterRemaining == 0 {
+		return false
+	}
+	g.printLine(scan, index, text, '-')
+	scan.afterRemaining--
+	return true
 }
 
 // binaryMatches reports a match in a binary file on stderr, after the lines
@@ -658,44 +677,46 @@ func (g *grepSearcher) binaryMatches(name string) {
 }
 
 // printBefore prints the -B context of a selected line.
-func (g *grepSearcher) printBefore(name string, lines []string, index int, lastPrinted *int) {
-	for context := max(index-g.settings.before, *lastPrinted+1); context < index; context++ {
-		g.printLine(name, context, lines[context], '-', lastPrinted)
+func (g *grepSearcher) printBefore(scan *grepScan, lines []string, index int) {
+	for context := max(index-g.settings.before, scan.lastPrinted+1); context < index; context++ {
+		g.printLine(scan, context, lines[context], '-')
 	}
 }
 
 // printSelected prints a selected line, or its matches with -o.
-func (g *grepSearcher) printSelected(name string, index int, text string, lastPrinted *int) {
+func (g *grepSearcher) printSelected(scan *grepScan, index int, text string) {
 	if !g.settings.onlyMatches {
-		g.printLine(name, index, text, ':', lastPrinted)
+		g.printLine(scan, index, text, ':')
 		return
 	}
 	if g.settings.invert {
 		return
 	}
 	for _, location := range g.matcher.find(text) {
-		g.printLine(name, index, text[location[0]:location[1]], ':', lastPrinted)
+		g.printLine(scan, index, text[location[0]:location[1]], ':')
 	}
 }
 
 // printLine writes one output line with its prefixes, preceded by "--" when
-// it does not continue the previous group.
-func (g *grepSearcher) printLine(name string, index int, text string, separator byte, lastPrinted *int) {
+// it does not continue the previous group. Write errors surface at Flush.
+func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
+	var line strings.Builder
 	contextual := g.settings.before > 0 || g.settings.after > 0
-	if contextual && g.printedLines && (*lastPrinted < 0 || index > *lastPrinted+1) && !g.settings.onlyMatches {
-		g.output.WriteString("--\n")
+	if contextual && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) && !g.settings.onlyMatches {
+		line.WriteString("--\n")
 	}
 	if g.withFilename {
-		g.output.WriteString(name)
-		g.output.WriteByte(separator)
+		line.WriteString(scan.name)
+		line.WriteByte(separator)
 	}
 	if g.settings.lineNumbers {
-		g.output.WriteString(strconv.Itoa(index + 1))
-		g.output.WriteByte(separator)
+		line.WriteString(strconv.Itoa(index + 1))
+		line.WriteByte(separator)
 	}
-	g.output.WriteString(text)
-	g.output.WriteByte('\n')
-	*lastPrinted = index
+	line.WriteString(text)
+	line.WriteByte('\n')
+	fmt.Fprint(g.output, line.String())
+	scan.lastPrinted = index
 	g.printedLines = true
 }
 

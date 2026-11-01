@@ -247,7 +247,7 @@ func parseTrSet(text string, second bool, firstLength int) ([]byte, string) {
 				return nil, fmt.Sprintf("range-endpoints of '%s-%s' are in reverse collating sequence order", trDisplay(low), trDisplay(high))
 			}
 			for character := int(low); character <= int(high); character++ {
-				set = append(set, byte(character))
+				set = append(set, byte(character&0xff))
 			}
 			index += 2
 		default:
@@ -321,30 +321,32 @@ func trEscape(text string) (byte, int) {
 // parseTrGroup parses [:class:], [=c=] or [c*n] at the start of text;
 // consumed is 0 when the "[" is an ordinary character.
 func parseTrGroup(text string, second bool) (trToken, int, string) {
-	if len(text) >= 4 && text[1] == ':' {
-		end := strings.Index(text[2:], ":]")
-		if end >= 0 {
-			name := text[2 : 2+end]
-			test, ok := trClasses[name]
-			if !ok {
-				return trToken{}, 0, fmt.Sprintf("invalid character class '%s'", name)
-			}
-			if second && name != "upper" && name != "lower" {
-				return trToken{}, 0, "when translating, the only character classes that may appear in\nstring2 are 'upper' and 'lower'"
-			}
-			var expansion []byte
-			for character := range 256 {
-				if test(byte(character)) {
-					expansion = append(expansion, byte(character))
-				}
-			}
-			return trToken{isGroup: true, expansion: expansion}, end + 4, ""
-		}
+	if end := strings.Index(text, ":]"); len(text) >= 4 && text[1] == ':' && end >= 2 {
+		return parseTrClass(text[2:end], second)
 	}
 	if len(text) >= 5 && text[1] == '=' && text[3] == '=' && text[4] == ']' {
 		return trToken{isGroup: true, expansion: []byte{text[2]}}, 5, ""
 	}
 	return parseTrRepeat(text, second)
+}
+
+// parseTrClass expands [:name:]; in the second set only upper and lower
+// may appear.
+func parseTrClass(name string, second bool) (trToken, int, string) {
+	test, ok := trClasses[name]
+	if !ok {
+		return trToken{}, 0, fmt.Sprintf("invalid character class '%s'", name)
+	}
+	if second && name != "upper" && name != "lower" {
+		return trToken{}, 0, "when translating, the only character classes that may appear in\nstring2 are 'upper' and 'lower'"
+	}
+	var expansion []byte
+	for character := range 256 {
+		if test(byte(character)) {
+			expansion = append(expansion, byte(character))
+		}
+	}
+	return trToken{isGroup: true, expansion: expansion}, len(name) + 4, ""
 }
 
 // parseTrRepeat parses [c*n] or [c*] (second set only).

@@ -9,8 +9,7 @@ import (
 // regexOptions selects the POSIX dialect a pattern is written in.
 type regexOptions struct {
 	// extended is ERE (grep -E, sed -E); otherwise BRE with GNU's \+ \? \|.
-	extended   bool
-	ignoreCase bool
+	extended bool
 	// grepQuirks are GNU grep's ERE leniencies sed does not have: an
 	// unmatched ")" and an invalid "{" are ordinary characters, a leading
 	// repetition operator repeats nothing.
@@ -26,17 +25,6 @@ type regexError struct{ message string }
 func (e *regexError) Error() string { return e.message }
 
 var errBackReference = &regexError{"Invalid back reference"}
-
-// compilePOSIX compiles a POSIX BRE or ERE with GNU extensions into a Go
-// regexp with leftmost-longest matching. Go's RE2 has no back-references; a
-// pattern that uses one fails with errBackReference.
-func compilePOSIX(pattern string, options regexOptions) (*regexp.Regexp, error) {
-	translated, err := translatePOSIX(pattern, options)
-	if err != nil {
-		return nil, err
-	}
-	return compileGo(translated, options.ignoreCase, true)
-}
 
 // compileGo compiles Go regexp syntax; "." matches a newline like in POSIX.
 func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error) {
@@ -54,7 +42,9 @@ func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error)
 	return compiled, nil
 }
 
-// posixTranslator rewrites one POSIX pattern into Go syntax.
+// posixTranslator rewrites one POSIX pattern (BRE or ERE with GNU
+// extensions) into Go syntax for compileGo. Go's RE2 has no
+// back-references; a pattern that uses one fails with errBackReference.
 type posixTranslator struct {
 	options regexOptions
 	pattern string

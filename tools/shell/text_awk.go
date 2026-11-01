@@ -90,16 +90,8 @@ func parseAwkArguments(arguments []string) (awkSettings, string) {
 			index++
 			value = arguments[index]
 		}
-		switch flag {
-		case 'F':
-			settings.variables = append(settings.variables, "FS="+awkFieldSeparator(value))
-		case 'v':
-			if !strings.Contains(value, "=") {
-				return settings, fmt.Sprintf("`%s' argument to `-v' not in `var=value' form", value)
-			}
-			settings.variables = append(settings.variables, value)
-		default:
-			settings.programFiles = append(settings.programFiles, value)
+		if message := settings.apply(flag, value); message != "" {
+			return settings, message
 		}
 	}
 	rest := arguments[index:]
@@ -111,6 +103,22 @@ func parseAwkArguments(arguments []string) (awkSettings, string) {
 	}
 	settings.operands = rest
 	return settings, ""
+}
+
+// apply records -F, -v or -f with its value.
+func (s *awkSettings) apply(flag byte, value string) string {
+	switch flag {
+	case 'F':
+		s.variables = append(s.variables, "FS="+awkFieldSeparator(value))
+	case 'v':
+		if !strings.Contains(value, "=") {
+			return fmt.Sprintf("`%s' argument to `-v' not in `var=value' form", value)
+		}
+		s.variables = append(s.variables, value)
+	default:
+		s.programFiles = append(s.programFiles, value)
+	}
+	return ""
 }
 
 // awkFieldSeparator applies POSIX's special case: -F t means a tab.
@@ -162,22 +170,27 @@ func executeAwk(ctx context.Context, invocation *Invocation, settings awkSetting
 	}
 	status, err := interpreter.ExecuteContext(ctx, config)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		var pathError *fs.PathError
-		if errors.As(err, &pathError) {
-			reason := reasonNoSuchFile
-			if errors.Is(err, errAwkDirectory) {
-				reason = reasonIsDirectory
-			}
-			fmt.Fprintf(invocation.Stderr, "awk: fatal: cannot open file `%s' for reading: %s\n", pathError.Path, reason)
-			return ExitError(2)
-		}
+		return reportAwkError(ctx, invocation, err)
+	}
+	return exitStatus(ExitError(status & 0xff))
+}
+
+// reportAwkError reports a run-time error like gawk, with status 2.
+func reportAwkError(ctx context.Context, invocation *Invocation, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	var pathError *fs.PathError
+	if !errors.As(err, &pathError) {
 		fmt.Fprintf(invocation.Stderr, "awk: %v\n", err)
 		return ExitError(2)
 	}
-	return exitStatus(ExitError(status & 0xff)) //nolint:gosec // G115: masked to a process status
+	reason := reasonNoSuchFile
+	if errors.Is(err, errAwkDirectory) {
+		reason = reasonIsDirectory
+	}
+	fmt.Fprintf(invocation.Stderr, "awk: fatal: cannot open file `%s' for reading: %s\n", pathError.Path, reason)
+	return ExitError(2)
 }
 
 var errAwkDirectory = errors.New("is a directory")

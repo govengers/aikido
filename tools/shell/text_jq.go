@@ -77,9 +77,6 @@ func runJq(ctx context.Context, invocation *Invocation) error {
 	if err != nil {
 		return err
 	}
-	if inputs == nil {
-		return ExitError(2)
-	}
 	code, err := compileJq(invocation, settings, query, inputs)
 	if err != nil {
 		fmt.Fprintf(invocation.Stderr, "jq: error: %v\njq: 1 compile error\n", err)
@@ -209,8 +206,8 @@ type jqInputs struct {
 	done       bool
 }
 
-// loadJqInputs reads the files (or stdin); nil means an input could not be
-// read and was reported.
+// loadJqInputs reads the files (or stdin); an unreadable file is reported
+// and yields ExitError 2.
 func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSettings) (*jqInputs, error) {
 	inputs := &jqInputs{raw: settings.rawInput}
 	names := settings.files
@@ -222,7 +219,7 @@ func loadJqInputs(ctx context.Context, invocation *Invocation, settings *jqSetti
 		data, err := readOperand(ctx, invocation, name)
 		if reason, ok := operandReason(err); ok {
 			fmt.Fprintf(invocation.Stderr, "jq: error: Could not open %s: %s\n", name, reason)
-			return nil, nil
+			return nil, ExitError(2)
 		}
 		if err != nil {
 			return nil, err
@@ -341,6 +338,8 @@ type jqRunner struct {
 	output     bytes.Buffer
 	lastOutput jqOutputState
 	status     ExitError
+	// writeError is the first failed write to stdout.
+	writeError error
 }
 
 func (r *jqRunner) run(ctx context.Context) error {
@@ -360,8 +359,8 @@ func (r *jqRunner) run(ctx context.Context) error {
 			}
 		}
 	}
-	if err := r.flush(); err != nil {
-		return err
+	if r.flush(); r.writeError != nil {
+		return r.writeError
 	}
 	return exitStatus(r.finalStatus())
 }
@@ -410,7 +409,7 @@ func (r *jqRunner) report(err error, location string) {
 	}
 	var halted *gojq.HaltError
 	if errors.As(err, &halted) {
-		r.status = ExitError(halted.ExitCode() & 0xff) //nolint:gosec // G115: masked to a process status
+		r.status = ExitError(halted.ExitCode() & 0xff)
 		switch value := halted.Value().(type) {
 		case nil:
 		case string:
@@ -427,8 +426,8 @@ func (r *jqRunner) report(err error, location string) {
 
 // print writes one result in the selected format.
 func (r *jqRunner) print(value any) {
-	switch {
-	case value == nil || value == false:
+	switch value {
+	case nil, false:
 		r.lastOutput = jqFalsy
 	default:
 		r.lastOutput = jqTruthy
@@ -445,12 +444,6 @@ func (r *jqRunner) print(value any) {
 
 // encode writes value as jq does: pretty with the indent, or compact.
 func (r *jqRunner) encode(value any, depth int) {
-	pretty := !r.settings.compact && r.settings.indent != ""
-	newline := func(level int) {
-		if pretty {
-			r.output.WriteString("\n" + strings.Repeat(r.settings.indent, level))
-		}
-	}
 	switch typed := value.(type) {
 	case []any:
 		if len(typed) == 0 {
@@ -459,49 +452,64 @@ func (r *jqRunner) encode(value any, depth int) {
 		}
 		r.output.WriteByte('[')
 		for index, element := range typed {
-			if index > 0 {
-				r.output.WriteByte(',')
-			}
-			newline(depth + 1)
+			r.separate(index, depth+1)
 			r.encode(element, depth+1)
 		}
-		newline(depth)
+		r.newline(depth)
 		r.output.WriteByte(']')
 	case map[string]any:
-		if len(typed) == 0 {
-			r.output.WriteString("{}")
-			return
-		}
-		r.output.WriteByte('{')
-		for index, key := range slices.Sorted(maps.Keys(typed)) {
-			if index > 0 {
-				r.output.WriteByte(',')
-			}
-			newline(depth + 1)
-			encodedKey, _ := gojq.Marshal(key)
-			r.output.Write(encodedKey)
-			r.output.WriteByte(':')
-			if pretty {
-				r.output.WriteByte(' ')
-			}
-			r.encode(typed[key], depth+1)
-		}
-		newline(depth)
-		r.output.WriteByte('}')
+		r.encodeObject(typed, depth)
 	default:
 		encoded, _ := gojq.Marshal(value)
 		r.output.Write(encoded)
 	}
 }
 
-func (r *jqRunner) flush() error {
-	if r.output.Len() == 0 {
-		return nil
+// encodeObject writes an object with its keys sorted, as gojq holds them.
+func (r *jqRunner) encodeObject(object map[string]any, depth int) {
+	if len(object) == 0 {
+		r.output.WriteString("{}")
+		return
 	}
-	_, err := r.invocation.Stdout.Write(r.output.Bytes())
+	r.output.WriteByte('{')
+	for index, key := range slices.Sorted(maps.Keys(object)) {
+		r.separate(index, depth+1)
+		encodedKey, _ := gojq.Marshal(key)
+		r.output.Write(encodedKey)
+		r.output.WriteByte(':')
+		if r.pretty() {
+			r.output.WriteByte(' ')
+		}
+		r.encode(object[key], depth+1)
+	}
+	r.newline(depth)
+	r.output.WriteByte('}')
+}
+
+func (r *jqRunner) pretty() bool { return !r.settings.compact && r.settings.indent != "" }
+
+// separate starts the element at index of a container.
+func (r *jqRunner) separate(index, depth int) {
+	if index > 0 {
+		r.output.WriteByte(',')
+	}
+	r.newline(depth)
+}
+
+// newline breaks the line and indents to depth when pretty-printing.
+func (r *jqRunner) newline(depth int) {
+	if r.pretty() {
+		r.output.WriteString("\n" + strings.Repeat(r.settings.indent, depth))
+	}
+}
+
+// flush writes the buffered results, remembering the first write error.
+func (r *jqRunner) flush() {
+	if r.output.Len() == 0 || r.writeError != nil {
+		return
+	}
+	if _, err := r.invocation.Stdout.Write(r.output.Bytes()); err != nil {
+		r.writeError = fmt.Errorf("write output: %w", err)
+	}
 	r.output.Reset()
-	if err != nil {
-		return fmt.Errorf("write output: %w", err)
-	}
-	return nil
 }

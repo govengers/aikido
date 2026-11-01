@@ -255,7 +255,8 @@ func (d *differ) compareDirectories(ctx context.Context, left, right string) (Ex
 	names := slices.Compact(slices.Sorted(slices.Values(append(slices.Clone(leftNames), rightNames...))))
 	var status ExitError
 	for _, name := range names {
-		entryStatus, err := d.compareChild(ctx, left, right, name, slices.Contains(leftNames, name), slices.Contains(rightNames, name))
+		child := diffChild{name: name, inLeft: slices.Contains(leftNames, name), inRight: slices.Contains(rightNames, name)}
+		entryStatus, err := d.compareChild(ctx, left, right, child)
 		if err != nil {
 			return 0, err
 		}
@@ -264,15 +265,21 @@ func (d *differ) compareDirectories(ctx context.Context, left, right string) (Ex
 	return status, nil
 }
 
+// diffChild is a name found in one or both of two compared directories.
+type diffChild struct {
+	name            string
+	inLeft, inRight bool
+}
+
 // compareChild compares one name of two directories.
-func (d *differ) compareChild(ctx context.Context, left, right, name string, inLeft, inRight bool) (ExitError, error) {
-	leftPath, rightPath := path.Join(left, name), path.Join(right, name)
-	if !d.settings.newFile && (!inLeft || !inRight) {
+func (d *differ) compareChild(ctx context.Context, left, right string, child diffChild) (ExitError, error) {
+	leftPath, rightPath := path.Join(left, child.name), path.Join(right, child.name)
+	if !d.settings.newFile && (!child.inLeft || !child.inRight) {
 		directory := left
-		if !inLeft {
+		if !child.inLeft {
 			directory = right
 		}
-		fmt.Fprintf(&d.output, "Only in %s: %s\n", directory, name)
+		fmt.Fprintf(&d.output, "Only in %s: %s\n", directory, child.name)
 		return 1, nil
 	}
 	leftEntry, err := d.load(ctx, leftPath)
@@ -400,10 +407,10 @@ func (p *diffPrinter) unified(hunks []diffHunk, context int) {
 		aEnd := min(len(p.left), hunks[last].aEnd+context)
 		bEnd := min(len(p.right), hunks[last].bEnd+context)
 		fmt.Fprintf(p.output, "@@ -%s +%s @@\n", unifiedRange(aStart, aEnd), unifiedRange(bStart, bEnd))
-		a := aStart
+		position := aStart
 		for _, hunk := range hunks[first : last+1] {
-			for ; a < hunk.aStart; a++ {
-				p.line(" ", p.left, a, p.leftTerminated)
+			for ; position < hunk.aStart; position++ {
+				p.line(" ", p.left, position, p.leftTerminated)
 			}
 			for index := hunk.aStart; index < hunk.aEnd; index++ {
 				p.line("-", p.left, index, p.leftTerminated)
@@ -411,10 +418,10 @@ func (p *diffPrinter) unified(hunks []diffHunk, context int) {
 			for index := hunk.bStart; index < hunk.bEnd; index++ {
 				p.line("+", p.right, index, p.rightTerminated)
 			}
-			a = hunk.aEnd
+			position = hunk.aEnd
 		}
-		for ; a < aEnd; a++ {
-			p.line(" ", p.left, a, p.leftTerminated)
+		for ; position < aEnd; position++ {
+			p.line(" ", p.left, position, p.leftTerminated)
 		}
 		first = last + 1
 	}

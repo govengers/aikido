@@ -384,3 +384,26 @@ func readTestFile(t *testing.T, path string) string {
 	}
 	return string(content)
 }
+
+// TestTextCommandsHonourCancelledContext checks that every command stops
+// with the context's error instead of running on.
+func TestTextCommandsHonourCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	storage := memory.New()
+	scripts := map[string][]string{
+		"grep": {"x", "a"}, "sed": {"p", "a"}, "head": {"a"}, "tail": {"a"}, "wc": {"a"}, "sort": {"a"},
+		"uniq": {"a"}, "cut": {"-f1", "a"}, "diff": {"a", "b"}, "jq": {".", "a"}, "awk": {"{print}", "a"},
+	}
+	for _, command := range textCommands() {
+		arguments, ok := scripts[command.Name]
+		if !ok {
+			continue
+		}
+		var output bytes.Buffer
+		invocation := &Invocation{Arguments: arguments, Stdin: strings.NewReader(""), Stdout: &output, Stderr: &output, Storage: storage}
+		if err := command.Run(ctx, invocation); !errors.Is(err, context.Canceled) {
+			t.Errorf("%s with a cancelled context = %v (%q), want context.Canceled", command.Name, err, output.String())
+		}
+	}
+}

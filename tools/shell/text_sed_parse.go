@@ -146,6 +146,12 @@ func (p *sedScriptParser) fail(message string) error {
 
 const sedEOF = -1
 
+// charByte is the byte of a character next returned (not sedEOF).
+func charByte(character int) byte { return byte(character & 0xff) }
+
+// errNoAddress says no address starts at the position.
+var errNoAddress = errors.New("no address")
+
 // next consumes one character, sedEOF at the end.
 func (p *sedScriptParser) next() int {
 	if p.position >= len(p.text) {
@@ -198,7 +204,7 @@ func (p *sedScriptParser) parseCommand() (bool, error) {
 	if character == sedEOF || character == '\n' || character == ';' {
 		return false, p.fail("missing command")
 	}
-	command.name = byte(character)
+	command.name = charByte(character)
 	if err := p.parseArguments(&command); err != nil {
 		return false, err
 	}
@@ -209,7 +215,10 @@ func (p *sedScriptParser) parseCommand() (bool, error) {
 // parseAddresses reads addr1[,addr2].
 func (p *sedScriptParser) parseAddresses(command *sedInstruction) error {
 	first, err := p.parseAddress(false)
-	if err != nil || first == nil {
+	if errors.Is(err, errNoAddress) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	command.address1 = first
@@ -225,11 +234,11 @@ func (p *sedScriptParser) parseAddresses(command *sedInstruction) error {
 		p.position++
 	}
 	second, err := p.parseAddress(true)
+	if errors.Is(err, errNoAddress) {
+		return p.fail("unexpected `,'")
+	}
 	if err != nil {
 		return err
-	}
-	if second == nil {
-		return p.fail("unexpected `,'")
 	}
 	if first.kind == addressLine && first.number == 0 && second.kind != addressRegex {
 		return p.fail("invalid usage of line address 0")
@@ -238,13 +247,13 @@ func (p *sedScriptParser) parseAddresses(command *sedInstruction) error {
 	return nil
 }
 
-// parseAddress reads one address, or returns nil when none starts here.
+// parseAddress reads one address; errNoAddress when none starts here.
 func (p *sedScriptParser) parseAddress(second bool) (*sedAddress, error) {
 	character := p.next()
 	switch {
 	case character == sedEOF:
-		return nil, nil
-	case isDigit(byte(character)):
+		return nil, errNoAddress
+	case isDigit(charByte(character)):
 		p.back(character)
 		number := p.readNumber()
 		if p.position < len(p.text) && p.text[p.position] == '~' && !second {
@@ -257,7 +266,7 @@ func (p *sedScriptParser) parseAddress(second bool) (*sedAddress, error) {
 	case second && (character == '+' || character == '~'):
 		if p.position >= len(p.text) || !isDigit(p.text[p.position]) {
 			p.back(character)
-			return nil, nil
+			return nil, errNoAddress
 		}
 		kind := addressRelative
 		if character == '~' {
@@ -268,7 +277,7 @@ func (p *sedScriptParser) parseAddress(second bool) (*sedAddress, error) {
 		return p.parseRegexAddress(character)
 	}
 	p.back(character)
-	return nil, nil
+	return nil, errNoAddress
 }
 
 // parseRegexAddress reads /re/ or \cREc with its I and M flags.
@@ -280,7 +289,7 @@ func (p *sedScriptParser) parseRegexAddress(character int) (*sedAddress, error) 
 			return nil, p.fail("unexpected `,'")
 		}
 	}
-	pattern, ok := p.readDelimited(byte(delimiter), true)
+	pattern, ok := p.readDelimited(charByte(delimiter), true)
 	if !ok {
 		return nil, p.fail("unterminated address regex")
 	}
@@ -331,20 +340,20 @@ func (p *sedScriptParser) readDelimited(delimiter byte, regex bool) (string, boo
 			return "", false
 		case character == '\n' && regex:
 			return "", false
-		case byte(character) == delimiter:
+		case charByte(character) == delimiter:
 			return text.String(), true
 		case character == '\\':
 			escaped := p.next()
 			switch {
 			case escaped == sedEOF:
 				return "", false
-			case byte(escaped) == delimiter:
+			case charByte(escaped) == delimiter:
 				text.WriteByte(delimiter)
 			case escaped == '\n' && !regex:
 				text.WriteString("\\\n")
 			default:
 				text.WriteByte('\\')
-				text.WriteByte(byte(escaped))
+				text.WriteByte(charByte(escaped))
 			}
 		case character == '[' && regex:
 			text.WriteByte('[')
@@ -352,7 +361,7 @@ func (p *sedScriptParser) readDelimited(delimiter byte, regex bool) (string, boo
 				return "", false
 			}
 		default:
-			text.WriteByte(byte(character))
+			text.WriteByte(charByte(character))
 		}
 	}
 }
@@ -484,7 +493,7 @@ func (p *sedScriptParser) readLabel() string {
 	character := p.nextNonBlank()
 	var label strings.Builder
 	for character != sedEOF && character != '\n' && character != ';' && character != ' ' && character != '\t' {
-		label.WriteByte(byte(character))
+		label.WriteByte(charByte(character))
 		character = p.next()
 	}
 	if character == ';' || character == '\n' {
@@ -510,7 +519,7 @@ func (p *sedScriptParser) parseExit(command *sedInstruction) error {
 	}
 	character := p.nextNonBlank()
 	p.back(character)
-	if character != sedEOF && isDigit(byte(character)) {
+	if character != sedEOF && isDigit(charByte(character)) {
 		command.exitCode = p.readNumber()
 	}
 	return p.endOfCommand()
@@ -539,11 +548,11 @@ func (p *sedScriptParser) parseText(command *sedInstruction) error {
 			if character = p.next(); character == sedEOF {
 				break
 			}
-			if control, ok := sedControlEscapes[byte(character)]; ok && character != 'n' {
+			if control, ok := sedControlEscapes[charByte(character)]; ok && character != 'n' {
 				character = int(control)
 			}
 		}
-		text.WriteByte(byte(character))
+		text.WriteByte(charByte(character))
 	}
 	command.text = text.String() + "\n"
 	return nil
@@ -555,11 +564,11 @@ func (p *sedScriptParser) parseSubstitution(command *sedInstruction) error {
 	if delimiter == sedEOF || delimiter == '\n' || delimiter == '\\' {
 		return p.fail("unterminated `s' command")
 	}
-	pattern, ok := p.readDelimited(byte(delimiter), true)
+	pattern, ok := p.readDelimited(charByte(delimiter), true)
 	if !ok {
 		return p.fail("unterminated `s' command")
 	}
-	replacementText, ok := p.readDelimited(byte(delimiter), false)
+	replacementText, ok := p.readDelimited(charByte(delimiter), false)
 	if !ok {
 		return p.fail("unterminated `s' command")
 	}
@@ -584,48 +593,63 @@ func (p *sedScriptParser) parseSubstitution(command *sedInstruction) error {
 	return nil
 }
 
+// substitutionFlags are the s flags that shape the regex.
+type substitutionFlags struct {
+	ignoreCase, multiline, numbered bool
+}
+
 // parseSubstitutionFlags reads g p N i I m M up to the end of the command.
 func (p *sedScriptParser) parseSubstitutionFlags(substitution *sedSubstitution) (bool, bool, error) {
-	ignoreCase, multiline, numbered := false, false, false
+	flags := substitutionFlags{}
 	for {
 		character := p.next()
-		switch {
-		case character == 'i' || character == 'I':
-			ignoreCase = true
-		case character == 'm' || character == 'M':
-			multiline = true
-		case character == 'g':
-			if substitution.global {
-				return false, false, p.fail("multiple `g' options to `s' command")
-			}
-			substitution.global = true
-		case character == 'p':
-			if substitution.print {
-				return false, false, p.fail("multiple `p' options to `s' command")
-			}
-			substitution.print = true
-		case character != sedEOF && isDigit(byte(character)):
-			if numbered {
-				return false, false, p.fail("multiple number options to `s' command")
-			}
+		switch character {
+		case '}', '#':
 			p.back(character)
-			numbered = true
-			if substitution.occurrence = p.readNumber(); substitution.occurrence == 0 {
-				return false, false, p.fail("number option to `s' command may not be zero")
-			}
-		case character == 'e' || character == 'w':
-			return false, false, p.fail(fmt.Sprintf("the `%c' option to `s' is not supported by this sed", character))
-		case character == '}' || character == '#':
-			p.back(character)
-			return ignoreCase, multiline, nil
-		case character == sedEOF || character == '\n' || character == ';':
-			return ignoreCase, multiline, nil
-		case character == ' ' || character == '\t':
-			return ignoreCase, multiline, p.endOfCommand()
-		default:
-			return false, false, p.fail("unknown option to `s'")
+			return flags.ignoreCase, flags.multiline, nil
+		case sedEOF, '\n', ';':
+			return flags.ignoreCase, flags.multiline, nil
+		case ' ', '\t':
+			return flags.ignoreCase, flags.multiline, p.endOfCommand()
+		}
+		if err := p.substitutionFlag(character, substitution, &flags); err != nil {
+			return false, false, err
 		}
 	}
+}
+
+// substitutionFlag applies one s flag letter or number.
+func (p *sedScriptParser) substitutionFlag(character int, substitution *sedSubstitution, flags *substitutionFlags) error {
+	switch {
+	case character == 'i' || character == 'I':
+		flags.ignoreCase = true
+	case character == 'm' || character == 'M':
+		flags.multiline = true
+	case character == 'g':
+		if substitution.global {
+			return p.fail("multiple `g' options to `s' command")
+		}
+		substitution.global = true
+	case character == 'p':
+		if substitution.print {
+			return p.fail("multiple `p' options to `s' command")
+		}
+		substitution.print = true
+	case isDigit(charByte(character)):
+		if flags.numbered {
+			return p.fail("multiple number options to `s' command")
+		}
+		p.back(character)
+		flags.numbered = true
+		if substitution.occurrence = p.readNumber(); substitution.occurrence == 0 {
+			return p.fail("number option to `s' command may not be zero")
+		}
+	case character == 'e' || character == 'w':
+		return p.fail(fmt.Sprintf("the `%c' option to `s' is not supported by this sed", character))
+	default:
+		return p.fail("unknown option to `s'")
+	}
+	return nil
 }
 
 // parseReplacement splits an s replacement into literals, groups (& is 0)
@@ -677,11 +701,11 @@ func (p *sedScriptParser) parseTranslation(command *sedInstruction) error {
 	if delimiter == sedEOF || delimiter == '\n' || delimiter == '\\' {
 		return p.fail("unterminated `y' command")
 	}
-	source, ok := p.readDelimited(byte(delimiter), false)
+	source, ok := p.readDelimited(charByte(delimiter), false)
 	if !ok {
 		return p.fail("unterminated `y' command")
 	}
-	target, ok := p.readDelimited(byte(delimiter), false)
+	target, ok := p.readDelimited(charByte(delimiter), false)
 	if !ok {
 		return p.fail("unterminated `y' command")
 	}
