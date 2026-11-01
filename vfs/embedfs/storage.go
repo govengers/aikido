@@ -1,6 +1,7 @@
 // Package embedfs adapts any fs.FS (including embed.FS) to vfs.Storage.
 //
-// The backend is read-only: WriteFile and DeleteFile return vfs.ErrReadOnly.
+// The backend is read-only: WriteFile and DeleteFile return vfs.ErrReadOnly
+// (vfs.ErrPathInvalid for an invalid path).
 // Suitable for chatbot/knowledge-base use cases where the corpus is fixed at
 // compile time and the model only reads.
 //
@@ -117,13 +118,24 @@ func (s *Storage) ReadFile(ctx context.Context, filePath string) ([]byte, vfs.Fi
 	return content, metadata, nil
 }
 
-// WriteFile always returns an error matching vfs.ErrReadOnly.
+// WriteFile returns an error matching vfs.ErrPathInvalid for an invalid path
+// and one matching vfs.ErrReadOnly otherwise.
 func (s *Storage) WriteFile(_ context.Context, filePath string, _ []byte, _ string) error {
-	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, filePath)
+	return readOnly(filePath)
 }
 
-// DeleteFile always returns an error matching vfs.ErrReadOnly.
+// DeleteFile returns an error matching vfs.ErrPathInvalid for an invalid path
+// and one matching vfs.ErrReadOnly otherwise.
 func (s *Storage) DeleteFile(_ context.Context, filePath string) error {
+	return readOnly(filePath)
+}
+
+// readOnly is the refusal of a write to filePath; an invalid path is reported
+// as such first, like every other backend does.
+func readOnly(filePath string) error {
+	if err := vfs.ValidatePath(filePath); err != nil {
+		return err
+	}
 	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, filePath)
 }
 

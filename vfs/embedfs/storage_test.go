@@ -139,6 +139,17 @@ func TestStorage_DeleteFile_ReadOnly(t *testing.T) {
 	}
 }
 
+func TestStorage_WritesRejectInvalidPathFirst(t *testing.T) {
+	storage := newTestStorage(t)
+	ctx := context.Background()
+	if err := storage.WriteFile(ctx, "../escape.md", []byte("x"), ""); !errors.Is(err, vfs.ErrPathInvalid) {
+		t.Errorf("WriteFile err = %v; want ErrPathInvalid", err)
+	}
+	if err := storage.DeleteFile(ctx, "./a.md"); !errors.Is(err, vfs.ErrPathInvalid) {
+		t.Errorf("DeleteFile err = %v; want ErrPathInvalid", err)
+	}
+}
+
 func TestStorage_Search(t *testing.T) {
 	storage := newTestStorage(t)
 	hits, err := storage.Search(context.Background(), "apple")

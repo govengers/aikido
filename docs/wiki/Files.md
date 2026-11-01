@@ -45,7 +45,7 @@ A multi-tenant backend implements `ScopedStorage`; the handler of every request 
 |---|---|---|---|---|
 | `vfs/memory` | `memory.New()` | yes | case-insensitive substring | in-process, copies on the way in and out |
 | `vfs/osfs` | `osfs.New(&osfs.Options{Directory: dir})` | atomic (temp file + rename), parents created, a replaced file keeps its mode (new files 0644) | no | all access through `os.Root`: no path or symlink resolves outside the directory; regular files only, `.git` skipped; the content type comes from the extension (`application/octet-stream` otherwise); `Close` when done |
-| `vfs/embedfs` | `embedfs.New(&embedfs.Options{FileSystem: fsys})` | no (`vfs.ErrReadOnly`) | case-insensitive substring | any `fs.FS`: `embed.FS`, `fs.Sub`, `fstest.MapFS`, `os.DirFS`; unknown extensions are `application/octet-stream` |
+| `vfs/embedfs` | `embedfs.New(&embedfs.Options{FileSystem: fsys})` | no (`vfs.ErrReadOnly`, `vfs.ErrPathInvalid` for an invalid path) | case-insensitive substring | any `fs.FS`: `embed.FS`, `fs.Sub`, `fstest.MapFS`, `os.DirFS`; unknown extensions are `application/octet-stream` |
 
 From [vfs/osfs/example_test.go](../../vfs/osfs/example_test.go):
 
