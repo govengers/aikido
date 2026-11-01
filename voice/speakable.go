@@ -7,80 +7,88 @@ import (
 	"unicode/utf8"
 )
 
-// minSentenceRunes keeps very short fragments ("Ja.", "z. B.") together with
-// the next sentence: one synthesis call per word sounds choppy and costs a
-// round trip each.
+// minimumSentenceRunes keeps very short fragments ("Ja.", "z. B.") together
+// with the next sentence: one synthesis call per word sounds choppy and costs
+// a round trip each.
 // ponytail: no abbreviation list, "z. B." past 12 runes still splits; add
 // one if the prosody break is audible.
-const minSentenceRunes = 12
+const minimumSentenceRunes = 12
 
-// splitSentences cuts complete sentences off the front of buf and returns
+// splitSentences cuts complete sentences off the front of text and returns
 // them with the unfinished rest. A sentence ends at . ! ? or an ellipsis
 // followed by whitespace, or at a line break. A terminator at the very end of
-// buf is not a boundary yet: the next delta may be "5 Euro" after "3.".
-func splitSentences(buf string) (sentences []string, rest string) {
+// text is not a boundary yet: the next delta may be "5 Euro" after "3.".
+func splitSentences(text string) (sentences []string, rest string) {
 	start := 0
-	for i, r := range buf {
-		end := -1
-		switch r {
-		case '\n':
-			end = i + 1
-		case '.', '!', '?', '…':
-			next := i + utf8.RuneLen(r)
-			if next < len(buf) {
-				nr, _ := utf8.DecodeRuneInString(buf[next:])
-				if unicode.IsSpace(nr) {
-					end = next
-				}
-			}
-		}
+	for index, character := range text {
+		end := sentenceEnd(text, index, character)
 		if end < 0 {
 			continue
 		}
-		s := buf[start:end]
-		if utf8.RuneCountInString(strings.TrimSpace(s)) < minSentenceRunes && r != '\n' {
+		sentence := text[start:end]
+		if utf8.RuneCountInString(strings.TrimSpace(sentence)) < minimumSentenceRunes && character != '\n' {
 			continue
 		}
-		if strings.TrimSpace(s) != "" {
-			sentences = append(sentences, s)
+		if strings.TrimSpace(sentence) != "" {
+			sentences = append(sentences, sentence)
 		}
 		start = end
 	}
-	return sentences, buf[start:]
+	return sentences, text[start:]
+}
+
+// sentenceEnd is the byte offset after the sentence that character at index
+// ends, or -1 if it ends none.
+func sentenceEnd(text string, index int, character rune) int {
+	switch character {
+	case '\n':
+		return index + 1
+	case '.', '!', '?', '…':
+		next := index + utf8.RuneLen(character)
+		if next >= len(text) {
+			return -1
+		}
+		following, _ := utf8.DecodeRuneInString(text[next:])
+		if unicode.IsSpace(following) {
+			return next
+		}
+	}
+	return -1
 }
 
 var (
-	reCodeFence  = regexp.MustCompile("(?s)```.*?(```|$)")
-	reImage      = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
-	reLink       = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
-	reURL        = regexp.MustCompile(`(?i)\b(?:https?://|www\.)\S+`)
-	reLinePrefix = regexp.MustCompile(`(?m)^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)`)
-	reTableRule  = regexp.MustCompile(`(?m)^\s*\|?\s*:?-{3,}.*$`)
-	reEmphasis   = regexp.MustCompile(`\*\*|__|~~|\*|` + "`")
-	reSpaces     = regexp.MustCompile(`\s+`)
+	codeFencePattern  = regexp.MustCompile("(?s)```.*?(```|$)")
+	imagePattern      = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	linkPattern       = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
+	urlPattern        = regexp.MustCompile(`(?i)\b(?:https?://|www\.)\S+`)
+	linePrefixPattern = regexp.MustCompile(`(?m)^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)`)
+	tableRulePattern  = regexp.MustCompile(`(?m)^\s*\|?\s*:?-{3,}.*$`)
+	emphasisPattern   = regexp.MustCompile(`\*\*|__|~~|\*|` + "`")
+	whitespacePattern = regexp.MustCompile(`\s+`)
 )
 
 // Speakable turns a markdown reply into plain text for text-to-speech: code
 // blocks, URLs and table rules are dropped, links and images keep their
 // text, headings, quotes, list markers and emphasis lose their markup, table
 // cells are joined with commas, and whitespace collapses to single spaces.
-func Speakable(s string) string {
-	s = reCodeFence.ReplaceAllString(s, " ")
-	s = reImage.ReplaceAllString(s, "$1")
-	s = reLink.ReplaceAllString(s, "$1")
-	s = reURL.ReplaceAllString(s, "")
-	s = reTableRule.ReplaceAllString(s, "")
-	s = reLinePrefix.ReplaceAllString(s, "")
-	s = reEmphasis.ReplaceAllString(s, "")
-	if strings.Contains(s, "|") {
-		s = strings.Trim(strings.ReplaceAll(s, "|", ", "), ", ")
+// Text without a letter or digit becomes "". It is safe for concurrent use.
+func Speakable(markdown string) string {
+	text := codeFencePattern.ReplaceAllString(markdown, " ")
+	text = imagePattern.ReplaceAllString(text, "$1")
+	text = linkPattern.ReplaceAllString(text, "$1")
+	text = urlPattern.ReplaceAllString(text, "")
+	text = tableRulePattern.ReplaceAllString(text, "")
+	text = linePrefixPattern.ReplaceAllString(text, "")
+	text = emphasisPattern.ReplaceAllString(text, "")
+	if strings.Contains(text, "|") {
+		text = strings.Trim(strings.ReplaceAll(text, "|", ", "), ", ")
 	}
-	s = reSpaces.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, " ,", ",")
-	s = strings.ReplaceAll(s, " .", ".")
-	if !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+	text = whitespacePattern.ReplaceAllString(text, " ")
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, " ,", ",")
+	text = strings.ReplaceAll(text, " .", ".")
+	if !strings.ContainsFunc(text, func(character rune) bool { return unicode.IsLetter(character) || unicode.IsDigit(character) }) {
 		return ""
 	}
-	return s
+	return text
 }

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/goleak"
+
 	"github.com/govengers/aikido/agent"
 	"github.com/govengers/aikido/agent/history/memory"
 	"github.com/govengers/aikido/llm"
@@ -21,64 +25,73 @@ import (
 	"github.com/govengers/aikido/tools"
 )
 
-func newTestHandler(t *testing.T, stt, chat llm.Client, maxBytes int64) (*Handler, func() []llm.Message) {
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
+
+func newTestHandler(t *testing.T, transcriber, chat llm.Client, maximumBytes int64) (*Handler, func() []llm.Message) {
 	t.Helper()
-	p, err := New(&Options{Transcriber: stt, Speech: &fakeSpeech{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, hist := newSession(t, chat)
-	h, err := NewHandler(&HandlerOptions{
-		Pipeline:          p,
+	pipeline := newPipeline(t, &Options{Transcriber: transcriber, Speech: &fakeSpeech{}})
+	session, history := newSession(t, chat)
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline:          pipeline,
 		Session:           func(*http.Request) (Runner, error) { return session, nil },
-		MaximumAudioBytes: maxBytes,
+		MaximumAudioBytes: maximumBytes,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, func() []llm.Message {
-		msgs, _ := hist.Read(context.Background(), "voice-test")
-		return msgs
+	return handler, func() []llm.Message {
+		messages, err := history.Read(context.Background(), "voice-test")
+		if err != nil {
+			t.Errorf("read history: %v", err)
+		}
+		return messages
 	}
+}
+
+func newPost(t *testing.T, target, contentType string, body io.Reader) *http.Request {
+	t.Helper()
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, body)
+	request.Header.Set("Content-Type", contentType)
+	return request
 }
 
 func readLines(t *testing.T, body *bytes.Buffer) []map[string]any {
 	t.Helper()
 	var lines []map[string]any
-	sc := bufio.NewScanner(body)
-	for sc.Scan() {
-		var m map[string]any
-		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
-			t.Fatalf("line %q is not JSON: %v", sc.Text(), err)
+	scanner := bufio.NewScanner(body)
+	for scanner.Scan() {
+		var line map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			t.Fatalf("line %q is not JSON: %v", scanner.Text(), err)
 		}
-		lines = append(lines, m)
+		lines = append(lines, line)
 	}
 	return lines
 }
 
 func TestHandler_TextInSpeechOut_NDJSON(t *testing.T) {
 	t.Parallel()
-	h, _ := newTestHandler(t, nil, llmtest.NewStubClient(replyTurn(0.002, answer1+answer2)), 0)
-	req := httptest.NewRequest(http.MethodPost, "/voice", strings.NewReader(`{"text":"Hallo","output":"speech"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	handler, _ := newTestHandler(t, nil, llmtest.NewStubClient(replyTurn(0.002, firstAnswer+secondAnswer)), 0)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo","output":"speech"}`)))
 
-	if rec.Code != 200 || rec.Header().Get("Content-Type") != "application/x-ndjson" {
-		t.Fatalf("status %d, type %q: %s", rec.Code, rec.Header().Get("Content-Type"), rec.Body)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/x-ndjson" {
+		t.Fatalf("status %d, type %q: %s", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body)
 	}
-	lines := readLines(t, rec.Body)
+	lines := readLines(t, recorder.Body)
 	var types []string
-	for _, l := range lines {
-		types = append(types, l["type"].(string))
+	for _, line := range lines {
+		types = append(types, line["type"].(string))
 	}
 	if got := strings.Join(types, ","); got != "text,speech,speech,done" {
 		t.Errorf("types = %s", got)
 	}
-	sp := lines[1]
-	audio, _ := base64.StdEncoding.DecodeString(sp["audio"].(string))
-	if sp["seq"] != float64(0) || sp["content_type"] != "audio/mpeg" || string(audio) != "audio:"+strings.TrimSpace(answer1) {
-		t.Errorf("speech line = %v", sp)
+	speech := lines[1]
+	audio, err := base64.StdEncoding.DecodeString(speech["audio"].(string))
+	if err != nil || speech["seq"] != float64(0) || speech["content_type"] != "audio/mpeg" || string(audio) != "audio:"+strings.TrimSpace(firstAnswer) {
+		t.Errorf("speech line = %v (%v)", speech, err)
 	}
 	done := lines[len(lines)-1]
 	usage := done["usage"].(map[string]any)
@@ -90,73 +103,144 @@ func TestHandler_TextInSpeechOut_NDJSON(t *testing.T) {
 	}
 }
 
+func multipartAudio(t *testing.T, withAudio bool) (*bytes.Buffer, string) {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	if withAudio {
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", `form-data; name="audio"; filename="clip.webm"`)
+		header.Set("Content-Type", "audio/webm;codecs=opus")
+		part, err := form.CreatePart(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte("webm-bytes")); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := form.WriteField("text", "Wo kommt die Dusche hin?"); err != nil {
+		t.Fatal(err)
+	}
+	for field, value := range map[string]string{"output": "text", "language": "de"} {
+		if err := form.WriteField(field, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &body, form.FormDataContentType()
+}
+
 func TestHandler_AudioUploads(t *testing.T) {
 	t.Parallel()
-	multipartBody := func() (*bytes.Buffer, string) {
-		var b bytes.Buffer
-		mw := multipart.NewWriter(&b)
-		hdr := textproto.MIMEHeader{}
-		hdr.Set("Content-Disposition", `form-data; name="audio"; filename="clip.webm"`)
-		hdr.Set("Content-Type", "audio/webm;codecs=opus")
-		part, _ := mw.CreatePart(hdr)
-		_, _ = part.Write([]byte("webm-bytes"))
-		_ = mw.WriteField("output", "text")
-		_ = mw.WriteField("language", "de")
-		_ = mw.Close()
-		return &b, mw.FormDataContentType()
-	}
-	for name, build := range map[string]func() *http.Request{
-		"multipart": func() *http.Request {
-			b, ct := multipartBody()
-			r := httptest.NewRequest(http.MethodPost, "/voice", b)
-			r.Header.Set("Content-Type", ct)
-			return r
+	for name, build := range map[string]func(t *testing.T) *http.Request{
+		"multipart": func(t *testing.T) *http.Request {
+			body, contentType := multipartAudio(t, true)
+			return newPost(t, "/voice", contentType, body)
 		},
-		"raw body": func() *http.Request {
-			r := httptest.NewRequest(http.MethodPost, "/voice?output=text&language=de", strings.NewReader("webm-bytes"))
-			r.Header.Set("Content-Type", "audio/webm;codecs=opus")
-			return r
+		"raw body": func(t *testing.T) *http.Request {
+			return newPost(t, "/voice?output=text&language=de", "audio/webm;codecs=opus", strings.NewReader("webm-bytes"))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			stt := llmtest.NewStubClient(transcriptTurn("Wo kommt die Dusche hin?"))
-			h, _ := newTestHandler(t, stt, llmtest.NewStubClient(replyTurn(0, "An die Wand.")), 0)
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, build())
-			lines := readLines(t, rec.Body)
-			if rec.Code != 200 || len(lines) < 3 || lines[0]["type"] != "transcript" || lines[0]["text"] != "Wo kommt die Dusche hin?" {
-				t.Fatalf("status %d, lines %v", rec.Code, lines)
+			transcriber := llmtest.NewStubClient(transcriptTurn("Wo kommt die Dusche hin?"))
+			handler, _ := newTestHandler(t, transcriber, llmtest.NewStubClient(replyTurn(0, "An die Wand.")), 0)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, build(t))
+			lines := readLines(t, recorder.Body)
+			if recorder.Code != http.StatusOK || len(lines) < 3 || lines[0]["type"] != "transcript" || lines[0]["text"] != "Wo kommt die Dusche hin?" {
+				t.Fatalf("status %d, lines %v", recorder.Code, lines)
 			}
-			audio := stt.Requests()[0].Messages[0].Audio[0]
+			audio := transcriber.Requests()[0].Messages[0].Audio[0]
 			if string(audio.Data) != "webm-bytes" || audio.Format != "webm" {
-				t.Errorf("stt got %+v", audio)
+				t.Errorf("transcriber got %+v", audio)
 			}
 		})
 	}
 }
 
+func TestHandler_MultipartTextTurn(t *testing.T) {
+	t.Parallel()
+	handler, history := newTestHandler(t, nil, llmtest.NewStubClient(replyTurn(0, "An die Wand.")), 0)
+	body, contentType := multipartAudio(t, false)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newPost(t, "/voice", contentType, body))
+	if lines := readLines(t, recorder.Body); recorder.Code != http.StatusOK || lines[len(lines)-1]["end_reason"] != "stop" {
+		t.Fatalf("status %d, lines %v", recorder.Code, lines)
+	}
+	if messages := history(); len(messages) != 2 || messages[0].Content != "Wo kommt die Dusche hin?" {
+		t.Errorf("history = %+v", messages)
+	}
+}
+
 func TestHandler_RejectsBadRequests(t *testing.T) {
 	t.Parallel()
-	h, _ := newTestHandler(t, llmtest.NewStubClient(), llmtest.NewStubClient(), 64)
-	for name, tc := range map[string]struct {
-		method, ct, body string
-		want             int
+	handler, _ := newTestHandler(t, llmtest.NewStubClient(), llmtest.NewStubClient(), 64)
+	for name, testCase := range map[string]struct {
+		method, contentType, body string
+		want                      int
 	}{
 		"GET":            {http.MethodGet, "", "", http.StatusMethodNotAllowed},
 		"too large":      {http.MethodPost, "audio/webm", strings.Repeat("x", 65), http.StatusRequestEntityTooLarge},
+		"too large json": {http.MethodPost, "application/json", `{"text":"` + strings.Repeat("x", 65) + `"}`, http.StatusRequestEntityTooLarge},
 		"unknown audio":  {http.MethodPost, "audio/midi", "x", http.StatusUnsupportedMediaType},
 		"unknown body":   {http.MethodPost, "text/plain", "hi", http.StatusUnsupportedMediaType},
+		"broken json":    {http.MethodPost, "application/json", `{"text":`, http.StatusBadRequest},
+		"broken form":    {http.MethodPost, "multipart/form-data; boundary=x", "nope", http.StatusBadRequest},
 		"empty text":     {http.MethodPost, "application/json", `{"text":""}`, http.StatusBadRequest},
 		"unknown output": {http.MethodPost, "application/json", `{"text":"x","output":"video"}`, http.StatusBadRequest},
 	} {
-		req := httptest.NewRequest(tc.method, "/voice", strings.NewReader(tc.body))
-		req.Header.Set("Content-Type", tc.ct)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Code != tc.want || !strings.Contains(rec.Body.String(), `"error"`) {
-			t.Errorf("%s: %d %s, want %d", name, rec.Code, rec.Body, tc.want)
+		request := httptest.NewRequestWithContext(t.Context(), testCase.method, "/voice", strings.NewReader(testCase.body))
+		request.Header.Set("Content-Type", testCase.contentType)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != testCase.want || !strings.Contains(recorder.Body.String(), `"error"`) {
+			t.Errorf("%s: %d %s, want %d", name, recorder.Code, recorder.Body, testCase.want)
 		}
+	}
+}
+
+func TestHandler_SessionErrorAnswers400(t *testing.T) {
+	t.Parallel()
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline: newPipeline(t, &Options{Speech: &fakeSpeech{}}),
+		Session:  func(*http.Request) (Runner, error) { return nil, errors.New("unknown conversation") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo"}`)))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "unknown conversation") {
+		t.Errorf("%d %s", recorder.Code, recorder.Body)
+	}
+}
+
+func TestNewHandler_Validates(t *testing.T) {
+	t.Parallel()
+	pipeline := newPipeline(t, &Options{Speech: &fakeSpeech{}})
+	for name, options := range map[string]*HandlerOptions{
+		"nil":        nil,
+		"no session": {Pipeline: pipeline},
+		"no pipeline": {Session: func(*http.Request) (Runner, error) {
+			return nil, errors.New("unused")
+		}},
+	} {
+		if _, err := NewHandler(options); err == nil {
+			t.Errorf("%s: no error", name)
+		}
+	}
+}
+
+func TestRunErrorStatus(t *testing.T) {
+	t.Parallel()
+	if got := runErrorStatus(llm.ErrInvalidRequest); got != http.StatusBadRequest {
+		t.Errorf("invalid request: %d", got)
+	}
+	if got := runErrorStatus(errors.New("boom")); got != http.StatusInternalServerError {
+		t.Errorf("other error: %d", got)
 	}
 }
 
@@ -166,53 +250,59 @@ func TestHandler_ClientDisconnectDoesNotCancelTheTurn(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
 	chat := &gatedClient{first: "Die Dusche passt an die Fensterwand. ", rest: "Der Rest kommt später.", gate: release}
-	h, history := newTestHandler(t, nil, chat, 0)
-	srv := httptest.NewServer(h)
-	defer srv.Close()
+	handler, history := newTestHandler(t, nil, chat, 0)
+	disconnected, served := make(chan struct{}), make(chan struct{})
+	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer close(served)
+		watched := request.Context()
+		go func() {
+			<-watched.Done()
+			close(disconnected)
+		}()
+		handler.ServeHTTP(writer, request)
+	}))
+	defer testServer.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, strings.NewReader(`{"text":"Hallo"}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, testServer.URL, strings.NewReader(`{"text":"Hallo"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	line, _ := bufio.NewReader(resp.Body).ReadString('\n')
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, _ := bufio.NewReader(response.Body).ReadString('\n') // a short read fails the check below
 	if !strings.Contains(line, `"type":"text"`) {
 		t.Fatalf("first line = %q", line)
 	}
 	cancel()
-	_ = resp.Body.Close()
-	time.Sleep(50 * time.Millisecond) // let the server notice the disconnect
+	_ = response.Body.Close() // the connection is cancelled already
+	<-disconnected
 	close(release)
+	<-served
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if msgs := history(); len(msgs) == 2 {
-			if want := "Die Dusche passt an die Fensterwand. Der Rest kommt später."; msgs[1].Content != want {
-				t.Fatalf("assistant = %q", msgs[1].Content)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	messages := history()
+	if want := "Die Dusche passt an die Fensterwand. Der Rest kommt später."; len(messages) != 2 || messages[1].Content != want {
+		t.Fatalf("history = %+v, want the full reply", messages)
 	}
-	t.Fatal("turn did not complete after the client disconnected")
 }
 
 func TestHandler_TimeoutStillWritesDone(t *testing.T) {
 	t.Parallel()
-	p, _ := New(&Options{Speech: &fakeSpeech{}})
 	session, _ := newSession(t, &gatedClient{first: "Die Dusche ", gate: make(chan struct{})})
-	h, _ := NewHandler(&HandlerOptions{
-		Pipeline: p,
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline: newPipeline(t, &Options{Speech: &fakeSpeech{}}),
 		Session:  func(*http.Request) (Runner, error) { return session, nil },
 		Timeout:  100 * time.Millisecond,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/voice", strings.NewReader(`{"text":"Hallo"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	lines := readLines(t, rec.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo"}`)))
+	lines := readLines(t, recorder.Body)
 	if last := lines[len(lines)-1]; last["type"] != "done" || last["end_reason"] != "timeout" || last["usage"] == nil {
 		t.Fatalf("last line = %v", last)
 	}
@@ -220,11 +310,13 @@ func TestHandler_TimeoutStillWritesDone(t *testing.T) {
 
 func TestHandler_ToolResultContentAndExtraFields(t *testing.T) {
 	t.Parallel()
-	reg := tools.NewRegistry()
-	_ = reg.Register(llm.ToolDefinition{Name: "highlight", Parameters: tools.Object(map[string]any{})},
+	registry := tools.NewRegistry()
+	if err := registry.Register(llm.ToolDefinition{Name: "highlight", Parameters: tools.Object(map[string]any{})},
 		func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
 			return tools.Result{Content: map[string]string{"ui": "highlight:shower"}}, nil
-		})
+		}); err != nil {
+		t.Fatal(err)
+	}
 	chat := llmtest.NewStubClient(
 		llmtest.TurnScript{Events: []llm.Event{
 			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "highlight", Arguments: `{}`}},
@@ -234,42 +326,54 @@ func TestHandler_ToolResultContentAndExtraFields(t *testing.T) {
 	)
 	session, err := agent.NewSession(&agent.SessionOptions{
 		ID: "voice-test", Client: chat, History: memory.NewHistory(), Locker: agent.NewLocalLocker(),
-		Model: "test/model", Tools: reg,
+		Model: "test/model", Tools: registry,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, _ := New(&Options{Speech: &fakeSpeech{}})
 	var route string
-	h, _ := NewHandler(&HandlerOptions{
-		Pipeline: p,
-		Session: func(r *http.Request) (Runner, error) {
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline: newPipeline(t, &Options{Speech: &fakeSpeech{}}),
+		Session: func(request *http.Request) (Runner, error) {
 			var extra struct {
 				Route string `json:"route"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&extra); err != nil {
+			if err := json.NewDecoder(request.Body).Decode(&extra); err != nil {
 				return nil, err
 			}
 			route = extra.Route
 			return session, nil
 		},
-		ToolResult: func(res agent.ToolResult) any { return res.Content },
+		ToolResult: func(result agent.ToolResult) any { return result.Content },
 	})
-	req := httptest.NewRequest(http.MethodPost, "/voice", strings.NewReader(`{"text":"Wo ist die Dusche?","route":"/plan/3"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Wo ist die Dusche?","route":"/plan/3"}`)))
 	if route != "/plan/3" {
 		t.Errorf("route = %q", route)
 	}
-	for _, l := range readLines(t, rec.Body) {
-		if l["type"] == "tool_result" {
-			content, _ := l["tool"].(map[string]any)["content"].(map[string]any)
+	for _, line := range readLines(t, recorder.Body) {
+		if line["type"] == "tool_result" {
+			content, _ := line["tool"].(map[string]any)["content"].(map[string]any)
 			if content["ui"] != "highlight:shower" {
-				t.Fatalf("tool_result line = %v", l)
+				t.Fatalf("tool_result line = %v", line)
 			}
 			return
 		}
 	}
 	t.Fatal("no tool_result line")
+}
+
+func TestToWireUsage_CountsTranscriptionTokens(t *testing.T) {
+	t.Parallel()
+	wire := toWireUsage(&Usage{
+		Transcription: &llm.Usage{PromptTokens: 100, CompletionTokens: 7, CostUSD: 0.0001, Provider: "Google"},
+		LLM:           llm.Usage{PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.002},
+		CostUSD:       0.0021,
+	})
+	if wire.PromptTokens != 110 || wire.CompletionTokens != 12 || wire.TranscriptionCostUSD != 0.0001 || wire.Transcription == nil || wire.Transcription.Provider != "Google" {
+		t.Errorf("wire usage = %+v", wire)
+	}
 }
