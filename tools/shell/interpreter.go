@@ -256,6 +256,9 @@ func (s *session) execute(ctx context.Context, arguments []string) (err error) {
 		return err
 	}
 	if status == 0 {
+		status = flushOwned(handler)
+	}
+	if status == 0 {
 		return nil
 	}
 	return interp.ExitStatus(status)
@@ -288,6 +291,11 @@ func (s *session) dispatch(ctx context.Context, name string, invocation *Invocat
 			return statusInternalError
 		}
 		return s.lookup(invocation, position)
+	case internalOutput:
+		if len(invocation.Arguments) == 0 {
+			return statusInternalError
+		}
+		return runOutput(invocation, position)
 	}
 	if command, ok := s.commands[name]; ok {
 		return runCommand(ctx, command, invocation)
@@ -391,6 +399,8 @@ func (s *session) rewrite(ctx context.Context, arguments []string) (_ []string, 
 		return append(call.prefix(), call.arguments...), nil
 	case call.builtinOnly && !interp.IsBuiltin(call.arguments[0]):
 		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + "builtin: " + call.arguments[0] + ": not a shell builtin", "1"}, nil
+	case routesOutput(handler, call.arguments):
+		return append(call.prefix(), append([]string{internalOutput}, call.arguments...)...), nil
 	}
 	return append(call.prefix(), s.rewriteCall(ctx, handler, call.arguments)...), nil
 }
@@ -695,6 +705,22 @@ func (s *session) newBufferedFile(ctx context.Context, label string, stderr io.W
 		label: label, stderr: stderr, budget: s.budget,
 		storeContext: func() (context.Context, context.CancelFunc) { return storeContext(ctx) },
 	}
+}
+
+// flushOwned stores the redirect targets of the simple command that just
+// ran through the exec handler when its statement opened them (cmd >file):
+// a failed store then fails the command, before && or || decide. Targets of
+// compound statements ({ ...; } >file, loops) are stored when they close;
+// a failure there is reported but cannot change a status any more.
+func flushOwned(handler interp.HandlerContext) uint8 {
+	status := uint8(0)
+	for _, stream := range []io.Writer{handler.Stdout, handler.Stderr} {
+		file, ok := stream.(*bufferedFile)
+		if ok && file.owner != 0 && file.owner == handler.Pos.Offset()+1 && file.flush() != nil {
+			status = statusCommandFailure
+		}
+	}
+	return status
 }
 
 // redirectTargets are the redirect files one interpreter (with its

@@ -95,6 +95,16 @@ func (f *bufferedFile) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
+// flush stores the content now if it changed, with its own deadline, and
+// returns the store's failure (reported on stderr once).
+func (f *bufferedFile) flush() error {
+	ctx, cancel := f.storeContext()
+	defer cancel()
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	return f.storeLocked(ctx)
+}
+
 func (f *bufferedFile) storeLocked(ctx context.Context) error {
 	if f.dirty {
 		// The stored bytes are charged where they are stored (/tmp) or

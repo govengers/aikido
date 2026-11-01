@@ -1,9 +1,13 @@
 package shell
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/govengers/aikido/vfs/memory"
 )
 
 // budgetUsed is what the Shell's memory budget holds right now.
@@ -72,6 +76,67 @@ func TestProcessFilesPerEvaluation(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(result.Output), "\n")
 	sort.Strings(lines)
 	if strings.Join(lines, ",") != "A,B" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+// refusingStorage accepts the empty file a redirect opens with and refuses
+// any content, like a full disk.
+type refusingStorage struct {
+	*memory.Storage
+}
+
+func (r refusingStorage) WriteFile(ctx context.Context, name string, content []byte, contentType string) error {
+	if len(content) == 0 {
+		return r.Storage.WriteFile(ctx, name, content, contentType)
+	}
+	return errNoSpace
+}
+
+// TestFailedStoresFailTheCommand replays the review's "echo x >/tmp/extra
+// && echo saved" with /tmp full, and the same with a Storage that refuses
+// content after the open: the store happened when the redirect closed,
+// after the status was decided, so saved was printed.
+func TestFailedStoresFailTheCommand(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	shell.budget = newMemoryBudget(100)
+	shell.scratch = newScratchStorage(shell.budget)
+	result := mustRun(t, shell, "printf %0100d 0 > /tmp/fill; echo x >/tmp/extra && echo saved; echo $?; printf x >/tmp/extra || echo failed")
+	want := "bash: line 1: echo: write error: No space left on device\n1\nbash: line 1: printf: write error: No space left on device\nfailed\n"
+	if result.Output != want {
+		t.Fatalf("/tmp full: output = %q, want %q", result.Output, want)
+	}
+
+	refusing, err := New(&Options{Storage: refusingStorage{memory.New()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = mustRun(t, refusing, "echo x > f && echo saved; echo $?; seq 3 > g || echo failed; { echo y; } > h && echo compound")
+	want = "bash: line 1: f: No space left on device\n1\nbash: line 1: g: No space left on device\nfailed\n" +
+		"bash: line 1: h: No space left on device\ncompound\n"
+	if result.Output != want {
+		t.Fatalf("refusing Storage: output = %q, want %q", result.Output, want)
+	}
+}
+
+// TestRetainedStoresShareOneDeadline replays the review's "for i in
+// {1..100}; do exec >f$i; echo x; done" against a Storage that stalls on
+// content: every retained target got its own store deadline at the end of
+// the script, so Run took a deadline per file.
+func TestRetainedStoresShareOneDeadline(t *testing.T) {
+	previous := redirectStoreTimeout
+	redirectStoreTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { redirectStoreTimeout = previous })
+	shell, err := New(&Options{Storage: hangingStorage{memory.New()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	result := mustRun(t, shell, "for i in $(seq 20); do exec >f$i; echo x; done")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Run took %v for 20 stalled stores", elapsed)
+	}
+	if strings.Count(result.Output, "Connection timed out") != 20 {
 		t.Fatalf("output = %q", result.Output)
 	}
 }
