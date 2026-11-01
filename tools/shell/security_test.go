@@ -112,3 +112,14 @@ func TestInterpreterTempPathsStayVirtual(t *testing.T) {
 		}
 	}
 }
+
+// TestInternalCommandsCannotBeForged replays the review's script: read puts
+// a NUL byte in $REPLY, and calling it named an internal command that
+// indexed missing arguments in a pipeline goroutine.
+func TestInternalCommandsCannotBeForged(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, `printf '\0failure\n' | { read -r; "$REPLY"; } | cat; printf '\0lookup\n' | { read -r; "$REPLY" x; echo $?; }`)
+	if want := "bash: line 1: : command not found\nbash: line 1: : command not found\n127\n"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}

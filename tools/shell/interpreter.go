@@ -190,10 +190,16 @@ func exported(environment expand.Environ) []string {
 func (s *session) dispatch(ctx context.Context, name string, invocation *Invocation, position syntax.Pos) uint8 {
 	switch name {
 	case internalFailure:
+		if len(invocation.Arguments) != 2 {
+			return statusInternalError
+		}
 		fmt.Fprintln(invocation.Stderr, invocation.Arguments[0])
 		status, _ := strconv.Atoi(invocation.Arguments[1])
-		return uint8(status) //nolint:gosec // G115: the shell itself writes statuses 1 and 2 here
+		return uint8(status) //nolint:gosec // G115: the shell itself writes statuses 1, 2 and 127 here
 	case internalLookup:
+		if len(invocation.Arguments) == 0 {
+			return statusInternalError
+		}
 		return s.lookup(invocation)
 	}
 	if command, ok := s.commands[name]; ok {
@@ -296,6 +302,13 @@ func (s *session) lookup(invocation *Invocation) uint8 {
 // wording of cd's errors.
 func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, error) {
 	handler := interp.HandlerCtx(ctx)
+	if strings.ContainsRune(arguments[0], 0) {
+		// Only these rewrites may name an internal command. A script can
+		// still spell a NUL byte (read puts one in $REPLY); bash cuts the
+		// name there.
+		name, _, _ := strings.Cut(arguments[0], "\x00")
+		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + name + ": command not found", strconv.Itoa(statusNotFound)}, nil
+	}
 	switch arguments[0] {
 	case "cd":
 		return s.rewriteChangeDirectory(ctx, handler, arguments), nil
