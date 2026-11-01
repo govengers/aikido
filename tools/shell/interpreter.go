@@ -128,6 +128,11 @@ func stdinFile(stdin io.Reader) io.Reader {
 	return stdin
 }
 
+// redirectStoreTimeout bounds the store of a redirect target when it
+// closes. The store runs without the script's context, so a timed-out
+// script still keeps what it wrote; a variable for tests.
+var redirectStoreTimeout = 30 * time.Second
+
 // jobCleanupTimeout bounds the wait for background jobs after a script:
 // they are cancelled first, so only a job stuck in something that ignores
 // its context takes that long.
@@ -484,9 +489,13 @@ func (s *session) openForWriting(ctx context.Context, name, resolved string, app
 	if err := files.storage.WriteFile(ctx, resolved, file.content, contentType); err != nil {
 		return nil, pathError(name, err)
 	}
-	// A script that timed out still stores what it wrote, as bash would have.
-	storeContext := context.WithoutCancel(ctx)
+	// A script that timed out still stores what it wrote, as bash would
+	// have, but a Storage that hangs cannot hold the shell past
+	// redirectStoreTimeout.
+	detached := context.WithoutCancel(ctx)
 	file.commit = func(content []byte) error {
+		storeContext, cancel := context.WithTimeout(detached, redirectStoreTimeout)
+		defer cancel()
 		return files.storage.WriteFile(storeContext, resolved, content, contentType)
 	}
 	return file, nil

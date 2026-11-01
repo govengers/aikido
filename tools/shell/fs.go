@@ -28,6 +28,7 @@ const (
 	errReadOnly     fileError = "Read-only file system"
 	errTooLarge     fileError = "File too large"
 	errUnsupported  fileError = "Operation not supported"
+	errTimedOut     fileError = "Connection timed out"
 )
 
 // scratchDirectory is the workspace path of /tmp: a scratchStorage of the
@@ -81,6 +82,8 @@ func describe(err error) error {
 		return errReadOnly
 	case errors.Is(err, vfs.ErrFileTooLarge):
 		return errTooLarge
+	case errors.Is(err, context.DeadlineExceeded):
+		return errTimedOut
 	}
 	var known fileError
 	if errors.As(err, &known) {

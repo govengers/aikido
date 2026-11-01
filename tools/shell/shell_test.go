@@ -370,6 +370,36 @@ func TestOverOverlayAndReadOnlyMount(t *testing.T) {
 	}
 }
 
+// hangingStorage blocks every write of non-empty content until its context
+// ends, like a remote Storage that stalls.
+type hangingStorage struct {
+	*memory.Storage
+}
+
+func (h hangingStorage) WriteFile(ctx context.Context, name string, content []byte, contentType string) error {
+	if len(content) == 0 {
+		return h.Storage.WriteFile(ctx, name, content, contentType)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestRedirectStoreIsBounded covers the review's S15: the store at close ran
+// without any deadline, so a stalled Storage hung Run forever.
+func TestRedirectStoreIsBounded(t *testing.T) {
+	previous := redirectStoreTimeout
+	redirectStoreTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { redirectStoreTimeout = previous })
+	shell, err := New(&Options{Storage: hangingStorage{memory.New()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := mustRun(t, shell, "echo x > f; echo after")
+	if result.Output != "bash: f: Connection timed out\nafter\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
 // TestRedirectsAreWrittenLikeBash covers the review's S11 (exec >out never
 // stored out) and bash's order: ">" truncates when it opens.
 func TestRedirectsAreWrittenLikeBash(t *testing.T) {
