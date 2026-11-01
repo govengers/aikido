@@ -42,7 +42,7 @@ func (c *Client) Decide(ctx context.Context, request llm.DecisionRequest) (llm.D
 	}
 	var decoded decisionsResponse
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return llm.DecisionResponse{}, fmt.Errorf("openrouter: decisions: decode response: %w", llm.ErrServerError)
+		return llm.DecisionResponse{}, decodeError("decisions: decode response", err)
 	}
 	response := toDecisionResponse(decoded)
 	response.Usage.SetTiming(start, time.Time{}, time.Now())

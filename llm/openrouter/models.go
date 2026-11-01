@@ -157,7 +157,7 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 		return err
 	}
 	if err := json.Unmarshal(raw, target); err != nil {
-		return fmt.Errorf("openrouter: decode %s: %w", path, err)
+		return decodeError("decode "+path, err)
 	}
 	return nil
 }

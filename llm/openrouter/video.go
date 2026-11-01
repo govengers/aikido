@@ -80,8 +80,11 @@ func (c *Client) submitVideo(ctx context.Context, body []byte) (videoJob, error)
 		return videoJob{}, err
 	}
 	var job videoJob
-	if err := json.Unmarshal(raw, &job); err != nil || job.ID == "" {
-		return videoJob{}, fmt.Errorf("openrouter: video: submit answered without a job id: %w", llm.ErrServerError)
+	if err := json.Unmarshal(raw, &job); err != nil {
+		return videoJob{}, decodeError("video: decode submit answer", err)
+	}
+	if job.ID == "" {
+		return videoJob{}, fmt.Errorf("openrouter: video: submit answered without a job id: %w", llm.ErrInvalidResponse)
 	}
 	return job, nil
 }
@@ -111,7 +114,7 @@ func (c *Client) awaitVideo(ctx context.Context, escapedID string, job videoJob)
 			return job, err
 		}
 		if err := json.Unmarshal(raw, &job); err != nil {
-			return job, fmt.Errorf("openrouter: video: decode job: %w", llm.ErrServerError)
+			return job, decodeError("video: decode job", err)
 		}
 	}
 }

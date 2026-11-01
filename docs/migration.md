@@ -89,7 +89,7 @@ Additive; nothing to migrate, listed so you know it exists.
 - `agent.SessionOptions.ToolCallTimeout`, `MaximumToolResultBytes`, `DisablePromptCaching`; `agent.ToolResult.ModelContent`. [Agent](wiki/Agent.md)
 - `agent.RegisterPlanTool` (`todo_write`). [Tools](wiki/Tools.md#plan-tool)
 - `tools.ErrInvalidArguments`, `tools.ErrToolPanicked`. [Tools](wiki/Tools.md#what-dispatch-checks)
-- `openrouter.APIError`. [Errors-and-Retry](wiki/Errors-and-Retry.md)
+- `openrouter.APIError`, `llm.ErrInvalidResponse`. [Errors-and-Retry](wiki/Errors-and-Retry.md)
 - CLI: `aikido agent --dir`, `--apply`, `--mount`; `OPENROUTER_BASE_URL`. [CLI](wiki/CLI.md#agent)
 
 ## Behaviour changes
@@ -106,6 +106,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | Abandoned runs | a caller that cancelled and stopped reading left the run blocked, holding the session lock | events that do not fit the buffer are dropped once `ctx` is done; the lock is released |
 | Cancellation | a cancelled request could surface as `llm.ErrServerError` (and be retried) | `context.Canceled` / `context.DeadlineExceeded`, in `openrouter` and `codex`, on `Stream` and `Complete` |
 | Provider errors | sentinel-wrapped text | `*openrouter.APIError` with `StatusCode`, `Code`, `Message`; `errors.Is` on the sentinels and the `Error()` text are unchanged |
+| Undecodable answers | a 2xx whose body did not decode was `llm.ErrServerError` and retried | `llm.ErrInvalidResponse`, not transient, not retried (`Complete`, images, decisions, models, video) |
 | OpenRouter HTTP client | no timeout at all | the default client waits at most 10 minutes for response headers (no overall timeout); a custom `HTTPClient` is used as is |
 | Stream panics | a decoding panic crashed the process | `EventError` followed by `EventEnd` |
 | `retry.Do` | could retry context errors; `MaxDelay` 0 meant no cap; `Multiplier` 0 meant no growth | never retries `context.Canceled`/`DeadlineExceeded`; skips a wait that would end after the deadline and returns the last error; `MaximumDelay` 0 means 30 s; `Multiplier` below 1 means 2 |

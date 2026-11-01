@@ -18,6 +18,12 @@ var (
 	// ErrInvalidRequest is a request the provider refused (other HTTP 4xx) or
 	// that a client or helper rejected before sending. Retrying does not help.
 	ErrInvalidRequest = errors.New("aikido/llm: invalid request")
+	// ErrInvalidResponse is an answer the client cannot use: a success status
+	// whose body does not decode, or a body or stream above the client's size
+	// caps. It is not transient (IsTransientServerError is false): sending the
+	// same request again is not expected to fix it, and the failed call may
+	// already have been billed.
+	ErrInvalidResponse = errors.New("aikido/llm: invalid provider response")
 
 	// ErrContentFiltered is wrapped when the provider's safety policy aborts a
 	// generation. Detected from finish_reason="content_filter" on a streamed

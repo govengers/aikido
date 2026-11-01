@@ -93,6 +93,13 @@ func errorCodeText(raw json.RawMessage) string {
 	return text
 }
 
+// decodeError is a 2xx body that does not decode: llm.ErrInvalidResponse,
+// which no retry predicate accepts (RES-002). The decoder's error is kept as
+// text only (LIB-010).
+func decodeError(operation string, err error) error {
+	return fmt.Errorf("openrouter: %s: %v: %w", operation, err, llm.ErrInvalidResponse) //nolint:errorlint // LIB-010: the decoder error is text, ErrInvalidResponse the contract
+}
+
 // classifySentinel maps HTTP status onto an llm sentinel. See
 // OPENROUTER-DETAILS.md for the rationale on each row.
 func classifySentinel(status int) error {

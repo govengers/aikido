@@ -55,7 +55,7 @@ func (c *Client) Complete(ctx context.Context, request llm.Request) (llm.Respons
 func parseCompleteResponse(body []byte) (llm.Response, error) {
 	var chunk streamChunk
 	if err := json.Unmarshal(body, &chunk); err != nil {
-		return llm.Response{}, fmt.Errorf("openrouter: decode response: %w", llm.ErrServerError)
+		return llm.Response{}, decodeError("decode response", err)
 	}
 
 	// The usage block rides along when the provider priced the failed call,
