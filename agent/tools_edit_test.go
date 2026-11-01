@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,10 +28,12 @@ func TestApplyEdits(t *testing.T) {
 		{"identical", "a", []textEdit{{OldString: "a", NewString: "a"}}, "", 0, "identical"},
 		{"binary", "a\x00b", []textEdit{{OldString: "a", NewString: "x"}}, "", 0, "f.md is not a UTF-8 text file"},
 		{"second of two fails", "a", []textEdit{{OldString: "a", NewString: "b"}, {OldString: "a", NewString: "c"}}, "", 0, "edit 2: old_string not found"},
+		{"growth to the limit", "aa", []textEdit{{OldString: "a", NewString: "aaaaa", ReplaceAll: true}}, strings.Repeat("a", 10), 2, ""},
+		{"growth beyond the limit", "aa", []textEdit{{OldString: "a", NewString: "aaaaaa", ReplaceAll: true}}, "", 0, "would grow the file beyond 10 bytes"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			updated, replacements, err := applyEdits("f.md", []byte(testCase.content), testCase.edits)
+			updated, replacements, err := applyEdits(context.Background(), "f.md", []byte(testCase.content), testCase.edits, 10)
 			if testCase.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
 					t.Fatalf("err = %v; want %q", err, testCase.wantError)
@@ -41,6 +44,32 @@ func TestApplyEdits(t *testing.T) {
 				t.Errorf("applyEdits = %q, %d, %v; want %q, %d", updated, replacements, err, testCase.wantUpdated, testCase.wantReplacements)
 			}
 		})
+	}
+}
+
+func TestApplyEdits_ReplaceAllChainStopsAtTheLimit(t *testing.T) {
+	doubling := make([]textEdit, 26)
+	for index := range doubling {
+		doubling[index] = textEdit{OldString: "x", NewString: "xx", ReplaceAll: true}
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _, err := applyEdits(context.Background(), "f.md", []byte("x"), doubling, 1<<10)
+	runtime.ReadMemStats(&after)
+	if !errors.Is(err, vfs.ErrFileTooLarge) {
+		t.Fatalf("err = %v; want ErrFileTooLarge", err)
+	}
+	// Without the check before each edit the chain allocates about 2^27 bytes.
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 8<<20 {
+		t.Errorf("applyEdits allocated %d bytes for a 1 KiB limit", allocated)
+	}
+}
+
+func TestApplyEdits_StopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := applyEdits(ctx, "f.md", []byte("a"), []textEdit{{OldString: "a", NewString: "b"}}, 10); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want context.Canceled", err)
 	}
 }
 

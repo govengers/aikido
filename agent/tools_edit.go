@@ -135,7 +135,7 @@ func editFile(ctx context.Context, options VFSToolOptions, filePath string, edit
 	if err != nil {
 		return tools.Result{}, err
 	}
-	updated, replacements, err := applyEdits(filePath, content, edits)
+	updated, replacements, err := applyEdits(ctx, filePath, content, edits, options.MaximumFileBytes)
 	if err != nil {
 		return tools.Result{}, err
 	}
@@ -155,16 +155,24 @@ func editFile(ctx context.Context, options VFSToolOptions, filePath string, edit
 }
 
 // applyEdits applies edits to content in order. It refuses binary content
-// and any edit that is empty, changes nothing, does not match, or matches
-// more than once without ReplaceAll; with several edits the error names the
-// failing one (1-based).
-func applyEdits(filePath string, content []byte, edits []textEdit) (updated string, replacements int, err error) {
+// and any edit that is empty, changes nothing, does not match, matches more
+// than once without ReplaceAll, or would grow the text beyond maximumBytes
+// (checked before replacing, so a chain of replace_all edits cannot grow
+// without bound); with several edits the error names the failing one
+// (1-based). It returns ctx's error once ctx is done.
+func applyEdits(ctx context.Context, filePath string, content []byte, edits []textEdit, maximumBytes int64) (updated string, replacements int, err error) {
 	if isBinary(content) {
 		return "", 0, fmt.Errorf("%s is not a UTF-8 text file", filePath)
 	}
 	text := string(content)
 	for index, edit := range edits {
+		if err := ctx.Err(); err != nil {
+			return "", 0, err
+		}
 		matches, err := countMatches(filePath, text, edit)
+		if err == nil {
+			err = checkGrowth(len(text), matches, edit, maximumBytes)
+		}
 		if err != nil {
 			if len(edits) > 1 {
 				err = fmt.Errorf("edit %d: %w", index+1, err)
@@ -175,6 +183,18 @@ func applyEdits(filePath string, content []byte, edits []textEdit) (updated stri
 		replacements += matches
 	}
 	return text, replacements, nil
+}
+
+// checkGrowth fails with an error matching vfs.ErrFileTooLarge when
+// replacing matches occurrences in a text of textBytes would make it longer
+// than maximumBytes. It divides instead of multiplying, so it cannot
+// overflow.
+func checkGrowth(textBytes, matches int, edit textEdit, maximumBytes int64) error {
+	growth := int64(len(edit.NewString) - len(edit.OldString))
+	if growth > 0 && int64(matches) > (maximumBytes-int64(textBytes))/growth {
+		return fmt.Errorf("%w: the edit would grow the file beyond %d bytes (caller-policy MaximumFileBytes)", vfs.ErrFileTooLarge, maximumBytes)
+	}
+	return nil
 }
 
 // countMatches returns how often edit replaces in text, or why it cannot.
