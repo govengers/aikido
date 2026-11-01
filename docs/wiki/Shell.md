@@ -66,6 +66,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 | `rmdir` | empty directories only |
 | `rm` | `-r -R -f -v`; refuses `/`, `.` and `..` like GNU |
 | `mv` | `-f -n -v`; files and directories, into a directory, renames |
+| `paste` | lines of the files side by side, `-s` one line per file, `-d LIST` (characters used in turn, escapes `\n \t \\ \0`); every `-` reads the next line of stdin (`paste -d, - -`) |
 | `cp` | `-r -R -a -f -n -v`, `-p` accepted |
 | `touch` | `-c`; creates empty files, leaves existing ones unchanged |
 | `tee` | `-a`; also to `/dev/null`, `/dev/stdout`, `/dev/stderr` |

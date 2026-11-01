@@ -211,6 +211,19 @@ $`)
 	}
 }
 
+// TestPaste replays the benchmark's "sed ... | paste -sd+ | bc" (paste did
+// not exist) and GNU's parallel and serial forms.
+func TestPaste(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "the benchmark's sum", files: map[string]string{"LINES.md": "a.go: 12\nb.go: 30\ntotal: 42\n"}, script: "grep -v '^total' LINES.md | sed 's/.*: //' | paste -sd+", want: "12+30\n"},
+		{name: "parallel", files: map[string]string{"a": "1\n2\n3\n", "b": "x\ny"}, script: "paste a b", want: "1\tx\n2\ty\n3\t\n"},
+		{name: "serial", files: map[string]string{"a": "1\n2\n3\n", "b": "x\ny"}, script: "paste -s a b", want: "1\t2\t3\nx\ty\n"},
+		{name: "stdin twice", files: map[string]string{"f": "a\nb\nc\n"}, script: "paste -d, - - < f", want: "a,b\nc,\n"},
+		{name: "delimiter list", files: map[string]string{"a": "1\n2\n", "b": "x\ny\n"}, script: `paste -d '\n:' a b a; paste -d '\0' a b`, want: "1\nx:1\n2\ny:2\n1x\n2y\n"},
+		{name: "missing file", files: map[string]string{"a": "1\n"}, script: "paste a nope; echo $?", want: "paste: nope: No such file or directory\n1\n"},
+	}, nil)
+}
+
 // TestTextCommandsSeeCreatedDirectories covers the review's S28: a
 // directory made with mkdir (no file below it) read as a missing file.
 func TestTextCommandsSeeCreatedDirectories(t *testing.T) {

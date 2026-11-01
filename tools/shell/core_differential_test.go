@@ -101,6 +101,7 @@ func TestDifferentialFileCommands(t *testing.T) {
 		{name: "cp directory without -r", files: files, script: "cp sub x; echo $?"},
 		{name: "cp missing source", files: files, script: "cp nope x; echo $?"},
 		{name: "cp same file", files: files, script: "cp a.txt a.txt; echo $?"},
+		{name: "paste", files: map[string]string{"a": "1\n2\n3\n", "b": "x\ny", "f": "a\nb\nc\n"}, script: "paste a b; paste -s a b; paste -d, - - < f; paste -sd+ a; paste -d '\\n:' a b a; paste -d '\\0' a b; paste a nope; echo $?"},
 		{name: "trailing slash targets", files: files, script: "cp a.txt out/; echo $?; mv a.txt out/; echo $?; cp b.txt a.txt/; touch t/; touch a.txt/; echo x > r/; ls"},
 		{name: "touch", files: files, script: "touch new.txt a.txt; ls; cat a.txt; touch nodir/x; echo $?"},
 		{name: "tee", files: files, script: "echo data | tee t1 t2; cat t1 t2; echo more | tee -a t1 >/dev/null; cat t1"},
