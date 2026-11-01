@@ -63,6 +63,7 @@ func TestFileCommandCases(t *testing.T) {
 				"cp: target 'a.txt': Not a directory\nmv: target 'dir/b.txt': Not a directory\n" +
 				"a.txt\ndir\n",
 		},
+		{name: "mv onto a file with a trailing slash", files: files, script: "mv dir/b.txt a.txt/; cat a.txt", want: "mv: cannot stat 'a.txt/': Not a directory\nalpha\n"},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
 		{
 			name: "cp -rn checks every destination (review S13)",
@@ -78,7 +79,7 @@ func TestFileCommandCases(t *testing.T) {
 			name: "a trailing slash names a directory (review S31)", files: files,
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
-				"cp: failed to access 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
+				"cp: cannot stat 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
 				"touch: cannot touch 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Not a directory\n" +
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},

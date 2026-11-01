@@ -121,7 +121,8 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 		// "out/" names a directory; GNU never creates a file for it.
 		switch {
 		case lastEntry.kind != entryMissing:
-			return nil, fmt.Errorf("failed to access '%s': %w", last, errNotDirectory)
+			// GNU stats "x/", which fails on a non-directory.
+			return nil, fmt.Errorf("cannot stat '%s': %w", last, errNotDirectory)
 		case move:
 			return nil, fmt.Errorf("cannot move '%s' to '%s': %w", sources[0], last, errNotDirectory)
 		}
