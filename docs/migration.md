@@ -126,6 +126,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | Codex response sizes | a login answer over 1 MiB was cut and failed as a decode error; the models catalog was read without a limit | both fail with an error naming the cap (1 MiB, 8 MiB) |
 | Codex empty image | an `ImagePart` without `URL` and `Data` was sent as an empty `image_url` and failed at the backend | `llm.ErrInvalidRequest` before the request, as in `openrouter` |
 | `voice.Handler` stream | a client that stopped reading blocked the handler (and its connection) until the client went away | each NDJSON line has a write deadline, `HandlerOptions.WriteTimeout` (default 30 s); after a failed or timed-out write the handler stops writing and drains the turn, so it still lands in History |
+| OpenRouter answer cut after a 2xx | a non-streaming answer (`Complete`, images, speech, decisions, models, video poll and download) whose body broke off mid-read was sent again, billing the work twice | `llm.ErrServerError` after one request; only failures before a status arrived, 429 and 5xx are retried. `CompleteWithRetry` still retries it, as you asked |
 
 ## Coming from v0.3.x (ASO Nexus Hub)
 

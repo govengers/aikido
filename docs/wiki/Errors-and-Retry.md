@@ -31,7 +31,7 @@ Agent runs do not return errors: they end with `EventError` plus an `EndReason` 
 |---|---|---|
 | `openrouter` `Stream` | 429, 5xx and network errors before the first SSE byte, `Options.MaximumAttempts` in total (default 3), `Retry-After` honoured | anything after the stream started: it ends with `EventError` |
 | `openrouter` video submit (`POST /videos`) | 429 only: nothing else proves the job was not created | 5xx, network errors and a broken 202 answer: the job may exist and be billed, a second submit would bill a second clip |
-| `openrouter` `Complete`, images, speech, decisions, each video poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors, a 2xx whose body does not decode (`ErrInvalidResponse`) |
+| `openrouter` `Complete`, images, speech, decisions, models, each video poll and download | the same rule per HTTP request | authentication, invalid request, content filter, context errors, a 2xx whose body does not decode (`ErrInvalidResponse`), a 2xx whose body breaks off mid-read (`ErrServerError`: the work may be done and billed, so the request is not sent again) |
 | `codex` `Stream` | 429 and 5xx at stream start (3 attempts) | mid-stream errors |
 | `llm.CollectWithRetry` | restarts the whole stream after a failure `policy.ShouldRetry` accepts (default `llm.IsTransientServerError`); every attempt is billed | |
 | `llm.CompleteWithRetry` | a fresh `Complete` per attempt, same default predicate | |
