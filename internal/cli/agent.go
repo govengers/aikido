@@ -18,6 +18,13 @@ const defaultAgentSystemPrompt = "You are a focused assistant working in a virtu
 	"file system. Use your tools to read, write, list, delete, and search files. Files " +
 	"are markdown by default. Be concise."
 
+// workerSystemPrompt opens the system prompt when --system-file supplies the
+// instructions and --system is not set.
+const workerSystemPrompt = "You are an autonomous agent working unattended in the repository that is your " +
+	"workspace. Nobody answers questions during the run: decide from the repository's instructions below, " +
+	"use your tools to inspect and change files and to run commands, and finish the task end to end. " +
+	"Never claim a check you did not run."
+
 // maximumLoggedArgumentBytes keeps a tool call's arguments to one readable line.
 const maximumLoggedArgumentBytes = 200
 
@@ -31,21 +38,17 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 			"adds a directory under name/ (append :ro to make it read-only); it is written\n" +
 			"with --apply like --dir.",
 		ArgsUsage: "<prompt...>",
-		Flags: []urfavecli.Flag{
-			&urfavecli.StringFlag{Name: "model", Aliases: []string{"m"}, Value: "anthropic/claude-sonnet-4.6", Usage: "OpenRouter model id"},
-			&urfavecli.StringFlag{Name: "system", Aliases: []string{"s"}, Value: defaultAgentSystemPrompt, Usage: "System prompt"},
-			&urfavecli.StringFlag{Name: "session", Value: "cli-session", Usage: "Session id (also used as History key)"},
-			&urfavecli.IntFlag{Name: "max-tokens", Value: 4096, Usage: "Max output tokens per turn"},
-			&urfavecli.FloatFlag{Name: "temperature", Aliases: []string{"t"}, Value: -1, Usage: "Sampling temperature; <0 leaves provider default"},
-			newProviderFlag(),
-			&urfavecli.IntFlag{Name: "max-turns", Value: 20, Usage: "Cap before EndReasonMaxTurns"},
-			&urfavecli.BoolFlag{Name: "hide-hidden", Value: true, Usage: "Hide files whose path segments start with _ or ."},
-			&urfavecli.StringFlag{Name: "dir", Usage: "Work on this directory through an overlay; nothing is written without --apply"},
-			&urfavecli.BoolFlag{Name: "apply", Usage: "Write the changes of the run to --dir and the writable --mount directories"},
-			&urfavecli.StringSliceFlag{Name: "mount", Usage: "Extra directory as name=path, read-only with name=path:ro (repeatable)"},
-		},
+		Flags:     agentFlags(),
 		Action: func(ctx context.Context, command *urfavecli.Command) error {
 			mounts, err := parseMountFlags(command.StringSlice("mount"))
+			if err != nil {
+				return err
+			}
+			system := command.String("system")
+			if command.String("system-file") != "" && !command.IsSet("system") {
+				system = workerSystemPrompt
+			}
+			system, err = systemPrompt(system, command.String("system-file"))
 			if err != nil {
 				return err
 			}
@@ -55,7 +58,7 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 			}
 			return runAgent(withProviderFlag(ctx, command), agentOptions{
 				model:         command.String("model"),
-				system:        command.String("system"),
+				system:        system,
 				sessionID:     command.String("session"),
 				prompt:        promptFromArguments(command),
 				maximumTokens: command.Int("max-tokens"),
@@ -65,8 +68,35 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 				directory:     command.String("dir"),
 				apply:         command.Bool("apply"),
 				mounts:        mounts,
+				worker: workerOptions{
+					shell:       command.Bool("shell"),
+					direct:      command.Bool("direct"),
+					allowed:     command.StringSlice("allow"),
+					environment: command.StringSlice("env"),
+				},
 			}, resolveWriter(command), client)
 		},
+	}
+}
+
+func agentFlags() []urfavecli.Flag {
+	return []urfavecli.Flag{
+		&urfavecli.StringFlag{Name: "model", Aliases: []string{"m"}, Value: "anthropic/claude-sonnet-4.6", Usage: "OpenRouter model id"},
+		&urfavecli.StringFlag{Name: "system", Aliases: []string{"s"}, Value: defaultAgentSystemPrompt, Usage: "System prompt"},
+		&urfavecli.StringFlag{Name: "session", Value: "cli-session", Usage: "Session id (also used as History key)"},
+		&urfavecli.IntFlag{Name: "max-tokens", Value: 4096, Usage: "Max output tokens per turn"},
+		&urfavecli.FloatFlag{Name: "temperature", Aliases: []string{"t"}, Value: -1, Usage: "Sampling temperature; <0 leaves provider default"},
+		newProviderFlag(),
+		&urfavecli.IntFlag{Name: "max-turns", Value: 20, Usage: "Cap before EndReasonMaxTurns"},
+		&urfavecli.BoolFlag{Name: "hide-hidden", Value: true, Usage: "Hide files whose path segments start with _ or ."},
+		&urfavecli.StringFlag{Name: "dir", Usage: "Work on this directory through an overlay; nothing is written without --apply"},
+		&urfavecli.BoolFlag{Name: "apply", Usage: "Write the changes of the run to --dir and the writable --mount directories"},
+		&urfavecli.StringSliceFlag{Name: "mount", Usage: "Extra directory as name=path, read-only with name=path:ro (repeatable)"},
+		&urfavecli.BoolFlag{Name: "shell", Usage: "Give the agent a virtual bash over the workspace (tools/shell): no host access"},
+		&urfavecli.BoolFlag{Name: "direct", Usage: "With --dir: write changes to disk as they happen instead of through an overlay (no dry run)"},
+		&urfavecli.StringSliceFlag{Name: "allow", Usage: "Host program the bash tool may run, as name (from PATH) or name=path; needs --shell and --direct (repeatable)"},
+		&urfavecli.StringSliceFlag{Name: "env", Usage: "Variable for the allowed host programs, as NAME (copied from this environment) or NAME=value (repeatable)"},
+		&urfavecli.StringFlag{Name: "system-file", Usage: "Read the instructions from this file (e.g. the repo's CLAUDE.md) and append them to the system prompt"},
 	}
 }
 
@@ -82,6 +112,7 @@ type agentOptions struct {
 	directory     string // empty: in-memory workspace
 	apply         bool
 	mounts        []mountSpec
+	worker        workerOptions
 }
 
 func runAgent(ctx context.Context, options agentOptions, out io.Writer, client llm.Client) error {
@@ -91,7 +122,10 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 	if options.apply && options.directory == "" && len(options.mounts) == 0 {
 		return errors.New("--apply needs --dir or --mount: the in-memory workspace has nothing to write to")
 	}
-	workspace, err := openWorkspace(options.directory, options.mounts)
+	if err := validateWorkerOptions(options); err != nil {
+		return err
+	}
+	workspace, err := openWorkspace(options.directory, options.mounts, options.worker.direct)
 	if err != nil {
 		return err
 	}
@@ -165,6 +199,9 @@ func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Clien
 		HideHiddenPaths: options.hideHidden,
 	}); err != nil {
 		return nil, fmt.Errorf("RegisterVFSTools: %w", err)
+	}
+	if err := registerShell(registry, options, storage); err != nil {
+		return nil, err
 	}
 	sessionOptions := &agent.SessionOptions{
 		ID:            options.sessionID,

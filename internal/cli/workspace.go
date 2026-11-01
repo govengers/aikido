@@ -53,6 +53,7 @@ func parseMountFlags(values []string) ([]mountSpec, error) {
 // is the in-memory store of old; every directory sits behind an overlay, so
 // nothing reaches the disk unless the run ends with --apply.
 type workspace struct {
+	direct   bool // directories are used without an overlay
 	storage  vfs.Storage
 	memory   *vfsmem.Storage // the in-memory root without --dir, else nil
 	overlays []directoryOverlay
@@ -66,8 +67,10 @@ type directoryOverlay struct {
 	overlay   *overlay.Storage
 }
 
-func openWorkspace(directory string, mounts []mountSpec) (*workspace, error) {
-	opened := &workspace{}
+// openWorkspace opens --dir and the --mount directories, each behind an
+// overlay, or directly on disk with direct.
+func openWorkspace(directory string, mounts []mountSpec, direct bool) (*workspace, error) {
+	opened := &workspace{direct: direct}
 	root, err := opened.openRoot(directory)
 	if err != nil {
 		return nil, err
@@ -107,14 +110,18 @@ func (w *workspace) mountAll(root vfs.Storage, specs []mountSpec) (vfs.Storage, 
 	return storage, nil
 }
 
-// openDirectory puts an overlay over directory. Read-only mounts get one too:
+// openDirectory opens directory on disk, behind an overlay unless the workspace
+// is direct. Read-only mounts get an overlay too:
 // it never holds a change, but gives them the same search as the rest.
-func (w *workspace) openDirectory(prefix, directory string) (*overlay.Storage, error) {
+func (w *workspace) openDirectory(prefix, directory string) (vfs.Storage, error) {
 	disk, err := osfs.New(&osfs.Options{Directory: directory})
 	if err != nil {
 		return nil, err
 	}
 	w.disks = append(w.disks, disk)
+	if w.direct {
+		return disk, nil
+	}
 	layer, err := overlay.New(&overlay.Options{Base: disk})
 	if err != nil {
 		return nil, err
