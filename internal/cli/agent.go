@@ -10,7 +10,6 @@ import (
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/tools"
 	"github.com/govengers/aikido/vfs"
-	vfsmem "github.com/govengers/aikido/vfs/memory"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -24,8 +23,13 @@ const maximumLoggedArgumentBytes = 200
 
 func agentCommand(factory ClientFactory) *urfavecli.Command {
 	return &urfavecli.Command{
-		Name:      "agent",
-		Usage:     "Run an agent loop with built-in VFS tools over an in-memory workspace",
+		Name:  "agent",
+		Usage: "Run an agent loop with built-in VFS tools over an in-memory workspace or, with --dir, a directory",
+		Description: "Without --dir the agent works on an empty in-memory workspace. With --dir it\n" +
+			"works on a copy-on-write overlay of the directory: at the end the CLI prints the\n" +
+			"changes and a unified diff, and writes them only with --apply. --mount name=path\n" +
+			"adds a directory under name/ (append :ro to make it read-only); it is written\n" +
+			"with --apply like --dir.",
 		ArgsUsage: "<prompt...>",
 		Flags: []urfavecli.Flag{
 			&urfavecli.StringFlag{Name: "model", Aliases: []string{"m"}, Value: "anthropic/claude-sonnet-4.6", Usage: "OpenRouter model id"},
@@ -36,8 +40,15 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 			newProviderFlag(),
 			&urfavecli.IntFlag{Name: "max-turns", Value: 20, Usage: "Cap before EndReasonMaxTurns"},
 			&urfavecli.BoolFlag{Name: "hide-hidden", Value: true, Usage: "Hide files whose path segments start with _ or ."},
+			&urfavecli.StringFlag{Name: "dir", Usage: "Work on this directory through an overlay; nothing is written without --apply"},
+			&urfavecli.BoolFlag{Name: "apply", Usage: "Write the changes of the run to --dir and the writable --mount directories"},
+			&urfavecli.StringSliceFlag{Name: "mount", Usage: "Extra directory as name=path, read-only with name=path:ro (repeatable)"},
 		},
 		Action: func(ctx context.Context, command *urfavecli.Command) error {
+			mounts, err := parseMountFlags(command.StringSlice("mount"))
+			if err != nil {
+				return err
+			}
 			client, err := factory()
 			if err != nil {
 				return err
@@ -51,6 +62,9 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 				temperature:   command.Float("temperature"),
 				maximumTurns:  command.Int("max-turns"),
 				hideHidden:    command.Bool("hide-hidden"),
+				directory:     command.String("dir"),
+				apply:         command.Bool("apply"),
+				mounts:        mounts,
 			}, resolveWriter(command), client)
 		},
 	}
@@ -65,14 +79,24 @@ type agentOptions struct {
 	temperature   float64 // negative leaves the provider default
 	maximumTurns  int
 	hideHidden    bool
+	directory     string // empty: in-memory workspace
+	apply         bool
+	mounts        []mountSpec
 }
 
 func runAgent(ctx context.Context, options agentOptions, out io.Writer, client llm.Client) error {
 	if options.prompt == "" {
 		return errors.New("missing prompt: aikido agent [flags] <prompt...>")
 	}
-	storage := vfsmem.New()
-	session, err := newAgentSession(options, storage, client)
+	if options.apply && options.directory == "" && len(options.mounts) == 0 {
+		return errors.New("--apply needs --dir or --mount: the in-memory workspace has nothing to write to")
+	}
+	workspace, err := openWorkspace(options.directory, options.mounts)
+	if err != nil {
+		return err
+	}
+	defer workspace.close()
+	session, err := newAgentSession(options, workspace.storage, client)
 	if err != nil {
 		return err
 	}
@@ -83,12 +107,7 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 	for event := range events {
 		printAgentEvent(out, event)
 	}
-	// memory.Storage fails only on a done ctx, and then the run was
-	// interrupted and there is no final state worth printing.
-	if files, err := storage.ListFiles(ctx); err == nil {
-		printWorkspace(out, files)
-	}
-	return nil
+	return workspace.report(ctx, out, options.apply)
 }
 
 func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Client) (*agent.Session, error) {
