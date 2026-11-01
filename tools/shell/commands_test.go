@@ -92,6 +92,15 @@ func TestFileCommandCases(t *testing.T) {
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},
+		// The review's S31: output files resolved through path.Clean, so "out/" created a file out.
+		// awk's print > "out/" still does: GoAWK path.Cleans the name before its FileSystem sees it.
+		{
+			name: "output files with a trailing slash are never created", files: files,
+			script: "sort -o out/ a.txt; uniq a.txt out/; tee out/ a.txt/ nodir/x/ </dev/null; echo $?; sort -o a.txt/ a.txt; ls",
+			want: "sort: open failed: out/: Is a directory\nuniq: out/: Is a directory\n" +
+				"tee: out/: Is a directory\ntee: a.txt/: Is a directory\ntee: nodir/x/: No such file or directory\n1\n" +
+				"sort: open failed: a.txt/: Is a directory\na.txt\ndir\n",
+		},
 		{name: "cat /dev/stdin", files: files, script: "echo piped | cat /dev/stdin", want: "piped\n"},
 		{name: "redirect to /dev/stdout and /dev/stderr", files: files, script: "echo out > /dev/stdout; echo err > /dev/stderr", want: "out\nerr\n"},
 		{name: "redirect read of a directory", files: files, script: "cat < dir", want: "bash: line 1: dir: Is a directory\n", status: 1},

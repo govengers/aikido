@@ -357,30 +357,18 @@ type teeTarget struct {
 	appending  bool
 }
 
-// write writes what tee read to one operand.
+// write writes what tee read to one operand, through storeOutput like any
+// command's output file; -a puts the operand's current content first.
 func (t teeTarget) write(ctx context.Context, operand string) error {
-	invocation, files, content := t.invocation, t.files, t.content
-	name, err := resolve(invocation, operand)
-	if err != nil {
-		return err
-	}
-	switch name {
-	case "dev/null":
-		return nil
-	case "dev/stdout":
-		_, err := io.WriteString(invocation.Stdout, content)
-		return err
-	case "dev/stderr":
-		_, err := io.WriteString(invocation.Stderr, content)
-		return err
-	}
+	content := t.content
 	if t.appending {
-		existing, _, err := files.storage.ReadFile(ctx, name)
-		if err == nil {
-			content = string(existing) + content
+		if name, err := resolve(t.invocation, operand); err == nil {
+			if existing, _, err := t.files.storage.ReadFile(ctx, name); err == nil {
+				content = string(existing) + content
+			}
 		}
 	}
-	return files.writeFile(ctx, name, []byte(content))
+	return storeOutput(ctx, t.invocation, operand, []byte(content))
 }
 
 // limitedBuilder collects up to maximumBufferedFileBytes and then fails

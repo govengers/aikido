@@ -194,11 +194,19 @@ func (r *lineReader) next() (string, bool, error) {
 // print > file, sed -i) through the same path as a redirect: the parent
 // must exist, a directory is refused, the 64 MiB cap applies. /dev/null
 // discards, /dev/stdout and /dev/stderr write to the streams. Errors are
-// in GNU's words (errIsDirectory, errNotFound, errTooLarge, ...).
+// in GNU's words (errIsDirectory, errNotFound, errTooLarge, ...). A name
+// with a trailing slash is never created: open(O_CREAT) of "out/" fails
+// with EISDIR once its parent resolves.
 func storeOutput(ctx context.Context, invocation *Invocation, name string, content []byte) error {
 	resolved, err := resolve(invocation, name)
 	if err != nil {
 		return err
+	}
+	if strings.HasSuffix(name, "/") {
+		if err := workspaceOf(invocation).checkWritable(ctx, resolved); err != nil && !errors.Is(err, errUnsupported) {
+			return describe(err)
+		}
+		return errIsDirectory
 	}
 	var stream io.Writer
 	switch resolved {
