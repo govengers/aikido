@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -186,7 +185,7 @@ type sedEditor struct {
 	patternTerminated     bool
 	patternSpace, hold    string
 	appendQueue           []string
-	lastRegex             *regexp.Regexp
+	lastRegex             *posixRegexp
 	substituted, quitting bool
 	exitCode              int
 	rangeStates           []sedRangeState
@@ -365,7 +364,7 @@ func (e *sedEditor) run(ctx context.Context) error {
 			return err
 		}
 		e.patternSpace, e.substituted = text, false
-		autoprint, readNext, err := e.cycle()
+		autoprint, readNext, err := e.cycle(ctx)
 		if err != nil {
 			return err
 		}
@@ -393,17 +392,17 @@ func (e *sedEditor) flushAppends() {
 // cycle runs the program once over the pattern space. print says whether
 // the end of the cycle prints it, readNext whether a new line is read
 // (false after D).
-func (e *sedEditor) cycle() (bool, bool, error) {
+func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 	for counter := 0; counter < len(e.program); {
 		command := &e.program[counter]
-		if !e.selects(counter) {
+		if !e.selects(ctx, counter) {
 			if command.name == '{' {
 				counter = command.target
 			}
 			counter++
 			continue
 		}
-		next, outcome, err := e.execute(counter)
+		next, outcome, err := e.execute(ctx, counter)
 		if err != nil {
 			return false, false, err
 		}
@@ -439,7 +438,7 @@ const (
 
 // execute runs the selected command at counter and returns the next
 // command index.
-func (e *sedEditor) execute(counter int) (int, cycleOutcome, error) {
+func (e *sedEditor) execute(ctx context.Context, counter int) (int, cycleOutcome, error) {
 	command := &e.program[counter]
 	switch command.name {
 	case '{', '}', ':', '#', 'v':
@@ -474,7 +473,7 @@ func (e *sedEditor) execute(counter int) (int, cycleOutcome, error) {
 	case 'b', 't', 'T':
 		return e.branch(counter)
 	case 's':
-		return counter + 1, cycleContinue, e.substitute(command.substitution)
+		return counter + 1, cycleContinue, e.substitute(ctx, command.substitution)
 	default:
 		e.simpleCommand(command)
 	}
@@ -556,23 +555,23 @@ func (e *sedEditor) branch(counter int) (int, cycleOutcome, error) {
 
 // selects reports whether the command at index applies to the current line,
 // advancing its range state like GNU's match_address_p.
-func (e *sedEditor) selects(index int) bool {
+func (e *sedEditor) selects(ctx context.Context, index int) bool {
 	command := &e.program[index]
-	return e.matchesRange(index, command) != command.negate
+	return e.matchesRange(ctx, index, command) != command.negate
 }
 
-func (e *sedEditor) matchesRange(index int, command *sedInstruction) bool {
+func (e *sedEditor) matchesRange(ctx context.Context, index int, command *sedInstruction) bool {
 	if command.address1 == nil {
 		return true
 	}
 	if command.address2 == nil {
-		return e.matchesAddress(command.address1)
+		return e.matchesAddress(ctx, command.address1)
 	}
 	state := &e.rangeStates[index]
 	if state.active {
-		return e.continueRange(state, command.address2)
+		return e.continueRange(ctx, state, command.address2)
 	}
-	if state.closed || !e.matchesAddress(command.address1) {
+	if state.closed || !e.matchesAddress(ctx, command.address1) {
 		return false
 	}
 	switch second := command.address2; second.kind {
@@ -598,7 +597,7 @@ func (e *sedEditor) matchesRange(index int, command *sedInstruction) bool {
 }
 
 // continueRange decides a line inside an active range.
-func (e *sedEditor) continueRange(state *sedRangeState, second *sedAddress) bool {
+func (e *sedEditor) continueRange(ctx context.Context, state *sedRangeState, second *sedAddress) bool {
 	switch second.kind {
 	case addressLine, addressRelative, addressMultiple:
 		if e.lineNumber >= state.end {
@@ -607,13 +606,13 @@ func (e *sedEditor) continueRange(state *sedRangeState, second *sedAddress) bool
 		return e.lineNumber <= state.end
 	case addressLast, addressRegex, addressStep:
 	}
-	if e.matchesAddress(second) {
+	if e.matchesAddress(ctx, second) {
 		state.active = false
 	}
 	return true
 }
 
-func (e *sedEditor) matchesAddress(address *sedAddress) bool {
+func (e *sedEditor) matchesAddress(ctx context.Context, address *sedAddress) bool {
 	switch address.kind {
 	case addressLine:
 		return e.lineNumber == address.number
@@ -626,7 +625,7 @@ func (e *sedEditor) matchesAddress(address *sedAddress) bool {
 		return e.lineNumber >= address.number && (e.lineNumber-address.number)%address.step == 0
 	case addressRegex:
 		regex := e.useRegex(address.regex)
-		return regex != nil && regex.MatchString(e.patternSpace)
+		return regex != nil && regex.matchString(ctx, e.patternSpace)
 	case addressRelative, addressMultiple:
 	}
 	return false
@@ -635,7 +634,7 @@ func (e *sedEditor) matchesAddress(address *sedAddress) bool {
 // useRegex resolves "//" to the last regex used and remembers this one.
 // ponytail: "//" with no previous regex matches nothing; GNU fails with
 // "no previous regular expression".
-func (e *sedEditor) useRegex(regex *sedRegex) *regexp.Regexp {
+func (e *sedEditor) useRegex(regex *sedRegex) *posixRegexp {
 	if regex.regex == nil {
 		return e.lastRegex
 	}
@@ -644,12 +643,12 @@ func (e *sedEditor) useRegex(regex *sedRegex) *regexp.Regexp {
 }
 
 // substitute is the s command.
-func (e *sedEditor) substitute(substitution *sedSubstitution) error {
+func (e *sedEditor) substitute(ctx context.Context, substitution *sedSubstitution) error {
 	regex := e.useRegex(substitution.regex)
 	if regex == nil {
 		return nil
 	}
-	matches := regex.FindAllStringSubmatchIndex(e.patternSpace, -1)
+	matches := regex.findAll(ctx, e.patternSpace)
 	var result strings.Builder
 	last, replaced := 0, false
 	for count, match := range matches {

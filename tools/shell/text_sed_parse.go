@@ -3,7 +3,6 @@ package shell
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -36,7 +35,7 @@ type sedAddress struct {
 // sedRegex is a compiled address or s regex; a nil regex means "//", the
 // last regex used at run time.
 type sedRegex struct {
-	regex *regexp.Regexp
+	regex *posixRegexp
 }
 
 // replacementKind is one piece of an s replacement.
@@ -402,9 +401,9 @@ func (p *sedScriptParser) compileRegex(pattern string, ignoreCase, multiline boo
 	}
 	options := regexOptions{extended: p.extended, sedEscapes: true, multiline: multiline, ignoreCase: ignoreCase}
 	translated, err := translatePOSIX(pattern, options)
-	var compiled *regexp.Regexp
+	var compiled *posixRegexp
 	if err == nil {
-		compiled, err = compileGo(translated, options)
+		compiled, err = compilePOSIX(translated, options)
 	}
 	var problem *regexError
 	if errors.As(err, &problem) {
@@ -580,7 +579,7 @@ func (p *sedScriptParser) parseSubstitution(command *sedInstruction) error {
 	}
 	substitution.replacement = parseReplacement(replacementText)
 	if substitution.regex.regex != nil {
-		groups := substitution.regex.regex.NumSubexp()
+		groups := substitution.regex.regex.numGroups()
 		for _, part := range substitution.replacement {
 			if part.kind == replaceGroup && part.group > groups {
 				return p.fail(fmt.Sprintf("invalid reference \\%d on `s' command's RHS", part.group))

@@ -20,7 +20,7 @@ type regexOptions struct {
 	sedEscapes bool
 	// multiline is sed's M flag: ^ and $ also match around a newline, and
 	// neither "." nor a negated bracket matches one (GNU's REG_NEWLINE).
-	multiline bool
+	multiline  bool
 	ignoreCase bool
 	// leftmostFirst picks Perl's first alternative (grep -P) instead of
 	// POSIX's longest match.
@@ -90,19 +90,30 @@ type posixTranslator struct {
 	atomStart int
 	// quantified says the last atom already carries a repetition.
 	quantified bool
+	// result collects the capture groups and word boundaries.
+	result translation
 }
 
-func translatePOSIX(pattern string, options regexOptions) (string, error) {
+func translatePOSIX(pattern string, options regexOptions) (translation, error) {
 	translator := &posixTranslator{options: options, pattern: pattern, atStart: true, atomStart: -1}
 	for translator.position < len(pattern) {
 		if err := translator.step(); err != nil {
-			return "", err
+			return translation{}, err
 		}
 	}
 	if len(translator.groups) > 0 {
-		return "", &regexError{`Unmatched ( or \(`}
+		return translation{}, &regexError{`Unmatched ( or \(`}
 	}
-	return translator.output.String(), nil
+	translator.result.pattern = translator.output.String()
+	return translator.result, nil
+}
+
+// boundary emits GNU's \< or \>: RE2 has only the undirected \b, so the
+// position is captured by an empty group the match is checked against.
+func (t *posixTranslator) boundary(start bool) {
+	t.result.captures++
+	t.result.boundaries = append(t.result.boundaries, wordBoundary{capture: t.result.captures, start: start})
+	t.output.WriteString(`\b()`)
 }
 
 // step translates the next token.
@@ -194,8 +205,7 @@ func (t *posixTranslator) escape() error {
 	}
 	switch character {
 	case '<', '>':
-		// ponytail: Go has no \< \>; \b also matches at the other word edge.
-		t.output.WriteString(`\b`)
+		t.boundary(character == '<')
 	case 'b', 'B':
 		t.output.WriteString(`\` + string(character))
 	case 'w', 'W', 's', 'S':
@@ -311,6 +321,8 @@ func (t *posixTranslator) basicOperator(character byte) (bool, error) {
 }
 
 func (t *posixTranslator) openGroup() {
+	t.result.captures++
+	t.result.groups = append(t.result.groups, t.result.captures)
 	t.groups = append(t.groups, t.output.Len())
 	t.output.WriteString("(")
 	t.atStart = true

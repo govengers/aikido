@@ -130,13 +130,13 @@ func TestTranslatePOSIX(t *testing.T) {
 		{`x$y`, regexOptions{}, `x\$y`},
 		{`a|b+`, regexOptions{}, `a\|b\+`},
 		{`(a|b)+`, regexOptions{extended: true}, `(a|b)+`},
-		{`\<w\>`, regexOptions{}, `\bw\b`},
+		{`\<w\>`, regexOptions{}, `\b()w\b()`},
 		{`a\tb`, regexOptions{sedEscapes: true}, "a\tb"},
 		{`a\tb`, regexOptions{}, `atb`},
 	} {
 		got, err := translatePOSIX(testCase.pattern, testCase.options)
-		if err != nil || got != testCase.want {
-			t.Errorf("translatePOSIX(%q) = %q, %v; want %q", testCase.pattern, got, err, testCase.want)
+		if err != nil || got.pattern != testCase.want {
+			t.Errorf("translatePOSIX(%q) = %q, %v; want %q", testCase.pattern, got.pattern, err, testCase.want)
 		}
 	}
 }

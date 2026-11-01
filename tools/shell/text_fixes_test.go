@@ -30,6 +30,17 @@ var reviewCases = []scriptCase{
 	{name: "sed M flag negated bracket", script: `printf 'a\nb\n' | sed 'N;s/a[^x]*/X/M'`, want: "X\nb\n"},
 	{name: "sed M flag anchors", script: `printf 'a\nb\n' | sed 'N;s/^b$/B/M'`, want: "a\nB\n"},
 	{name: "sed without M dot spans newline", script: `printf 'a\nb\n' | sed 'N;s/a.*/X/'`, want: "X\n"},
+	{name: "sed word start", script: `echo foo | sed 's/\</X/g'`, want: "Xfoo\n"},
+	{name: "sed word end", script: `echo foo | sed 's/\>/X/g'`, want: "fooX\n"},
+	{name: "sed word edges", script: `echo 'foo bar' | sed 's/\</[/g; s/\>/]/g'`, want: "[foo] [bar]\n"},
+	{name: "sed word end shortens the match", script: `echo 'ab cd-' | sed 's/\<a.*\>/X/'`, want: "X-\n"},
+	{name: "sed anchored word start", script: `echo 'a a' | sed 's/^\<a/X/g'`, want: "X a\n"},
+	{name: "sed word start group numbering", script: `echo 'ab' | sed 's/\<\(a\)\(b\)/\2\1/'`, want: "ba\n"},
+	{name: "grep word start", script: `echo 'xfoo foo' | grep -o '\<foo'`, want: "foo\n"},
+	{name: "grep word end", script: `printf 'foox\nfoo\n' | grep 'foo\>'`, want: "foo\n"},
+	{name: "grep -w keeps the line start", script: `printf 'ab c\n' | grep -w '^.'`, want: "", status: 1},
+	{name: "grep -w keeps the word boundary", script: `printf 'xa a\n' | grep -ow '\ba'`, want: "a\n"},
+	{name: "grep -w later word", script: `printf 'foobar foo\n' | grep -w foo`, want: "foobar foo\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
