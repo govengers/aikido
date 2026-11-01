@@ -361,6 +361,14 @@ type wireMessage struct {
 	ToolCalls  []wireToolCall  `json:"tool_calls"`
 }
 
+// contentPart is one part of a message's content array.
+type contentPart struct {
+	Text         string `json:"text"`
+	CacheControl *struct {
+		Type string `json:"type"`
+	} `json:"cache_control"`
+}
+
 type wireToolCall struct {
 	ID       string `json:"id"`
 	Function struct {
@@ -382,15 +390,25 @@ func (message wireMessage) text() string {
 	if json.Unmarshal(message.Content, &plain) == nil {
 		return plain
 	}
-	var parts []struct {
-		Text string `json:"text"`
-	}
+	var parts []contentPart
 	_ = json.Unmarshal(message.Content, &parts) // not parts either: no text
 	var joined strings.Builder
 	for _, part := range parts {
 		joined.WriteString(part.Text)
 	}
 	return joined.String()
+}
+
+// cacheBreakpoint reports whether the message is a prompt-cache breakpoint:
+// a content part carrying cache_control of type ephemeral.
+func (message wireMessage) cacheBreakpoint() bool {
+	var parts []contentPart
+	if json.Unmarshal(message.Content, &parts) != nil {
+		return false // plain string content has no part to carry it
+	}
+	return slices.ContainsFunc(parts, func(part contentPart) bool {
+		return part.CacheControl != nil && part.CacheControl.Type == "ephemeral"
+	})
 }
 
 func (body chatRequestBody) toolNames() []string {
