@@ -66,6 +66,11 @@ var reviewCases = []scriptCase{
 	{name: "wc -m across chunk boundaries", files: map[string]string{"e": strings.Repeat("é", 50000) + "\n"}, script: `cat e | wc -m -c`, want: "  50001  100001\n"},
 	{name: "uniq -D streams groups", script: `printf 'a\na\nb\nc\nc\nc\n' | uniq -D`, want: "a\na\nc\nc\nc\n"},
 	{name: "uniq -D -u prints nothing", script: `printf 'a\na\nb\n' | uniq -D -u`, want: ""},
+	{name: "sort -o onto a directory", files: map[string]string{"a.txt": "b\na\n", "d/x": ""}, script: `sort -o d a.txt; echo $?; ls d`, want: "sort: open failed: d: Is a directory\n2\nx\n"},
+	{name: "sort -o to /dev/stdout", files: map[string]string{"a.txt": "b\na\n"}, script: `sort -o /dev/stdout a.txt; ls /dev/stdout 2>/dev/null; find . -path ./dev`, want: "a\nb\n/dev/stdout\n"},
+	{name: "sort -o without parent", files: map[string]string{"a.txt": "b\na\n"}, script: `sort -o nodir/f a.txt; echo $?`, want: "sort: open failed: nodir/f: No such file or directory\n2\n"},
+	{name: "uniq OUTPUT onto a directory", files: map[string]string{"a.txt": "a\na\n", "d/x": ""}, script: `uniq a.txt d; echo $?`, want: "uniq: d: Is a directory\n1\n"},
+	{name: "uniq OUTPUT to /dev/null", files: map[string]string{"a.txt": "a\na\n"}, script: `uniq a.txt /dev/null; find . -path ./dev`, want: ""},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 

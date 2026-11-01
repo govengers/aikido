@@ -82,7 +82,7 @@ func runUniq(ctx context.Context, invocation *Invocation) error {
 		if err := settings.filter(ctx, newLineReader(reader), &limitedBuilder{builder: &result}); err != nil {
 			return err
 		}
-		return writeOutputFile(ctx, invocation, uniqTool, line.operands[1], result.String())
+		return writeOutputFile(ctx, invocation, line.operands[1], result.String())
 	}
 	output := bufio.NewWriter(invocation.Stdout)
 	err = settings.filter(ctx, newLineReader(reader), output)
@@ -224,14 +224,11 @@ func (s *uniqSettings) comparedPart(line string) string {
 	return part
 }
 
-// writeOutputFile writes a command's result to a file operand.
-func writeOutputFile(ctx context.Context, invocation *Invocation, tool *textTool, name, text string) error {
-	resolved, err := Resolve(invocation.Directory, name)
-	if err != nil || resolved == "" {
-		return tool.fatal(invocation, 1, "%s: %s", name, reasonNoSuchFile)
-	}
-	if err := invocation.Storage.WriteFile(ctx, resolved, []byte(text), "text/plain"); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
+// writeOutputFile writes uniq's result to its OUTPUT operand; a failure is
+// reported like GNU's "uniq: NAME: REASON" with status 1.
+func writeOutputFile(ctx context.Context, invocation *Invocation, name, text string) error {
+	if err := storeOutput(ctx, invocation, name, []byte(text)); err != nil {
+		return uniqTool.fatal(invocation, 1, "%s: %v", name, err)
 	}
 	return nil
 }

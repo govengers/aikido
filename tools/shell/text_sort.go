@@ -479,12 +479,8 @@ func writeSorted(ctx context.Context, invocation *Invocation, settings sortSetti
 		}
 		return nil
 	}
-	resolved, err := Resolve(invocation.Directory, settings.output)
-	if err != nil || resolved == "" {
-		return sortTool.fatal(invocation, 2, "open failed: %s: %s", settings.output, reasonNoSuchFile)
-	}
-	if err := invocation.Storage.WriteFile(ctx, resolved, []byte(text), "text/plain"); err != nil {
-		return fmt.Errorf("write %s: %w", settings.output, err)
+	if err := storeOutput(ctx, invocation, settings.output, []byte(text)); err != nil {
+		return sortTool.fatal(invocation, 2, "open failed: %s: %v", settings.output, err)
 	}
 	return nil
 }

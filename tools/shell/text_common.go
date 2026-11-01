@@ -190,6 +190,33 @@ func (r *lineReader) next() (string, bool, error) {
 	}
 }
 
+// storeOutput writes a command's output file (sort -o, uniq OUTPUT, awk's
+// print > file, sed -i) through the same path as a redirect: the parent
+// must exist, a directory is refused, the 64 MiB cap applies. /dev/null
+// discards, /dev/stdout and /dev/stderr write to the streams. Errors are
+// in GNU's words (errIsDirectory, errNotFound, errTooLarge, ...).
+func storeOutput(ctx context.Context, invocation *Invocation, name string, content []byte) error {
+	resolved, err := resolve(invocation, name)
+	if err != nil {
+		return err
+	}
+	var stream io.Writer
+	switch resolved {
+	case "dev/null":
+		return nil
+	case "dev/stdout":
+		stream = invocation.Stdout
+	case "dev/stderr":
+		stream = invocation.Stderr
+	default:
+		return workspaceOf(invocation).writeFile(ctx, resolved, content)
+	}
+	if _, err := stream.Write(content); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return nil
+}
+
 // operandError is a file operand that cannot be read; reason is the
 // strerror text GNU prints for it.
 type operandError struct{ reason string }
