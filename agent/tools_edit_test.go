@@ -292,7 +292,6 @@ func TestMoveFile_CaseOnlyRenameOnCaseInsensitiveDisk(t *testing.T) {
 }
 
 func TestMoveFile_CaseOnlyRenameThroughOverlayCommit(t *testing.T) {
-	t.Skip("needs the vfs/overlay fix: Commit applies deletes before writes and Changes treats a write shadowed by an EqualFold tombstone as a create")
 	storage := caseInsensitiveStorage(t, true)
 	staged, ok := storage.(*overlay.Storage)
 	if !ok {
