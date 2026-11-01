@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/govengers/aikido/vfs/osfs"
 )
@@ -134,5 +135,20 @@ func TestNegativeShiftIsRefused(t *testing.T) {
 		"bash: line 1: shift: -2: shift count out of range\nbash: line 1: shift: -3: shift count out of range\n1\nb\n"
 	if result.Output != want {
 		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}
+
+// TestJobCleanupRunsNoScriptCode replays the review's cleanup hang: the
+// closing wait resolved a script function named wait (an endless loop) and,
+// run as a file, ran the EXIT trap a second time.
+func TestJobCleanupRunsNoScriptCode(t *testing.T) {
+	shell, _ := newTestShell(t, nil, &Options{Timeout: 10 * time.Second})
+	started := time.Now()
+	result := mustRun(t, shell, "wait() { while :; do :; done; }; builtin() { while :; do :; done; }; trap 'echo exit-trap' EXIT; sleep 0.01 &")
+	if result.Output != "exit-trap\n" || result.ExitCode != 0 {
+		t.Fatalf("output = %q, exit %d; want one EXIT trap", result.Output, result.ExitCode)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("Run took %v", elapsed)
 	}
 }

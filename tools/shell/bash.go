@@ -145,7 +145,7 @@ func (s *session) runNested(ctx context.Context, file *syntax.File, invocation *
 	if err != nil {
 		return err
 	}
-	runErr := runFile(ctx, runner, file)
+	_, runErr := runFile(ctx, runner, file)
 	if status, ok := exitStatusOf(runErr); ok {
 		if status == 0 {
 			return nil

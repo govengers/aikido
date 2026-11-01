@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
@@ -114,20 +115,48 @@ func stdinFile(stdin io.Reader) io.Reader {
 	return stdin
 }
 
-// runFile runs a parsed script to its end. Background jobs (&) end with the
-// script, as they do when bash -c returns: they are cancelled and awaited so
-// none writes after runFile returns.
-func runFile(ctx context.Context, runner *interp.Runner, file *syntax.File) error {
+// jobCleanupTimeout bounds the wait for background jobs after a script:
+// they are cancelled first, so only a job stuck in something that ignores
+// its context takes that long.
+const jobCleanupTimeout = 5 * time.Second
+
+// runFile runs a parsed script to its end and returns the interpreter's
+// final directory. Background jobs (&) end with the script, as they do when
+// bash -c returns: they are cancelled and awaited so none writes after
+// runFile returns (unless one ignores cancellation for jobCleanupTimeout).
+func runFile(ctx context.Context, runner *interp.Runner, file *syntax.File) (string, error) {
 	jobs, stopJobs := context.WithCancel(ctx)
 	err := runner.Run(jobs, file)
 	stopJobs()
-	wait, parseErr := syntax.NewParser().Parse(strings.NewReader("wait"), "")
-	if parseErr == nil {
-		// The status of the closing wait is not the script's, so it is
-		// dropped.
-		_ = runner.Run(context.WithoutCancel(ctx), wait)
+	directory := runner.Dir
+	awaitJobs(ctx, runner)
+	return directory, err
+}
+
+// awaitJobs runs the builtin wait without any script code: the script's
+// functions are dropped first (a function named wait or builtin would run
+// instead), and wait runs as a statement, not a file, so the EXIT trap does
+// not run a second time.
+func awaitJobs(ctx context.Context, runner *interp.Runner) {
+	wait, err := syntax.NewParser().Parse(strings.NewReader("wait"), "")
+	if err != nil {
+		return
 	}
-	return err
+	runner.Funcs = nil
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A panic here must not end the host; the status is already decided.
+		defer func() { _ = recover() }()
+		// The status of the closing wait is not the script's.
+		_ = runner.Run(context.WithoutCancel(ctx), wait.Stmts[0])
+	}()
+	timer := time.NewTimer(jobCleanupTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 // exitStatusOf returns the exit status a Run error carries, and whether the

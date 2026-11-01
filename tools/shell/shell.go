@@ -226,8 +226,8 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	}
 	runContext, cancel := s.withTimeout(ctx)
 	defer cancel()
-	runErr := runFile(runContext, runner, file)
-	s.directory = workspaceDirectory(runner.Dir)
+	directory, runErr := runFile(runContext, runner, file)
+	s.directory = workspaceDirectory(directory)
 	if status, ok := exitStatusOf(runErr); ok {
 		return status, nil
 	}
