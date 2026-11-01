@@ -342,6 +342,39 @@ func TestMoveFile_CaseOnlyRenameRestoresTheSourceOnFailure(t *testing.T) {
 	}
 }
 
+// deadlineRecordingStorage fails the delete of failPath and records, for
+// every other delete, whether its context had a deadline and was cancelled.
+type deadlineRecordingStorage struct {
+	vfs.Storage
+	failPath  string
+	deadlines *[]bool
+}
+
+func (s deadlineRecordingStorage) DeleteFile(ctx context.Context, filePath string) error {
+	if filePath == s.failPath {
+		return errors.New("locked")
+	}
+	_, hasDeadline := ctx.Deadline()
+	*s.deadlines = append(*s.deadlines, hasDeadline && ctx.Err() == nil)
+	return s.Storage.DeleteFile(ctx, filePath)
+}
+
+// Regression: the cleanup of a failed case-only move ran on a context
+// without cancellation and without deadline, so a stalled Storage could hold
+// the run and its session lock forever.
+func TestMoveFile_CaseOnlyCleanupIsBounded(t *testing.T) {
+	base := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "alpha"}).Storage
+	var deadlines []bool
+	storage := deadlineRecordingStorage{Storage: base, failPath: "a.md", deadlines: &deadlines}
+	err := moveCaseOnly(context.Background(), storage, moveFileArguments{Source: "a.md", Destination: "A.md"}, []byte("alpha"), "text/markdown")
+	if err == nil || !strings.Contains(err.Error(), "delete a.md: locked") {
+		t.Fatalf("err = %v; want the failed source delete", err)
+	}
+	if !slices.Equal(deadlines, []bool{true}) {
+		t.Errorf("staging cleanup saw deadline-and-live = %v; want [true]", deadlines)
+	}
+}
+
 func TestMovedContentType(t *testing.T) {
 	testCases := []struct{ destination, source, want string }{
 		{"a.md", "text/plain", vfs.ContentTypeFor("a.md")},

@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/govengers/aikido/llm"
@@ -280,33 +281,50 @@ func moveFile(ctx context.Context, options VFSToolOptions, arguments moveFileArg
 	return int64(len(content)), nil
 }
 
+// caseOnlyCleanupTimeout bounds each cleanup step of moveCaseOnly, which
+// ignores the tool call's cancellation and deadline.
+const caseOnlyCleanupTimeout = 30 * time.Second
+
 // moveCaseOnly moves source to a destination that differs only in case. On a
 // case-insensitive backend (vfs/osfs on macOS or Windows) both name one file,
 // so writing the destination and then deleting the source would delete the
 // moved file. The bytes go through a staging file next to the destination
 // instead: write staging, delete source, write destination, delete staging.
 // Cleanup after a failed step ignores ctx's cancellation, so a cancelled move
-// does not lose the file; if even restoring the source fails, the error names
-// the staging file that still holds the content.
+// does not lose the file, but each cleanup step ends after
+// caseOnlyCleanupTimeout, so a stalled Storage cannot hold the run; if even
+// restoring the source fails, the error names the staging file that still
+// holds the content.
 func moveCaseOnly(ctx context.Context, storage vfs.Storage, arguments moveFileArguments, content []byte, contentType string) error {
 	staging := path.Join(path.Dir(arguments.Destination), ".aikido-move-"+uuid.NewString()+path.Ext(arguments.Destination))
 	if err := storage.WriteFile(ctx, staging, content, contentType); err != nil {
 		return fmt.Errorf("stage %s: %w", arguments.Source, err)
 	}
-	cleanupContext := context.WithoutCancel(ctx)
+	deleteStaging := func(cleanupContext context.Context) error { return storage.DeleteFile(cleanupContext, staging) }
 	if err := storage.DeleteFile(ctx, arguments.Source); err != nil {
-		return errors.Join(fmt.Errorf("delete %s: %w", arguments.Source, err), storage.DeleteFile(cleanupContext, staging))
+		return errors.Join(fmt.Errorf("delete %s: %w", arguments.Source, err), cleanup(ctx, deleteStaging))
 	}
 	if err := storage.WriteFile(ctx, arguments.Destination, content, contentType); err != nil {
-		if restoreError := storage.WriteFile(cleanupContext, arguments.Source, content, contentType); restoreError != nil {
+		restoreError := cleanup(ctx, func(cleanupContext context.Context) error {
+			return storage.WriteFile(cleanupContext, arguments.Source, content, contentType)
+		})
+		if restoreError != nil {
 			return fmt.Errorf("write %s: %w; restoring %s failed too (%w), its content is in %s", arguments.Destination, err, arguments.Source, restoreError, staging)
 		}
-		return errors.Join(fmt.Errorf("write %s: %w", arguments.Destination, err), storage.DeleteFile(cleanupContext, staging))
+		return errors.Join(fmt.Errorf("write %s: %w", arguments.Destination, err), cleanup(ctx, deleteStaging))
 	}
-	if err := storage.DeleteFile(cleanupContext, staging); err != nil {
+	if err := cleanup(ctx, deleteStaging); err != nil {
 		return fmt.Errorf("moved %s to %s but could not delete the staging file %s: %w", arguments.Source, arguments.Destination, staging, err)
 	}
 	return nil
+}
+
+// cleanup runs one cleanup step on a context that keeps ctx's values but not
+// its cancellation or deadline, and ends after caseOnlyCleanupTimeout.
+func cleanup(ctx context.Context, step func(context.Context) error) error {
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), caseOnlyCleanupTimeout)
+	defer cancel()
+	return step(cleanupContext)
 }
 
 // checkAbsent fails when filePath already holds a file. For a case-only move
