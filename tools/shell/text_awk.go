@@ -150,11 +150,8 @@ func readAwkPrograms(ctx context.Context, invocation *Invocation, names []string
 func executeAwk(ctx context.Context, invocation *Invocation, settings awkSettings, program *parser.Program) error {
 	config := &interp.Config{
 		Stdin: invocation.Stdin, Output: invocation.Stdout, Error: invocation.Stderr,
-		Argv0: "awk", Args: settings.operands, Environ: invocation.Environment, NoExec: true,
+		Argv0: "awk", Args: settings.operands, Environ: awkEnvironment(invocation.Environment), NoExec: true,
 		FileSystem: newAwkFileSystem(ctx, invocation),
-	}
-	if config.Environ == nil {
-		config.Environ = []string{}
 	}
 	for _, assignment := range settings.variables {
 		name, value, _ := strings.Cut(assignment, "=")
@@ -173,6 +170,18 @@ func executeAwk(ctx context.Context, invocation *Invocation, settings awkSetting
 		return reportAwkError(ctx, invocation, err)
 	}
 	return exitStatus(ExitError(status & 0xff))
+}
+
+// awkEnvironment turns NAME=value variables into GoAWK's Environ, which
+// alternates names and values. It is never nil: nil would make GoAWK read
+// the host environment.
+func awkEnvironment(variables []string) []string {
+	environ := make([]string, 0, 2*len(variables))
+	for _, variable := range variables {
+		name, value, _ := strings.Cut(variable, "=")
+		environ = append(environ, name, value)
+	}
+	return environ
 }
 
 // reportAwkError reports a run-time error like gawk, with status 2.

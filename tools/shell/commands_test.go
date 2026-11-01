@@ -100,6 +100,19 @@ func TestUtilityCommandCases(t *testing.T) {
 	}, &Options{Commands: []Command{dateCommand(func() time.Time { return time.Unix(0, 0) })}, Timeout: 50 * time.Millisecond})
 }
 
+// TestBenchmarkCommands replays commands models ran in the coding benchmark
+// (benchmark/results/coding-vsh-*) that failed in the virtual shell.
+func TestBenchmarkCommands(t *testing.T) {
+	lines := map[string]string{"LINES.md": "pkg/a.go: 12\npkg/b.go: 30\n"}
+	runScriptCases(t, []scriptCase{
+		{
+			name: "awk with an exported environment", files: lines,
+			script: `awk -F': ' '{s+=$2} END{print "total: " s}' LINES.md; awk 'BEGIN {print ENVIRON["HOME"]}'`,
+			want:   "total: 42\n/\n",
+		},
+	}, nil)
+}
+
 func TestLsLong(t *testing.T) {
 	shell, _ := newTestShell(t, map[string]string{"big": strings.Repeat("x", 5000), "dir/small": "s"}, nil)
 	mustRun(t, shell, "cp /dev/null empty")
