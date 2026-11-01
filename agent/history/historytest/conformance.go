@@ -4,6 +4,7 @@ package historytest
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/govengers/aikido/agent"
@@ -12,88 +13,92 @@ import (
 
 // RunConformance executes the standard suite against a History factory.
 //
-// Sub-tests are serial. Implementations test their backend by calling this
-// from a TestX function in their package.
+// factory must return a new, empty History on every call. Sub-tests are
+// serial. Implementations test their backend by calling this from a TestX
+// function in their package.
 func RunConformance(t *testing.T, factory func() agent.History) {
 	t.Helper()
+	conformanceTests := []struct {
+		name string
+		run  func(t *testing.T, history agent.History)
+	}{
+		{"ReadEmpty", testReadEmpty},
+		{"AppendThenRead", testAppendThenRead},
+		{"AppendsAccumulate", testAppendsAccumulate},
+		{"PerSessionIsolation", testPerSessionIsolation},
+		{"ReadIsolatedFromMutation", testReadIsolatedFromMutation},
+		{"EmptyAppendIsNoop", testEmptyAppendIsNoop},
+	}
+	for _, conformanceTest := range conformanceTests {
+		t.Run(conformanceTest.name, func(t *testing.T) {
+			conformanceTest.run(t, factory())
+		})
+	}
+}
 
-	t.Run("ReadEmpty", func(t *testing.T) {
-		h := factory()
-		msgs, err := h.Read(context.Background(), "s")
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		if len(msgs) != 0 {
-			t.Errorf("Read empty = %v; want []", msgs)
-		}
-	})
+func testReadEmpty(t *testing.T, history agent.History) {
+	expectContents(t, mustRead(t, history, "s"))
+}
 
-	t.Run("AppendThenRead", func(t *testing.T) {
-		h := factory()
-		ctx := context.Background()
-		err := h.Append(ctx, "s",
-			llm.Message{Role: llm.RoleUser, Content: "hi"},
-			llm.Message{Role: llm.RoleAssistant, Content: "hello"},
-		)
-		if err != nil {
-			t.Fatalf("Append: %v", err)
-		}
-		msgs, err := h.Read(ctx, "s")
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		if len(msgs) != 2 {
-			t.Fatalf("len(msgs) = %d; want 2", len(msgs))
-		}
-		if msgs[0].Content != "hi" || msgs[1].Content != "hello" {
-			t.Errorf("msgs = %+v", msgs)
-		}
-	})
+func testAppendThenRead(t *testing.T, history agent.History) {
+	mustAppend(t, history, "s",
+		llm.Message{Role: llm.RoleUser, Content: "hi"},
+		llm.Message{Role: llm.RoleAssistant, Content: "hello"},
+	)
+	expectContents(t, mustRead(t, history, "s"), "hi", "hello")
+}
 
-	t.Run("AppendsAccumulate", func(t *testing.T) {
-		h := factory()
-		ctx := context.Background()
-		_ = h.Append(ctx, "s", llm.Message{Role: llm.RoleUser, Content: "a"})
-		_ = h.Append(ctx, "s", llm.Message{Role: llm.RoleUser, Content: "b"})
-		msgs, _ := h.Read(ctx, "s")
-		if len(msgs) != 2 || msgs[0].Content != "a" || msgs[1].Content != "b" {
-			t.Errorf("msgs = %+v", msgs)
-		}
-	})
+func testAppendsAccumulate(t *testing.T, history agent.History) {
+	mustAppend(t, history, "s", llm.Message{Role: llm.RoleUser, Content: "a"})
+	mustAppend(t, history, "s", llm.Message{Role: llm.RoleUser, Content: "b"})
+	expectContents(t, mustRead(t, history, "s"), "a", "b")
+}
 
-	t.Run("PerSessionIsolation", func(t *testing.T) {
-		h := factory()
-		ctx := context.Background()
-		_ = h.Append(ctx, "s1", llm.Message{Role: llm.RoleUser, Content: "x"})
-		_ = h.Append(ctx, "s2", llm.Message{Role: llm.RoleUser, Content: "y"})
-		m1, _ := h.Read(ctx, "s1")
-		m2, _ := h.Read(ctx, "s2")
-		if len(m1) != 1 || m1[0].Content != "x" {
-			t.Errorf("s1 msgs = %+v", m1)
-		}
-		if len(m2) != 1 || m2[0].Content != "y" {
-			t.Errorf("s2 msgs = %+v", m2)
-		}
-	})
+func testPerSessionIsolation(t *testing.T, history agent.History) {
+	mustAppend(t, history, "s1", llm.Message{Role: llm.RoleUser, Content: "x"})
+	mustAppend(t, history, "s2", llm.Message{Role: llm.RoleUser, Content: "y"})
+	expectContents(t, mustRead(t, history, "s1"), "x")
+	expectContents(t, mustRead(t, history, "s2"), "y")
+}
 
-	t.Run("ReadIsolatedFromMutation", func(t *testing.T) {
-		h := factory()
-		ctx := context.Background()
-		_ = h.Append(ctx, "s", llm.Message{Role: llm.RoleUser, Content: "a"})
-		msgs, _ := h.Read(ctx, "s")
-		if len(msgs) > 0 {
-			msgs[0].Content = "MUTATED"
-		}
-		again, _ := h.Read(ctx, "s")
-		if again[0].Content != "a" {
-			t.Errorf("Read returned aliased slice; mutation leaked: %v", again[0].Content)
-		}
-	})
+func testReadIsolatedFromMutation(t *testing.T, history agent.History) {
+	mustAppend(t, history, "s", llm.Message{Role: llm.RoleUser, Content: "a"})
+	if messages := mustRead(t, history, "s"); len(messages) > 0 {
+		messages[0].Content = "MUTATED"
+	}
+	expectContents(t, mustRead(t, history, "s"), "a")
+}
 
-	t.Run("EmptyAppendIsNoop", func(t *testing.T) {
-		h := factory()
-		if err := h.Append(context.Background(), "s"); err != nil {
-			t.Errorf("Append() with no messages = %v; want nil", err)
-		}
-	})
+func testEmptyAppendIsNoop(t *testing.T, history agent.History) {
+	mustAppend(t, history, "s")
+	expectContents(t, mustRead(t, history, "s"))
+}
+
+func mustAppend(t *testing.T, history agent.History, sessionID string, messages ...llm.Message) {
+	t.Helper()
+	if err := history.Append(context.Background(), sessionID, messages...); err != nil {
+		t.Fatalf("Append(%s): %v", sessionID, err)
+	}
+}
+
+// expectContents checks that messages hold exactly the given contents, in
+// order.
+func expectContents(t *testing.T, messages []llm.Message, contents ...string) {
+	t.Helper()
+	got := make([]string, 0, len(messages))
+	for _, message := range messages {
+		got = append(got, message.Content)
+	}
+	if !slices.Equal(got, contents) {
+		t.Errorf("message contents = %q; want %q", got, contents)
+	}
+}
+
+func mustRead(t *testing.T, history agent.History, sessionID string) []llm.Message {
+	t.Helper()
+	messages, err := history.Read(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("Read(%s): %v", sessionID, err)
+	}
+	return messages
 }
