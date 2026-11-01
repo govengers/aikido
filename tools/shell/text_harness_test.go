@@ -43,7 +43,7 @@ type textCase struct {
 
 // allTextCases gathers the case tables of every text command.
 func allTextCases() []textCase {
-	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases)
+	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases, grepCases, sedCases)
 }
 
 func TestTextCases(t *testing.T) {
@@ -269,7 +269,7 @@ func gnuRunner(t *testing.T) func(*testing.T, string) {
 	}
 	return func(t *testing.T, directory string) {
 		t.Helper()
-		runOrFail(t, exec.CommandContext(t.Context(), "docker", "run", "--rm", "-v", directory+":/w", "-w", "/w", "debian:12", "bash", "/w/run.sh"), directory)
+		runOrFail(t, exec.CommandContext(t.Context(), "docker", "run", "--rm", "--init", "-v", directory+":/w", "-w", "/w", "debian:12", "bash", "/w/run.sh"), directory)
 	}
 }
 
@@ -293,7 +293,7 @@ func writeGNUCases(t *testing.T, directory string, cases []textCase) {
 		writeFiles(t, filepath.Join(directory, "io", strconv.Itoa(index)), map[string]string{
 			"stdin": testCase.stdin, "script": testCase.script,
 		})
-		fmt.Fprintf(&script, "cd \"$root/cases/%d\"; io=\"$root/io/%d\"; cat \"$io/stdin\" | bash \"$io/script\" >\"$io/stdout\" 2>\"$io/stderr\"; echo $? >\"$io/exit\"\n", index, index)
+		fmt.Fprintf(&script, "cd \"$root/cases/%d\"; io=\"$root/io/%d\"; cat \"$io/stdin\" | timeout 60 bash \"$io/script\" >\"$io/stdout\" 2>\"$io/stderr\"; echo $? >\"$io/exit\"\n", index, index)
 	}
 	writeFiles(t, directory, map[string]string{"run.sh": script.String()})
 }
