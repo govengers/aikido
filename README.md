@@ -368,6 +368,7 @@ Six runnable examples under [`examples/`](examples/): `chat-oneshot`, `image-gen
 ```bash
 go install github.com/govengers/aikido/cmd/aikido@latest
 export OPENROUTER_API_KEY=sk-or-...   # or place it in .env in the cwd
+# optional: OPENROUTER_BASE_URL replaces https://openrouter.ai/api/v1 (a proxy, a test server)
 
 aikido chat "Give me one fun fact about Go."
 aikido agent "Create plan.md with one bullet, then list files."

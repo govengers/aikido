@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -122,6 +124,35 @@ func TestNewOpenRouterClient(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "sk-test")
 	if client, err := NewOpenRouterClient(); err != nil || client == nil {
 		t.Errorf("NewOpenRouterClient = %v, %v; want a client", client, err)
+	}
+}
+
+func TestNewOpenRouterClient_BaseURLFromEnvironment(t *testing.T) {
+	requestedPaths := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestedPaths <- request.URL.Path
+		writer.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	t.Setenv("OPENROUTER_BASE_URL", server.URL+"/api/v1")
+
+	client, err := NewOpenRouterClient()
+	if err != nil {
+		t.Fatalf("NewOpenRouterClient: %v", err)
+	}
+	_, err = client.Complete(t.Context(), llm.Request{Model: "test/model", Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}})
+
+	if !errors.Is(err, llm.ErrAuthentication) {
+		t.Errorf("err = %v; want the test server's 401", err)
+	}
+	select {
+	case requestedPath := <-requestedPaths:
+		if requestedPath != "/api/v1/chat/completions" {
+			t.Errorf("request path = %q; want /api/v1/chat/completions", requestedPath)
+		}
+	default:
+		t.Error("the test server got no request")
 	}
 }
 
