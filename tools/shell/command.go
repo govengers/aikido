@@ -10,8 +10,9 @@
 // registered fails like in bash: "bash: line 1: name: command not found",
 // exit 127.
 //
-// The script sees the Storage as "/": absolute paths are workspace paths,
-// climbing above the root is "No such file or directory". /tmp is a memory
+// The script sees the Storage at Options.MountPoint ("/" by default):
+// absolute paths below it are workspace paths, other paths and
+// climbing above it are "No such file or directory". /tmp is a memory
 // scratch area of the Shell (never the Storage) that keeps its files from
 // one Run to the next, at most 64 MiB together; /dev/null, /dev/stdin, /dev/stdout
 // and /dev/stderr work. A Storage holds only files, so a directory exists
@@ -52,11 +53,14 @@ type Invocation struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
-	// Directory is the shell's working directory as a workspace path: "" is
-	// the workspace root, otherwise a vfs path without leading slash.
+	// Directory is the shell's working directory as a path of Storage
+	// without leading slash: "" is "/". With the default MountPoint "/" it
+	// is a workspace path; with MountPoint "/work/repo" the workspace root
+	// is "work/repo".
 	Directory string
-	// Storage is the workspace. Commands resolve relative paths against
-	// Directory with Resolve and never touch host files.
+	// Storage is what the script sees: the workspace at the MountPoint, with
+	// /tmp and /dev/fd mounted. Commands resolve operands against Directory
+	// with Resolve and never touch host files.
 	Storage vfs.Storage
 	// Environment holds the shell's exported variables as NAME=value.
 	Environment []string

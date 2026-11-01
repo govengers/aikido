@@ -76,6 +76,35 @@ func TestRunAgent_DirectWorkerRunsAllowedHostProgramsWithOnlyTheirEnvironment(t 
 	}
 }
 
+// TestRunAgent_DirectShellShowsTheDirectoryAtItsHostPath covers the worker
+// benchmark's `git -C /repos/x` failure: with --direct the shell's paths are
+// the host paths, so an absolute path from pwd works for a host program.
+func TestRunAgent_DirectShellShowsTheDirectoryAtItsHostPath(t *testing.T) {
+	list := "/bin/ls"
+	if _, err := os.Stat(list); err != nil {
+		t.Skip("no /bin/ls on this host")
+	}
+	directory := t.TempDir()
+	options := agentTestOptions()
+	options.directory = directory
+	options.worker = workerOptions{shell: true, direct: true, allowed: []string{"hostls=" + list}}
+	stub := bashStub(`echo hi > a.txt; pwd > where.txt; hostls "$PWD/a.txt" > listed.txt`)
+	var out bytes.Buffer
+	if err := runAgent(context.Background(), options, &out, stub); err != nil {
+		t.Fatalf("runAgent: %v\n%s", err, out.String())
+	}
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readDiskFile(t, directory, "where.txt"); got != absolute+"\n" {
+		t.Errorf("pwd = %q; want the host path %q", got, absolute)
+	}
+	if got := readDiskFile(t, directory, "listed.txt"); got != absolute+"/a.txt\n" {
+		t.Errorf("host ls of $PWD/a.txt = %q", got)
+	}
+}
+
 func TestRunAgent_ShellOverAnOverlayStaysADryRun(t *testing.T) {
 	directory := t.TempDir()
 	writeDiskFile(t, directory, "hosts.txt", "api.old.example\n")

@@ -114,7 +114,7 @@ func runExternal(ctx context.Context, options ExternalOptions, invocation *Invoc
 	defer cancel()
 	//nolint:gosec // G204: running the host program the caller registered is what External is for
 	command := exec.CommandContext(runContext, options.Path, invocation.Arguments...)
-	directory, err := hostDirectory(options, invocation.Directory)
+	directory, err := hostDirectory(options, invocation.Directory, workspaceOf(invocation).root)
 	if err != nil {
 		complain(invocation, options.Name, "%v", err)
 		return errFailed
@@ -132,12 +132,20 @@ func runExternal(ctx context.Context, options ExternalOptions, invocation *Invoc
 
 // hostDirectory is where the program runs: Directory, or with
 // FollowWorkingDirectory the host directory of the shell's working directory
-// (a workspace path, already validated, so it cannot climb out of Directory).
-func hostDirectory(options ExternalOptions, workingDirectory string) (string, error) {
-	if !options.FollowWorkingDirectory || workingDirectory == "" {
+// (a validated path of the session Storage, which holds the workspace at
+// root, so it cannot climb out of Directory).
+func hostDirectory(options ExternalOptions, workingDirectory, root string) (string, error) {
+	if !options.FollowWorkingDirectory {
 		return options.Directory, nil
 	}
-	directory := filepath.Join(options.Directory, filepath.FromSlash(workingDirectory))
+	if !inWorkspace(workingDirectory, root) {
+		return "", fmt.Errorf("cannot run in /%s: it is not a directory of the workspace", workingDirectory)
+	}
+	relative := strings.TrimPrefix(strings.TrimPrefix(workingDirectory, root), "/")
+	if relative == "" {
+		return options.Directory, nil
+	}
+	directory := filepath.Join(options.Directory, filepath.FromSlash(relative))
 	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 		return "", fmt.Errorf("cannot run in /%s: the directory does not exist on disk", workingDirectory)
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -26,15 +27,23 @@ const (
 
 // Options configure a Shell. New copies them.
 type Options struct {
-	// Storage is the workspace the script sees as "/". Required.
+	// Storage is the workspace the script sees at MountPoint. Required.
 	Storage vfs.Storage
+	// MountPoint is the absolute path where the workspace appears in the
+	// shell, "/" when empty. Scripts start there; pwd, realpath and find
+	// print paths below it. Other paths are missing, except /tmp and /dev.
+	// Set it to the host directory a Storage mirrors (an osfs over that
+	// directory) so built-in commands and External programs agree on every
+	// absolute path. It must not be /tmp or lie in /dev; below /tmp it is
+	// fine (the workspace then shows up in /tmp next to the scratch files).
+	MountPoint string
 	// Commands are added to the built-in commands (Builtins); a Command with
 	// the name of a built-in replaces it. Names must be unique, and must not
 	// be shell builtins (cd, echo, test, ...), which the interpreter runs
 	// itself.
 	Commands []Command
 	// Environment holds the variables a script starts with, as NAME=value.
-	// The host environment is never passed. HOME defaults to "/".
+	// The host environment is never passed. HOME defaults to MountPoint.
 	Environment []string
 	// Timeout bounds one Run; zero means DefaultTimeout, negative disables
 	// it. A script that runs out of time is stopped with exit status 124.
@@ -71,6 +80,8 @@ type Shell struct {
 	commands    map[string]Command
 	directories *directorySet
 	scratch     *scratchStorage // /tmp
+	// root is the MountPoint as a path of the session Storage: "" for "/".
+	root string
 
 	mutex     sync.Mutex
 	directory string // the working directory, a workspace path
@@ -90,8 +101,13 @@ func New(options *Options) (*Shell, error) {
 	if err := validateEnvironment(configured.Environment); err != nil {
 		return nil, err
 	}
+	mountPoint, err := validateMountPoint(configured.MountPoint)
+	if err != nil {
+		return nil, err
+	}
+	configured.MountPoint = mountPoint
 	if !slices.ContainsFunc(configured.Environment, func(variable string) bool { return strings.HasPrefix(variable, "HOME=") }) {
-		configured.Environment = append(configured.Environment, "HOME=/")
+		configured.Environment = append(configured.Environment, "HOME="+mountPoint)
 	}
 	commands, err := commandTable(configured.Commands)
 	if err != nil {
@@ -106,7 +122,29 @@ func New(options *Options) (*Shell, error) {
 	if configured.ToolName == "" {
 		configured.ToolName = DefaultToolName
 	}
-	return &Shell{options: configured, commands: commands, directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes)}, nil
+	root := strings.TrimPrefix(mountPoint, "/")
+	return &Shell{
+		options: configured, commands: commands, root: root, directory: root,
+		directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes),
+	}, nil
+}
+
+// validateMountPoint returns the cleaned mount point, "/" for empty.
+func validateMountPoint(mountPoint string) (string, error) {
+	if mountPoint == "" {
+		return "/", nil
+	}
+	cleaned := path.Clean(mountPoint)
+	root := strings.TrimPrefix(cleaned, "/")
+	switch {
+	case !strings.HasPrefix(mountPoint, "/"):
+		return "", fmt.Errorf("aikido/tools/shell: New: MountPoint %q must be absolute", mountPoint)
+	case root == scratchDirectory || within(root, "dev"):
+		return "", fmt.Errorf("aikido/tools/shell: New: MountPoint %q must not be /tmp or lie in /dev", mountPoint)
+	case root != "" && vfs.ValidatePath(root) != nil:
+		return "", fmt.Errorf("aikido/tools/shell: New: MountPoint %q is not a valid path", mountPoint)
+	}
+	return cleaned, nil
 }
 
 func validateEnvironment(environment []string) error {
@@ -208,28 +246,28 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 // <(list) over the workspace for one Run.
 func (s *Shell) newSession() (*session, error) {
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
-		{Prefix: "", Storage: s.options.Storage},
+		{Prefix: s.root, Storage: s.options.Storage},
 		{Prefix: scratchDirectory, Storage: s.scratch},
 		{Prefix: processFileDirectory, Storage: processFileStorage{memory.New()}},
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp and /dev/fd: %w", err)
 	}
-	return &session{storage: storage, directories: s.directories, commands: s.commands}, nil
+	return &session{storage: storage, root: s.root, directories: s.directories, commands: s.commands}, nil
 }
 
-// recoverDirectory moves back to the root when the working directory no
-// longer exists (a previous call removed it, or the Storage changed).
+// recoverDirectory moves back to the mount point when the working directory
+// no longer exists (a previous call removed it, or the Storage changed).
 func (s *Shell) recoverDirectory(ctx context.Context, call *session, stderr io.Writer) {
-	if s.directory == "" {
+	if s.directory == s.root {
 		return
 	}
 	found, err := call.files().stat(ctx, s.directory)
 	if err == nil && found.kind == entryDirectory {
 		return
 	}
-	fmt.Fprintf(stderr, "bash: the working directory /%s no longer exists; now in /\n", s.directory)
-	s.directory = ""
+	fmt.Fprintf(stderr, "bash: the working directory /%s no longer exists; now in %s\n", s.directory, s.options.MountPoint)
+	s.directory = s.root
 }
 
 func (s *Shell) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

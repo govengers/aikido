@@ -67,7 +67,11 @@ func (s *Shell) handle(ctx context.Context, arguments json.RawMessage, _ tools.E
 // its commands from their summaries, and what it cannot do.
 func (s *Shell) description() string {
 	var text strings.Builder
-	text.WriteString("Runs bash over the project workspace (\"/\" is the workspace root). Pipes, &&, ||, loops, " +
+	location := "(\"/\" is the workspace root)"
+	if s.options.MountPoint != "/" {
+		location = "(the workspace is " + s.options.MountPoint + ", where scripts start; other paths except /tmp and /dev do not exist)"
+	}
+	text.WriteString("Runs bash over the project workspace " + location + ". Pipes, &&, ||, loops, " +
 		"functions, variables, $(...), <(...), here-docs, redirects and globs work as in bash; the working directory " +
 		"persists between calls, variables do not. /tmp is in-memory scratch space (64 MiB) that persists between calls. " +
 		"Shell builtins: cd, pwd, echo, printf, test/[, read, export, set, exit. Available commands: ")

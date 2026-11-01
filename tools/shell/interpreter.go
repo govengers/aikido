@@ -47,7 +47,9 @@ const (
 // workspace with /tmp and /dev/fd mounted), the shell's created directories
 // and its command table. A nested bash shares it.
 type session struct {
-	storage     vfs.Storage
+	storage vfs.Storage
+	// root is the mount point of the workspace in storage: "" for "/".
+	root        string
 	directories *directorySet
 	commands    map[string]Command
 	// processFiles counts the /dev/fd paths <(list) has used in this Run.
@@ -55,7 +57,7 @@ type session struct {
 }
 
 func (s *session) files() workspace {
-	return workspace{storage: s.storage, directories: s.directories}
+	return workspace{storage: s.storage, root: s.root, directories: s.directories}
 }
 
 // runnerStart is what a new interpreter starts with.
@@ -450,6 +452,12 @@ func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, e
 // absolute path.
 func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry, error) {
 	resolved := workspaceDirectory(name)
+	if s.root != resolved && within(s.root, resolved) {
+		// The interpreter globs /work/repo/* one directory at a time; an
+		// ancestor of the mount point shows only the way down.
+		next, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(s.root, resolved), "/"), "/")
+		return []fs.DirEntry{fs.FileInfoToDirEntry(fileInfo{name: next, entry: entry{kind: entryDirectory}})}, nil
+	}
 	files := s.files()
 	found, err := files.stat(ctx, resolved)
 	switch {

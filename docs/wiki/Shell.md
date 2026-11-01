@@ -32,14 +32,15 @@ The tool description is generated: one paragraph on what works, the list of comm
 
 | `Options` | Effect |
 |---|---|
-| `Storage` | required; the workspace the script sees as `/` |
+| `Storage` | required; the workspace the script sees at `MountPoint` |
+| `MountPoint` | absolute path of the workspace inside the shell, default `/`. Scripts start there and `HOME` defaults to it; `pwd`, `realpath`, `find` and globs print paths below it; every path outside it except `/tmp` and `/dev` is `No such file or directory` (`cd /`, `cd ..` above it and `ls /` fail; globs still walk down to it). Set it to the host directory an `osfs` Storage mirrors so built-in commands and `External` programs agree on absolute paths (`git -C $PWD/sub status`, `git -C /srv/repo log`); the CLI does this for `--direct`. Not `/tmp`, nothing in `/dev`; below `/tmp` works |
 | `Commands` | extra `Command`s next to the built-ins; a name of a built-in replaces it. Names are one word without `/`, unique, and not a shell builtin (`cd`, `echo`, `test`, ...), which the interpreter would run instead |
 | `Environment` | `NAME=value` the script starts with; the host environment is never passed. `HOME` defaults to `/` |
 | `Timeout` | per `Run`, default 60 s, negative disables. A script out of time is stopped: exit 124 and `bash: timed out after 1m0s; the script was stopped` |
 | `MaximumOutputBytes` | stdout and stderr together, default 30 KiB, negative keeps everything. The first and the last half are kept, the middle is replaced by `... [N bytes of output cut] ...` and `Truncated` is set |
 | `ToolName` | default `bash` |
 
-`New` validates and copies the options. `Shell.Run(ctx, script)` returns `Result{Output, ExitCode, Truncated}`; it is safe for concurrent use (calls are serialized). `shell.Builtins()` lists the built-in commands. A `Command` is `{Name, Summary, Run func(ctx, *Invocation) error}`: `Run` gets the expanded arguments, the streams, the working directory as a workspace path, the Storage and the exported variables, and returns nil, an `ExitError(n)`, or an error the shell prints as `name: error` with status 1. Resolve operands with `shell.Resolve(invocation.Directory, operand)`.
+`New` validates and copies the options. `Shell.Run(ctx, script)` returns `Result{Output, ExitCode, Truncated}`; it is safe for concurrent use (calls are serialized). `shell.Builtins()` lists the built-in commands. A `Command` is `{Name, Summary, Run func(ctx, *Invocation) error}`: `Run` gets the expanded arguments, the streams, the working directory as a path of the Storage (the workspace path with the default `MountPoint`), the Storage as the script sees it (workspace, `/tmp`, `/dev/fd`) and the exported variables, and returns nil, an `ExitError(n)`, or an error the shell prints as `name: error` with status 1. Resolve operands with `shell.Resolve(invocation.Directory, operand)`.
 
 ## What persists between calls
 
@@ -116,7 +117,7 @@ stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl 
 
 ## Filesystem semantics
 
-- **`/` is the workspace root.** `/docs/a.md` and `docs/a.md` from the root are the same file. A path that climbs above the root (`../../etc/passwd`) is `No such file or directory`; host paths such as `/etc/hosts` are workspace paths and normally missing. `pwd`, `realpath` and `$PWD` print `/`-rooted workspace paths.
+- **`/` is the workspace root** (with the default `MountPoint`). `/docs/a.md` and `docs/a.md` from the root are the same file. A path that climbs above the root (`../../etc/passwd`) is `No such file or directory`; host paths such as `/etc/hosts` are workspace paths and normally missing. `pwd`, `realpath` and `$PWD` print `/`-rooted workspace paths. With `MountPoint: "/work/repo"` the same holds below `/work/repo`, `/`, `/work` and `/etc` do not exist, and a workspace `tmp/` directory is not hidden by `/tmp`.
 - **Directories are implied.** A Storage holds files only: a directory exists while a file lies below it. `mkdir` additionally records the directory in the Shell, so `mkdir -p build && cd build` and `cp x build/` work and `ls` shows it, for the life of the Shell; the Storage is unchanged until a file is written below it (another Shell or the file tools do not see empty directories). `rmdir` removes an empty one; `rm -r` forgets the ones below.
 - **Writes are buffered.** A redirect (`>`, `>>`, `2>&1 > f`) collects what is written and stores it with one `WriteFile` when it closes, so `sort f > f` sorts instead of truncating first, unlike bash. Commands write whole files the same way. A write needs an existing parent directory (`echo x > nodir/f` fails like bash) and is capped at 64 MiB per file.
 - **`/tmp` is scratch.** It is a memory store of the Shell, never the Storage: a file written to `/tmp/x` in one call can be read in the next (one registered tool is one agent session), and nothing of it reaches the workspace, an overlay's changes or a commit. Its files are capped at 64 MiB together; a write beyond that fails with `No space left on device`. `/tmp` is always a directory and hides workspace files under `tmp/`.

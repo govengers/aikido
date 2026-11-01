@@ -53,7 +53,17 @@ func registerShell(registry *tools.Registry, options agentOptions, storage vfs.S
 	if err != nil {
 		return err
 	}
-	if err := shell.Register(registry, &shell.Options{Storage: storage, Commands: commands}); err != nil {
+	shellOptions := &shell.Options{Storage: storage, Commands: commands}
+	if options.worker.direct {
+		// The workspace is the directory on disk: the shell shows it at its
+		// host path, so pwd and the paths a host program gets agree.
+		directory, err := filepath.Abs(options.directory)
+		if err != nil {
+			return fmt.Errorf("--dir: %w", err)
+		}
+		shellOptions.MountPoint = filepath.ToSlash(directory)
+	}
+	if err := shell.Register(registry, shellOptions); err != nil {
 		return fmt.Errorf("--shell: %w", err)
 	}
 	return nil

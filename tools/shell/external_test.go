@@ -243,3 +243,48 @@ func TestExternalValidates(t *testing.T) {
 		})
 	}
 }
+
+// TestMountPointMatchesTheHost replays the worker benchmark's git -C calls:
+// with MountPoint set to the host directory of an osfs workspace, built-in
+// commands and a host program agree on every absolute path.
+func TestMountPointMatchesTheHost(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git is not installed")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "repos", "billing"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "repos", "billing", "README.md"), []byte("billing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment := []string{"HOME=" + root, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	setup := exec.CommandContext(t.Context(), gitPath, "init", "-q", "repos/billing")
+	setup.Dir, setup.Env = root, environment
+	if output, err := setup.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, output)
+	}
+	storage, err := osfs.New(&osfs.Options{Directory: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	git, err := External(&ExternalOptions{Name: "git", Path: gitPath, Directory: root, FollowWorkingDirectory: true, Environment: environment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := New(&Options{Storage: storage, Commands: []Command{git}, MountPoint: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, shell, "echo hi > repos/billing/new.txt")
+	result := mustRun(t, shell, "git -C "+root+"/repos/billing status --short; cd repos && git -C $PWD/billing status --short; cd billing && git rev-parse --show-toplevel")
+	want := "?? README.md\n?? new.txt\n?? README.md\n?? new.txt\n" + filepath.Join(root, "repos", "billing") + "\n"
+	if result.Output != want || result.ExitCode != 0 {
+		t.Fatalf("output = %q, exit %d; want %q", result.Output, result.ExitCode, want)
+	}
+}

@@ -365,3 +365,35 @@ func TestOverOverlayAndReadOnlyMount(t *testing.T) {
 		t.Fatalf("read-only mount output = %q", result.Output)
 	}
 }
+
+// TestMountPoint runs the same script with the workspace at "/" and at
+// "/work/repo": paths differ only by the mount point, and nothing outside
+// it exists except /tmp and /dev.
+func TestMountPoint(t *testing.T) {
+	files := map[string]string{"a.txt": "a\n", "sub/b.txt": "b\n", "tmp/keep.txt": "keep\n"}
+	script := `pwd; cd sub && realpath b.txt && find "$PWD" -name '*.txt' && cat "$PWD/b.txt" && cd .. && echo "$HOME" && echo "$PWD"/*.txt; echo x > /tmp/s && cat /tmp/s; cat /dev/null`
+	template := "{MP}/\n{MP}/sub/b.txt\n{MP}/sub/b.txt\nb\n{MP}/\n{MP}/a.txt\nx\n"
+	for _, mountPoint := range []string{"", "/work/repo", "/tmp/checkout"} {
+		t.Run("at "+mountPoint+"/", func(t *testing.T) {
+			shell, _ := newTestShell(t, files, &Options{MountPoint: mountPoint})
+			want := strings.ReplaceAll(template, "{MP}/\n", map[bool]string{true: "/\n", false: mountPoint + "\n"}[mountPoint == ""])
+			want = strings.ReplaceAll(want, "{MP}", mountPoint)
+			if result := mustRun(t, shell, script); result.Output != want || result.ExitCode != 0 {
+				t.Fatalf("output = %q, exit %d; want %q", result.Output, result.ExitCode, want)
+			}
+		})
+	}
+	shell, _ := newTestShell(t, files, &Options{MountPoint: "/work/repo/"})
+	result := mustRun(t, shell, "cat tmp/keep.txt; cd /; cd /work; cd ..; ls /; cat /etc/passwd; echo x > /work/x; pwd")
+	want := "keep\nbash: line 1: cd: /: No such file or directory\nbash: line 1: cd: /work: No such file or directory\n" +
+		"bash: line 1: cd: ..: No such file or directory\nls: cannot access '/': No such file or directory\n" +
+		"cat: /etc/passwd: No such file or directory\nbash: /work/x: No such file or directory\n/work/repo\n"
+	if result.Output != want {
+		t.Fatalf("outside the mount point: %q; want %q", result.Output, want)
+	}
+	for _, bad := range []string{"work", "/tmp", "/dev", "/dev/fd/x"} {
+		if _, err := New(&Options{Storage: memory.New(), MountPoint: bad}); err == nil {
+			t.Errorf("MountPoint %q accepted", bad)
+		}
+	}
+}

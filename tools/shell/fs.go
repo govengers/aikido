@@ -38,10 +38,33 @@ const scratchDirectory = "tmp"
 // stores the output of list for one Run.
 const processFileDirectory = "dev/fd"
 
-// isMountPoint reports whether name is the root or a directory the shell
-// mounts: always a directory, never removable.
-func isMountPoint(name string) bool {
-	return name == "" || name == scratchDirectory || name == processFileDirectory
+// isMountPoint reports whether name is the workspace's mount point or a
+// directory the shell mounts: always a directory, never removable.
+func (w workspace) isMountPoint(name string) bool {
+	return name == w.root || name == scratchDirectory || name == processFileDirectory
+}
+
+// inWorkspace reports whether name, a path of the session Storage, lies in
+// the workspace mounted at root rather than in /tmp or /dev/fd, which are
+// mounted over it when they are longer prefixes (vfs/mount routes to the
+// longest).
+func inWorkspace(name, root string) bool {
+	if !within(name, root) {
+		return false
+	}
+	for _, mounted := range []string{scratchDirectory, processFileDirectory} {
+		if len(mounted) > len(root) && within(name, mounted) {
+			return false
+		}
+	}
+	return true
+}
+
+// reachable reports whether a script can see name: a path at or below the
+// mount point, in /tmp, /dev/fd or a device. With the mount point "/"
+// everything is reachable.
+func (w workspace) reachable(name string) bool {
+	return within(name, w.root) || within(name, scratchDirectory) || within(name, processFileDirectory) || isDevice(name)
 }
 
 // maximumBufferedFileBytes caps one file a script writes through a redirect
@@ -143,7 +166,9 @@ func within(name, directory string) bool {
 // workspace is the file view the built-in commands work on: the call's
 // Storage plus the shell's created directories.
 type workspace struct {
-	storage     vfs.Storage
+	storage vfs.Storage
+	// root is the mount point of the workspace in storage: "" for "/".
+	root        string
 	directories *directorySet
 }
 
@@ -151,7 +176,7 @@ type workspace struct {
 // created directories.
 func workspaceOf(invocation *Invocation) workspace {
 	if invocation.session != nil {
-		return workspace{storage: invocation.Storage, directories: invocation.session.directories}
+		return workspace{storage: invocation.Storage, root: invocation.session.root, directories: invocation.session.directories}
 	}
 	return workspace{storage: invocation.Storage, directories: newDirectorySet()}
 }
@@ -159,7 +184,10 @@ func workspaceOf(invocation *Invocation) workspace {
 // stat reports what name (a workspace path) is. A missing path is
 // entryMissing with a nil error; the error is for a failing Storage.
 func (w workspace) stat(ctx context.Context, name string) (entry, error) {
-	if isMountPoint(name) {
+	if !w.reachable(name) {
+		return entry{kind: entryMissing}, nil
+	}
+	if w.isMountPoint(name) {
 		return entry{kind: entryDirectory}, nil
 	}
 	if isDevice(name) {
