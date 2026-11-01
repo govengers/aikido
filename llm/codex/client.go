@@ -346,8 +346,9 @@ func buildBody(request llm.Request) ([]byte, error) {
 	return raw, nil
 }
 
-// toInputItem converts a user or assistant message; every other role and
-// every non-text, non-image part is rejected with llm.ErrInvalidRequest.
+// toInputItem converts a user or assistant message; every other role, every
+// non-text, non-image part and an image without URL and data are rejected
+// with llm.ErrInvalidRequest.
 func toInputItem(message llm.Message) (inputItem, error) {
 	textType := "input_text"
 	switch message.Role {
@@ -368,21 +369,29 @@ func toInputItem(message llm.Message) (inputItem, error) {
 		item.Content = append(item.Content, contentPart{Type: textType, Text: message.Content})
 	}
 	for _, image := range message.Images {
-		item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: imageURL(image)})
+		url, err := imageURL(image)
+		if err != nil {
+			return inputItem{}, err
+		}
+		item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: url})
 	}
 	return item, nil
 }
 
-// imageURL is the image's URL, or its data inlined as a data URL.
-func imageURL(image llm.ImagePart) string {
-	if image.URL != "" || len(image.Data) == 0 {
-		return image.URL
+// imageURL is the image's URL, or its data inlined as a data URL. An image
+// with neither is llm.ErrInvalidRequest, as in llm/openrouter.
+func imageURL(image llm.ImagePart) (string, error) {
+	if image.URL != "" {
+		return image.URL, nil
+	}
+	if len(image.Data) == 0 {
+		return "", fmt.Errorf("codex: image has neither URL nor data: %w", llm.ErrInvalidRequest)
 	}
 	contentType := image.ContentType
 	if contentType == "" {
 		contentType = http.DetectContentType(image.Data)
 	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
+	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), nil
 }
 
 func toTextOptions(schema *llm.JSONSchema) *textOptions {

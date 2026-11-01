@@ -312,18 +312,24 @@ func TestImageURL(t *testing.T) {
 	t.Parallel()
 	png := []byte("\x89PNG\r\n\x1a\n0000")
 	for _, testCase := range []struct {
-		name  string
-		image llm.ImagePart
-		want  string
+		name    string
+		image   llm.ImagePart
+		want    string
+		wantErr error
 	}{
-		{"url wins", llm.ImagePart{URL: "https://example.com/a.png", Data: png}, "https://example.com/a.png"},
-		{"data with type", llm.ImagePart{Data: []byte("x"), ContentType: "image/webp"}, "data:image/webp;base64,eA=="},
-		{"data sniffed", llm.ImagePart{Data: png}, "data:image/png;base64,iVBORw0KGgowMDAw"},
-		{"empty", llm.ImagePart{}, ""},
+		{"url wins", llm.ImagePart{URL: "https://example.com/a.png", Data: png}, "https://example.com/a.png", nil},
+		{"data with type", llm.ImagePart{Data: []byte("x"), ContentType: "image/webp"}, "data:image/webp;base64,eA==", nil},
+		{"data sniffed", llm.ImagePart{Data: png}, "data:image/png;base64,iVBORw0KGgowMDAw", nil},
+		{"empty", llm.ImagePart{}, "", llm.ErrInvalidRequest},
 	} {
-		if got := imageURL(testCase.image); got != testCase.want {
-			t.Errorf("%s: imageURL = %q, want %q", testCase.name, got, testCase.want)
+		got, err := imageURL(testCase.image)
+		if got != testCase.want || !errors.Is(err, testCase.wantErr) {
+			t.Errorf("%s: imageURL = %q, %v; want %q, %v", testCase.name, got, err, testCase.want, testCase.wantErr)
 		}
+	}
+	empty := llm.Request{Model: "m", Messages: []llm.Message{{Role: llm.RoleUser, Content: "x", Images: []llm.ImagePart{{}}}}}
+	if _, err := buildBody(empty); !errors.Is(err, llm.ErrInvalidRequest) {
+		t.Errorf("buildBody with an empty image: err = %v, want llm.ErrInvalidRequest", err)
 	}
 }
 

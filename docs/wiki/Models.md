@@ -122,7 +122,7 @@ Status mapping and retry: [Errors-and-Retry](Errors-and-Retry.md).
 
 ## Codex (ChatGPT subscription)
 
-`llm/codex` talks to the Codex backend of a ChatGPT subscription the way the Codex CLI does, and bills the subscription instead of an API key. It supports system messages, user and assistant text, image input and `ResponseFormat`. Tools, tool results, audio input and `Thinking` fail with `llm.ErrInvalidRequest`; `MaximumTokens`, `Temperature`, `StopSequences`, `Modalities` and `ImageConfiguration` are ignored. So it serves one-shots and structured output, not agents with tools.
+`llm/codex` talks to the Codex backend of a ChatGPT subscription the way the Codex CLI does, and bills the subscription instead of an API key. It supports system messages, user and assistant text, image input (`URL`, or `Data` sent inline as a data URI; an image with neither is `llm.ErrInvalidRequest`) and `ResponseFormat`. Tools, tool results, audio input and `Thinking` fail with `llm.ErrInvalidRequest`; `MaximumTokens`, `Temperature`, `StopSequences`, `Modalities` and `ImageConfiguration` are ignored. So it serves one-shots and structured output, not agents with tools.
 
 Login:
 
