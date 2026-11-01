@@ -22,7 +22,8 @@ const systemPrompt = `You are a coding agent working in a software project. The 
 const aikidoMaximumTurns = 60
 
 // runAikido drives the library in-process: openrouter client, osfs storage on
-// the work dir, all VFS tools, and optionally the prototype bash tool.
+// the work dir, all VFS tools, todo_write, and optionally the prototype bash
+// tool. Library defaults stay on (prompt caching, tool result cap, tool timeout).
 func runAikido(withBash bool) harnessFunc {
 	return func(ctx context.Context, j *job, m *metrics) error {
 		client, err := openrouter.NewClient(&openrouter.Options{APIKey: j.APIKey, XTitle: "aikido-bench"})
@@ -36,6 +37,9 @@ func runAikido(withBash bool) harnessFunc {
 		defer storage.Close()
 		registry := tools.NewRegistry()
 		if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage}); err != nil {
+			return err
+		}
+		if err := agent.RegisterPlanTool(registry); err != nil {
 			return err
 		}
 		if withBash {
