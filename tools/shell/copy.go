@@ -150,6 +150,8 @@ func (m transferMode) run(ctx context.Context, files workspace, directory string
 	switch {
 	case planned.sourceEntry.kind == entryMissing:
 		return fmt.Errorf("cannot stat '%s': %w", planned.sourceOperand, errNotFound)
+	case strings.HasSuffix(planned.sourceOperand, "/") && planned.sourceEntry.kind != entryDirectory:
+		return fmt.Errorf("cannot stat '%s': %w", planned.sourceOperand, errNotDirectory)
 	case slashedTarget && planned.targetEntry.kind != entryMissing:
 		return fmt.Errorf("cannot stat '%s': %w", planned.targetOperand, errNotDirectory)
 	case planned.source == planned.target:
