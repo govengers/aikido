@@ -90,14 +90,20 @@ func moveFileDefinition() llm.ToolDefinition {
 
 func editFileHandler(options VFSToolOptions) tools.Handler {
 	return func(ctx context.Context, rawArguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
+		// The fields are spelled out instead of embedding textEdit: Go 1.26 names
+		// an embedded struct in json type errors ("textEdit.replace_all"), which
+		// would reach the model.
 		var arguments struct {
-			Path string `json:"path"`
-			textEdit
+			Path       string `json:"path"`
+			OldString  string `json:"old_string"`
+			NewString  string `json:"new_string"`
+			ReplaceAll bool   `json:"replace_all"`
 		}
 		if err := decodeArguments("edit_file", rawArguments, &arguments); err != nil {
 			return tools.Result{}, err
 		}
-		result, err := editFile(ctx, options, arguments.Path, []textEdit{arguments.textEdit})
+		edit := textEdit{OldString: arguments.OldString, NewString: arguments.NewString, ReplaceAll: arguments.ReplaceAll}
+		result, err := editFile(ctx, options, arguments.Path, []textEdit{edit})
 		if err != nil {
 			return tools.Result{}, fmt.Errorf("aikido/agent: edit_file: %w", err)
 		}
