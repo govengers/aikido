@@ -65,6 +65,10 @@ func TestMultiEdit(t *testing.T) {
 	failures := []struct{ name, arguments, wantError string }{
 		{"failing edit leaves the file unchanged", `{"path":"a.md","edits":[{"old_string":"two","new_string":"2"},{"old_string":"nope","new_string":"x"}]}`, "multi_edit: edit 2: old_string not found in a.md; the file is unchanged"},
 		{"empty edits", `{"path":"a.md","edits":[]}`, "edits is empty"},
+		{"missing new_string", `{"path":"a.md","edits":[{"old_string":"two"}]}`, "invalid tool arguments for multi_edit: edit 1 is missing new_string"},
+		{"null new_string", `{"path":"a.md","edits":[{"old_string":"one","new_string":"x"},{"old_string":"two","new_string":null}]}`, "edit 2 is missing new_string"},
+		{"missing old_string", `{"path":"a.md","edits":[{"new_string":"x"}]}`, "edit 1 is missing old_string"},
+		{"null edit", `{"path":"a.md","edits":[null]}`, "edit 1 is missing old_string"},
 		{"result over MaximumFileBytes", `{"path":"a.md","edits":[{"old_string":"two","new_string":"two two two two two"}]}`, "MaximumFileBytes"},
 		{"missing file", `{"path":"b.md","edits":[{"old_string":"a","new_string":"b"}]}`, "file not found"},
 		{"invalid path", `{"path":"../a.md","edits":[{"old_string":"a","new_string":"b"}]}`, "invalid path"},
@@ -78,6 +82,11 @@ func TestMultiEdit(t *testing.T) {
 				t.Errorf("file = %q; want it unchanged", got)
 			}
 		})
+	}
+
+	mustDispatch(t, registry, "multi_edit", `{"path":"a.md","edits":[{"old_string":" two","new_string":""}]}`)
+	if got := readBack(t, options.Storage, "a.md"); got != "1 3\n" {
+		t.Errorf("file = %q; an explicit empty new_string deletes", got)
 	}
 }
 

@@ -19,6 +19,31 @@ type textEdit struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
+// textEditArguments is one entry of multi_edit's edits as the model sent it.
+// The registry checks only top-level required fields, so a nil string marks
+// a nested field that is missing or null, as opposed to an explicit "".
+type textEditArguments struct {
+	OldString  *string `json:"old_string"`
+	NewString  *string `json:"new_string"`
+	ReplaceAll bool    `json:"replace_all"`
+}
+
+// requireEdits turns multi_edit's entries into edits; an entry without
+// old_string or new_string is an error matching tools.ErrInvalidArguments.
+func requireEdits(entries []textEditArguments) ([]textEdit, error) {
+	edits := make([]textEdit, 0, len(entries))
+	for index, entry := range entries {
+		switch {
+		case entry.OldString == nil:
+			return nil, fmt.Errorf("%w for multi_edit: edit %d is missing old_string", tools.ErrInvalidArguments, index+1)
+		case entry.NewString == nil:
+			return nil, fmt.Errorf("%w for multi_edit: edit %d is missing new_string", tools.ErrInvalidArguments, index+1)
+		}
+		edits = append(edits, textEdit{OldString: *entry.OldString, NewString: *entry.NewString, ReplaceAll: entry.ReplaceAll})
+	}
+	return edits, nil
+}
+
 func editFileDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "edit_file",
@@ -79,8 +104,8 @@ func editFileHandler(options VFSToolOptions) tools.Handler {
 func multiEditHandler(options VFSToolOptions) tools.Handler {
 	return func(ctx context.Context, rawArguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var arguments struct {
-			Path  string     `json:"path"`
-			Edits []textEdit `json:"edits"`
+			Path  string              `json:"path"`
+			Edits []textEditArguments `json:"edits"`
 		}
 		if err := decodeArguments("multi_edit", rawArguments, &arguments); err != nil {
 			return tools.Result{}, err
@@ -88,7 +113,11 @@ func multiEditHandler(options VFSToolOptions) tools.Handler {
 		if len(arguments.Edits) == 0 {
 			return tools.Result{}, errors.New("aikido/agent: multi_edit: edits is empty")
 		}
-		result, err := editFile(ctx, options, arguments.Path, arguments.Edits)
+		edits, err := requireEdits(arguments.Edits)
+		if err != nil {
+			return tools.Result{}, err
+		}
+		result, err := editFile(ctx, options, arguments.Path, edits)
 		if err != nil {
 			return tools.Result{}, fmt.Errorf("aikido/agent: multi_edit: %w; the file is unchanged", err)
 		}
