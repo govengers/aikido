@@ -67,6 +67,24 @@ func TestProcessFilesCountAgainstTheBudget(t *testing.T) {
 	}
 }
 
+// TestReadProcessFilesStayCharged replays the review's "for i in {1..32};
+// do sleep 30 < <(cat seed) & sleep .1; done; wait": reading a process file
+// released its charge while the pipe to the reader still held the copy, so
+// readers that do not read retained memory outside the budget.
+func TestReadProcessFilesStayCharged(t *testing.T) {
+	const seedBytes = 1 << 20 // beyond any pipe buffer, so the writer blocks
+	shell, _ := newTestShell(t, map[string]string{"seed": strings.Repeat("x", seedBytes)}, nil)
+	shell.budget = newMemoryBudget(seedBytes + seedBytes/2)
+	shell.scratch = newScratchStorage(shell.budget)
+	result := mustRun(t, shell, "for i in 1 2; do sleep .5 < <(cat seed) & sleep .1; done; wait; wc -c < <(cat seed)")
+	if want := "cat: No space left on device\n1048576\n"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+	if used := budgetUsed(shell); used != 0 {
+		t.Fatalf("budget holds %d bytes after the Run", used)
+	}
+}
+
 // TestProcessFilesPerEvaluation replays the review's concurrent function
 // calls: the /dev/fd name was chosen when the function was parsed, so the
 // second call overwrote the first one's file before it was read.

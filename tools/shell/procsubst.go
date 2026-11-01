@@ -64,13 +64,18 @@ func (p processFileStorage) store(ctx context.Context, name string, content []by
 	return p.files.WriteFile(ctx, name, content, contentType)
 }
 
-// consume drops a process file a redirect has read (cmd < <(list)): like
-// the pipe bash substitutes, it is read once, and a loop over many
-// substitutions does not hold them all. resolved is a session path.
-func (p processFileStorage) consume(ctx context.Context, resolved string) {
-	if name, ok := strings.CutPrefix(resolved, processFileDirectory+"/"); ok {
-		_ = p.files.DeleteFile(ctx, name)
+// consume drops a process file a redirect reads (cmd < <(list)) from
+// /dev/fd: like the pipe bash substitutes, it is read once, and a loop over
+// many substitutions does not hold them all. Its bytes stay charged to the
+// budget until release runs, when the reader no longer holds the copy.
+// resolved is a session path; for any other file release does nothing.
+func (p processFileStorage) consume(ctx context.Context, resolved string) (release func()) {
+	name, ok := strings.CutPrefix(resolved, processFileDirectory+"/")
+	if !ok {
+		return func() {}
 	}
+	size := p.files.detach(ctx, name)
+	return func() { p.files.budget.release(size) }
 }
 
 // openProcessFile opens a fresh /dev/fd/N for the output of a <(list): it

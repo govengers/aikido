@@ -26,13 +26,19 @@ func emptyInput() io.Reader { return noInput{} }
 // pipeReader returns an OS pipe that yields content. The interpreter hands an
 // *os.File to commands without a copying goroutine of its own; the writing
 // goroutine here ends when content is written or the reader is closed (the
-// interpreter closes it after the statement).
-func pipeReader(content []byte) (*os.File, error) {
+// interpreter closes it after the statement). done, if not nil, runs once
+// content is no longer held: then, or when the pipe cannot be made.
+func pipeReader(content []byte, done func()) (*os.File, error) {
+	if done == nil {
+		done = func() {}
+	}
 	reader, writer, err := os.Pipe()
 	if err != nil {
+		done()
 		return nil, fmt.Errorf("aikido/tools/shell: pipe: %w", err)
 	}
 	go func() {
+		defer done()
 		defer writer.Close()
 		// A write error means the reader stopped early, like a command that
 		// does not read its stdin; nothing waits for the rest.
