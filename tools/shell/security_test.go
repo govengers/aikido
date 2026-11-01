@@ -195,6 +195,25 @@ func TestNestedShellWithoutHomeHidesTheHostHome(t *testing.T) {
 	}
 }
 
+// TestBraceExpansionIsBounded pins the review's S21 scripts: mvdan stops a
+// brace expansion at 16384 words (products included, also through eval),
+// so no cap of the shell's own is needed.
+func TestBraceExpansionIsBounded(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	limit := "brace expansion would exceed 16384 elements\n"
+	testCases := []struct{ script, want string }{
+		{"echo {1..999999999}", limit},
+		{"echo {a,b}{1..1000}{x,y,z}{1..100}", limit},
+		{"eval 'echo {1..999999999}'", limit},
+		{"echo {1..3} {a..c..2} {x,{y,z}}; echo {1..5000}{a,b,c} | wc -w", "1 2 3 a c x y z\n15000\n"},
+	}
+	for _, testCase := range testCases {
+		if result := mustRun(t, shell, testCase.script); result.Output != testCase.want {
+			t.Errorf("Run(%q) = %q, want %q", testCase.script, result.Output, testCase.want)
+		}
+	}
+}
+
 // TestLookupsDoNotProbeTheHost replays the review's S6 and S20: builtin
 // wrappers skipped the pwd -P rewrite (host symlinks), and command -v, type
 // and type -P searched the host PATH or stat'ed host paths.
