@@ -791,6 +791,32 @@ func TestReceiveReply_StreamClosedAfterContextEndIsAFailure(t *testing.T) {
 	}
 }
 
+// observingLocker grants the lock once the test passed it the run's event
+// channel; unlock reports how many events the run had queued by then.
+type observingLocker struct {
+	runEvents      chan (<-chan Event)
+	queuedAtUnlock chan int
+}
+
+func (l observingLocker) Lock(context.Context, string) (func(), error) {
+	events := <-l.runEvents
+	return func() { l.queuedAtUnlock <- len(events) }, nil
+}
+
+func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
+	locker := observingLocker{runEvents: make(chan (<-chan Event), 1), queuedAtUnlock: make(chan int, 1)}
+	session := newTestSession(t, llmtest.NewStubClient(textTurn("hi")), nil, nil, func(options *SessionOptions) {
+		options.Locker = locker
+	})
+	events, _ := session.Run(context.Background(), "go")
+	locker.runEvents <- events
+
+	queued := <-locker.queuedAtUnlock // nothing is read before the unlock
+	if all := collectEvents(t, events); queued != len(all) {
+		t.Errorf("unlock saw %d of the run's %d events queued; want EventEnd sent before the unlock", queued, len(all))
+	}
+}
+
 func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventTextDelta, Text: "partial"},
