@@ -382,7 +382,11 @@ func buildAPIToolCalls(calls []llm.ToolCall) []apiToolCall {
 func messageContent(message llm.Message) (json.RawMessage, error) {
 	needsParts := len(message.Images) > 0 || len(message.Audio) > 0 || message.Cache != nil
 	if needsParts {
-		return marshalContent(buildContentParts(message))
+		parts, err := buildContentParts(message)
+		if err != nil {
+			return nil, err
+		}
+		return marshalContent(parts)
 	}
 	if message.Content == "" && len(message.ToolCalls) > 0 {
 		return json.RawMessage(`""`), nil
@@ -400,7 +404,9 @@ func marshalContent(content any) (json.RawMessage, error) {
 
 // buildContentParts builds the typed-parts array for a message with images,
 // audio or a cache breakpoint. The cache_control directive lands on the last part.
-func buildContentParts(message llm.Message) []map[string]any {
+// An image without URL is sent inline as a data URI (a generated image kept in
+// History has only Data); one with neither fails with llm.ErrInvalidRequest.
+func buildContentParts(message llm.Message) ([]map[string]any, error) {
 	parts := make([]map[string]any, 0, 1+len(message.Images)+len(message.Audio))
 	if message.Content != "" {
 		parts = append(parts, map[string]any{
@@ -408,11 +414,15 @@ func buildContentParts(message llm.Message) []map[string]any {
 			"text": message.Content,
 		})
 	}
-	for _, image := range message.Images {
+	for index, image := range message.Images {
+		url, err := imageURL(image)
+		if err != nil {
+			return nil, fmt.Errorf("image %d: %w", index, err)
+		}
 		parts = append(parts, map[string]any{
 			"type": "image_url",
 			"image_url": map[string]any{
-				"url": image.URL,
+				"url": url,
 			},
 		})
 	}
@@ -440,7 +450,7 @@ func buildContentParts(message llm.Message) []map[string]any {
 		}
 		parts[len(parts)-1]["cache_control"] = cacheControl
 	}
-	return parts
+	return parts, nil
 }
 
 // buildAPITools converts tool definitions onto the wire shape.
