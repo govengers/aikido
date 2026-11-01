@@ -46,8 +46,9 @@ The tool description is generated: one paragraph on what works, the list of comm
 | Kept from one `Run` to the next | Not kept |
 |---|---|
 | the working directory (`cd`) | variables, `export`, functions, aliases, `set` options |
-| directories created with `mkdir` (see below) | `/tmp` |
+| directories created with `mkdir` (see below) | |
 | everything written to the Storage | background jobs (they end with the script) |
+| files in `/tmp` | |
 
 ## Built-in commands
 
@@ -118,7 +119,7 @@ stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl 
 - **`/` is the workspace root.** `/docs/a.md` and `docs/a.md` from the root are the same file. A path that climbs above the root (`../../etc/passwd`) is `No such file or directory`; host paths such as `/etc/hosts` are workspace paths and normally missing. `pwd`, `realpath` and `$PWD` print `/`-rooted workspace paths.
 - **Directories are implied.** A Storage holds files only: a directory exists while a file lies below it. `mkdir` additionally records the directory in the Shell, so `mkdir -p build && cd build` and `cp x build/` work and `ls` shows it, for the life of the Shell; the Storage is unchanged until a file is written below it (another Shell or the file tools do not see empty directories). `rmdir` removes an empty one; `rm -r` forgets the ones below.
 - **Writes are buffered.** A redirect (`>`, `>>`, `2>&1 > f`) collects what is written and stores it with one `WriteFile` when it closes, so `sort f > f` sorts instead of truncating first, unlike bash. Commands write whole files the same way. A write needs an existing parent directory (`echo x > nodir/f` fails like bash) and is capped at 64 MiB per file.
-- **`/tmp` is scratch.** It is a memory store mounted per call and emptied afterwards; `/tmp` is always a directory and hides workspace files under `tmp/`.
+- **`/tmp` is scratch.** It is a memory store of the Shell, never the Storage: a file written to `/tmp/x` in one call can be read in the next (one registered tool is one agent session), and nothing of it reaches the workspace, an overlay's changes or a commit. Its files are capped at 64 MiB together; a write beyond that fails with `No space left on device`. `/tmp` is always a directory and hides workspace files under `tmp/`.
 - **Devices.** `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`; every other `/dev` path is missing.
 - **No execute bit.** `./build.sh` fails with exit 126 and a hint (`run it with: bash ./build.sh`); `bash build.sh` works. `test -x` is true for directories only. There is no `chmod`, no symlinks, no file modes.
 - **Ordering.** `ls`, `find` and globs sort by byte order (the C locale); GNU `find` prints in directory order instead, and GNU `ls` sorts by the locale.

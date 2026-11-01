@@ -132,18 +132,34 @@ func TestWorkingDirectoryRemovedBetweenCalls(t *testing.T) {
 	}
 }
 
-func TestTmpIsDiscardedAfterEachCall(t *testing.T) {
-	shell, storage := newTestShell(t, nil, nil)
-	if result := mustRun(t, shell, "echo x > /tmp/scratch && cat /tmp/scratch && cd /tmp && pwd"); result.Output != "x\n/tmp\n" {
-		t.Fatalf("first call = %q", result.Output)
+// TestTmpPersistsAcrossCalls replays the benchmark's two-call pattern: a
+// model writes /tmp/lines.txt in one call and reads it in the next.
+func TestTmpPersistsAcrossCalls(t *testing.T) {
+	shell, storage := newTestShell(t, map[string]string{"pkg/a.go": "a\nb\n"}, nil)
+	first := mustRun(t, shell, `find pkg -name '*.go' | while read -r f; do printf '%s: %s\n' "$f" "$(wc -l < "$f")"; done > /tmp/lines.txt; mkdir /tmp/work; cd /tmp`)
+	if first.Output != "" || first.ExitCode != 0 {
+		t.Fatalf("first call = %q, exit %d", first.Output, first.ExitCode)
 	}
-	result := mustRun(t, shell, "pwd; cat /tmp/scratch")
-	if result.Output != "/tmp\ncat: /tmp/scratch: No such file or directory\n" || result.ExitCode != 1 {
-		t.Fatalf("second call = %q, exit %d", result.Output, result.ExitCode)
+	second := mustRun(t, shell, "pwd; cat /tmp/lines.txt; ls /tmp")
+	if second.Output != "/tmp\npkg/a.go: 2\nlines.txt\nwork\n" || second.ExitCode != 0 {
+		t.Fatalf("second call = %q, exit %d", second.Output, second.ExitCode)
 	}
 	files, err := storage.ListFiles(context.Background())
-	if err != nil || len(files) != 0 {
-		t.Fatalf("workspace files = %v, %v; want none", files, err)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("workspace files = %v, %v; want only pkg/a.go", files, err)
+	}
+	other, _ := newTestShell(t, nil, nil)
+	if result := mustRun(t, other, "cat /tmp/lines.txt"); result.ExitCode != 1 {
+		t.Fatalf("another Shell sees /tmp: %q", result.Output)
+	}
+}
+
+func TestTmpIsCapped(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	shell.scratch = newScratchStorage(10)
+	result := mustRun(t, shell, "printf 123456 > /tmp/a && printf 12345 > /tmp/b; printf 1234 > /tmp/b; printf 123 > /tmp/a; rm /tmp/b; printf 1234567 > /tmp/c && cat /tmp/a /tmp/c")
+	if want := "bash: /tmp/b: No space left on device\n1231234567"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
 	}
 }
 

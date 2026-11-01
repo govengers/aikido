@@ -30,8 +30,8 @@ const (
 	errUnsupported  fileError = "Operation not supported"
 )
 
-// scratchDirectory is the workspace path of /tmp: memory-backed, emptied
-// after every call.
+// scratchDirectory is the workspace path of /tmp: a scratchStorage of the
+// Shell, never the workspace.
 const scratchDirectory = "tmp"
 
 // maximumBufferedFileBytes caps one file a script writes through a redirect

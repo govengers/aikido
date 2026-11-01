@@ -13,7 +13,6 @@ import (
 	"mvdan.cc/sh/v3/interp"
 
 	"github.com/govengers/aikido/vfs"
-	"github.com/govengers/aikido/vfs/memory"
 	"github.com/govengers/aikido/vfs/mount"
 )
 
@@ -61,14 +60,16 @@ type Result struct {
 	Truncated bool
 }
 
-// Shell runs bash scripts over a vfs.Storage. The working directory and the
-// directories mkdir created persist from one Run to the next; variables,
-// functions and /tmp do not. Run calls are serialized, so a Shell is safe
+// Shell runs bash scripts over a vfs.Storage. The working directory, the
+// directories mkdir created and the files in /tmp (memory, at most 64 MiB
+// together) persist from one Run to the next; variables and functions do
+// not. Run calls are serialized, so a Shell is safe
 // for concurrent use.
 type Shell struct {
 	options     Options
 	commands    map[string]Command
 	directories *directorySet
+	scratch     *scratchStorage // /tmp
 
 	mutex     sync.Mutex
 	directory string // the working directory, a workspace path
@@ -104,7 +105,7 @@ func New(options *Options) (*Shell, error) {
 	if configured.ToolName == "" {
 		configured.ToolName = DefaultToolName
 	}
-	return &Shell{options: configured, commands: commands, directories: newDirectorySet()}, nil
+	return &Shell{options: configured, commands: commands, directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes)}, nil
 }
 
 func validateEnvironment(environment []string) error {
@@ -202,11 +203,11 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	return statusCommandFailure, nil
 }
 
-// newSession mounts a fresh /tmp scratch over the workspace for one Run.
+// newSession mounts the Shell's /tmp over the workspace for one Run.
 func (s *Shell) newSession() (*session, error) {
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
 		{Prefix: "", Storage: s.options.Storage},
-		{Prefix: scratchDirectory, Storage: memory.New()},
+		{Prefix: scratchDirectory, Storage: s.scratch},
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp: %w", err)
