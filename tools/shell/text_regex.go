@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // regexOptions selects the POSIX dialect a pattern is written in.
@@ -108,8 +109,16 @@ func (t *posixTranslator) step() error {
 			return err
 		}
 	}
-	t.atom(regexp.QuoteMeta(string(character)))
+	t.atom(regexp.QuoteMeta(t.literalAt(t.position - 1)))
 	return nil
+}
+
+// literalAt returns the character starting at byte index start, a whole
+// UTF-8 sequence for a multibyte one, and moves position past it.
+func (t *posixTranslator) literalAt(start int) string {
+	_, size := utf8.DecodeRuneInString(t.pattern[start:])
+	t.position = start + size
+	return t.pattern[start:t.position]
 }
 
 // dollarIsAnchor reports whether a BRE "$" ends the pattern or a group or an
@@ -186,7 +195,7 @@ func (t *posixTranslator) escapedLiteral(character byte) string {
 			return regexp.QuoteMeta(string(control))
 		}
 	}
-	return regexp.QuoteMeta(string(character))
+	return regexp.QuoteMeta(t.literalAt(t.position - 1))
 }
 
 var sedControlEscapes = map[byte]byte{'t': '\t', 'r': '\r', 'f': '\f', 'v': '\v', 'a': '\a', 'n': '\n'}
@@ -390,7 +399,7 @@ func (t *posixTranslator) bracketClass(class *strings.Builder) error {
 		class.WriteString("[:" + name + ":]")
 		return nil
 	}
-	if len(name) != 1 {
+	if utf8.RuneCountInString(name) != 1 {
 		return &regexError{"Invalid collation character"}
 	}
 	class.WriteString(regexp.QuoteMeta(name))

@@ -530,7 +530,8 @@ func globRegexp(pattern string, ignoreCase bool) (*regexp.Regexp, error) {
 			expression.WriteString("[" + strings.ReplaceAll(class, `\`, `\\`) + "]")
 			index = closing
 		default:
-			expression.WriteString(regexp.QuoteMeta(string(character)))
+			// One byte at a time keeps a multibyte character's sequence intact.
+			expression.WriteString(regexp.QuoteMeta(pattern[index : index+1]))
 		}
 	}
 	expression.WriteString(")$")
