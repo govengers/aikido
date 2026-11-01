@@ -1,0 +1,26 @@
+# Harness benchmark: aikido vs aikido+bash vs opencode. See README.md.
+# Needs OPENROUTER_API_KEY (or CLAUDE_OPENROUTER_API_KEY), go, bash, jq, opencode.
+
+models := "anthropic/claude-haiku-5.5,z-ai/glm-5.3"
+
+default: validate
+
+# Prove every checker: fails on the untouched fixture, passes on solve.sh. No LLM calls.
+validate:
+    go run ./cmd/bench -validate
+
+# 2 tasks x 3 harnesses x 1 model x 1 rep, a few cents.
+smoke:
+    go run ./cmd/bench -task fix-bug,count-lines -run-id smoke-$(date +%Y%m%d-%H%M%S)
+
+# Full matrix: 12 tasks x 3 harnesses x 2 models x reps (default 3 = 216 runs). Extra flags pass through.
+bench reps="3" *args:
+    go run ./cmd/bench -model {{models}} -reps {{reps}} -run-id full-$(date +%Y%m%d-%H%M%S) {{args}}
+
+# Re-render summary.md of a results directory.
+summarize dir:
+    go run ./cmd/bench -summarize {{dir}}
+
+check:
+    go vet ./...
+    go test ./...

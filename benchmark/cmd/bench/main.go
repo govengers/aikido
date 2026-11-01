@@ -100,7 +100,7 @@ func main() {
 	var (
 		harnessFlag = flag.String("harness", "aikido,aikido-bash,opencode", "comma-separated harnesses")
 		modelFlag   = flag.String("model", "anthropic/claude-haiku-5.5", "comma-separated OpenRouter model ids")
-		taskGlob    = flag.String("task", "*", "glob over task names")
+		taskGlob    = flag.String("task", "*", "comma-separated globs over task names")
 		reps        = flag.Int("reps", 1, "repetitions per (harness, model, task)")
 		parallel    = flag.Int("parallel", 4, "concurrent runs")
 		timeout     = flag.Duration("timeout", 10*time.Minute, "wall-clock limit per run")
@@ -267,9 +267,15 @@ func loadTasks(dir, glob string) ([]task, error) {
 		if !e.IsDir() {
 			continue
 		}
-		if ok, err := filepath.Match(glob, e.Name()); err != nil {
-			return nil, err
-		} else if !ok {
+		matched := false
+		for _, g := range splitList(glob) {
+			ok, err := filepath.Match(g, e.Name())
+			if err != nil {
+				return nil, err
+			}
+			matched = matched || ok
+		}
+		if !matched {
 			continue
 		}
 		d := filepath.Join(abs, e.Name())
