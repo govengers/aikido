@@ -19,7 +19,7 @@ import (
 func (c *Client) retryPolicy() retry.Policy {
 	p := retry.DefaultPolicy()
 	if c.maxAttempts != 0 {
-		p.MaxAttempts = c.maxAttempts
+		p.MaximumAttempts = c.maxAttempts
 	}
 	p.ShouldRetry = func(err error) bool {
 		return errors.Is(err, llm.ErrRateLimited) || errors.Is(err, llm.ErrServerError)
@@ -53,7 +53,7 @@ func classifyHTTPError(resp *http.Response) error {
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		if d, ok := parseRetryAfter(resp.Header.Get("Retry-After")); ok {
-			return &retry.RetryAfterError{Cause: wrapped, After: d}
+			return &retry.AfterError{Cause: wrapped, After: d}
 		}
 	}
 	return wrapped
@@ -64,10 +64,10 @@ func classifyHTTPError(resp *http.Response) error {
 func classifySentinel(status int) error {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return llm.ErrAuth
+		return llm.ErrAuthentication
 	case status == http.StatusPaymentRequired:
 		// 402 — insufficient credits. Auth-class: caller must fix something.
-		return llm.ErrAuth
+		return llm.ErrAuthentication
 	case status == http.StatusTooManyRequests:
 		return llm.ErrRateLimited
 	case status >= 500 && status <= 599:

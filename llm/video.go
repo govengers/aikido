@@ -19,8 +19,8 @@ type VideoRequest struct {
 	// Size is an explicit "WIDTHxHEIGHT", for models that list sizes instead
 	// of resolution tiers. Set Size OR AspectRatio+Resolution.
 	Size string
-	// Duration in seconds. The model's list of supported lengths is closed.
-	Duration int
+	// DurationSeconds in seconds. The model's list of supported lengths is closed.
+	DurationSeconds int
 	// GenerateAudio is sent only when non-nil: models without an audio
 	// option refuse the field. Models with audio default to true.
 	GenerateAudio *bool

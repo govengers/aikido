@@ -27,9 +27,9 @@ func TestDo_RetriesUntilSuccess(t *testing.T) {
 	t.Parallel()
 	var calls int32
 	policy := Policy{
-		MaxAttempts: 3,
+		MaximumAttempts: 3,
 		BaseDelay:   1 * time.Millisecond,
-		MaxDelay:    5 * time.Millisecond,
+		MaximumDelay:    5 * time.Millisecond,
 		Multiplier:  2.0,
 		Jitter:      0,
 		// Retry every error.
@@ -55,9 +55,9 @@ func TestDo_StopsOnNonRetryableError(t *testing.T) {
 	sentinel := errors.New("permanent")
 	var calls int32
 	policy := Policy{
-		MaxAttempts: 5,
+		MaximumAttempts: 5,
 		BaseDelay:   1 * time.Millisecond,
-		MaxDelay:    5 * time.Millisecond,
+		MaximumDelay:    5 * time.Millisecond,
 		Multiplier:  2.0,
 		ShouldRetry: func(err error) bool { return false },
 	}
@@ -78,9 +78,9 @@ func TestDo_StopsAfterMaxAttempts(t *testing.T) {
 	sentinel := errors.New("transient")
 	var calls int32
 	policy := Policy{
-		MaxAttempts: 3,
+		MaximumAttempts: 3,
 		BaseDelay:   1 * time.Millisecond,
-		MaxDelay:    5 * time.Millisecond,
+		MaximumDelay:    5 * time.Millisecond,
 		Multiplier:  2.0,
 		ShouldRetry: func(err error) bool { return true },
 	}
@@ -100,9 +100,9 @@ func TestDo_HonorsRetryAfter(t *testing.T) {
 	t.Parallel()
 	var calls int32
 	policy := Policy{
-		MaxAttempts: 3,
+		MaximumAttempts: 3,
 		BaseDelay:   1 * time.Hour, // would block forever w/o RetryAfter override
-		MaxDelay:    1 * time.Hour,
+		MaximumDelay:    1 * time.Hour,
 		Multiplier:  2.0,
 		ShouldRetry: func(err error) bool { return true },
 	}
@@ -110,7 +110,7 @@ func TestDo_HonorsRetryAfter(t *testing.T) {
 	err := Do(context.Background(), policy, func(attempt int) error {
 		n := atomic.AddInt32(&calls, 1)
 		if n < 2 {
-			return &RetryAfterError{Cause: errors.New("rate limited"), After: 10 * time.Millisecond}
+			return &AfterError{Cause: errors.New("rate limited"), After: 10 * time.Millisecond}
 		}
 		return nil
 	})
@@ -129,9 +129,9 @@ func TestDo_HonorsRetryAfter(t *testing.T) {
 func TestDo_RespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 	policy := Policy{
-		MaxAttempts: 5,
+		MaximumAttempts: 5,
 		BaseDelay:   100 * time.Millisecond,
-		MaxDelay:    1 * time.Second,
+		MaximumDelay:    1 * time.Second,
 		Multiplier:  2.0,
 		ShouldRetry: func(err error) bool { return true },
 	}
@@ -148,14 +148,14 @@ func TestDo_RespectsContextCancellation(t *testing.T) {
 func TestDefaultPolicy_Sane(t *testing.T) {
 	t.Parallel()
 	p := DefaultPolicy()
-	if p.MaxAttempts < 2 {
-		t.Errorf("MaxAttempts = %d, want >= 2", p.MaxAttempts)
+	if p.MaximumAttempts < 2 {
+		t.Errorf("MaxAttempts = %d, want >= 2", p.MaximumAttempts)
 	}
 	if p.BaseDelay <= 0 {
 		t.Errorf("BaseDelay = %v, want > 0", p.BaseDelay)
 	}
-	if p.MaxDelay < p.BaseDelay {
-		t.Errorf("MaxDelay (%v) < BaseDelay (%v)", p.MaxDelay, p.BaseDelay)
+	if p.MaximumDelay < p.BaseDelay {
+		t.Errorf("MaxDelay (%v) < BaseDelay (%v)", p.MaximumDelay, p.BaseDelay)
 	}
 	if p.Multiplier < 1 {
 		t.Errorf("Multiplier = %v, want >= 1", p.Multiplier)

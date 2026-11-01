@@ -12,7 +12,7 @@ type VFSToolOptions struct {
 	Storage           vfs.Storage // required; pre-bound to scope if multi-tenant
 	HideHiddenPaths   bool        // hide paths beginning with "_" or "." (per segment)
 	AllowedExtensions []string    // nil = allow all
-	MaxFileBytes      int64       // default 1 MiB; 0 means default
+	MaximumFileBytes  int64       // default 1 MiB; 0 means default
 
 	// ReadOnly disables registration of write_file and delete_file. Use this
 	// for fixed-corpus deployments (e.g. an embedded knowledge base over
@@ -37,8 +37,8 @@ func RegisterVFSTools(reg *tools.Registry, opts *VFSToolOptions) error {
 		return errors.New("aikido/agent: RegisterVFSTools: Storage is required")
 	}
 	cp := *opts
-	if cp.MaxFileBytes <= 0 {
-		cp.MaxFileBytes = 1 << 20 // 1 MiB
+	if cp.MaximumFileBytes <= 0 {
+		cp.MaximumFileBytes = 1 << 20 // 1 MiB
 	}
 
 	if err := reg.Register(readFileDef(), readFileHandler(cp)); err != nil {

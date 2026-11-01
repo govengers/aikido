@@ -44,14 +44,16 @@ func TestTokenSource_RefreshRotatesOnceAndPersists(t *testing.T) {
 
 	var persisted []Tokens
 	var mu sync.Mutex
-	src := NewTokenSource(Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now().Add(time.Minute)},
-		func(_ context.Context, t Tokens) error {
+	src := newTokenSource(t, &TokenSourceOptions{
+		Tokens: Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now().Add(time.Minute)},
+		OnRefresh: func(_ context.Context, tokens Tokens) error {
 			mu.Lock()
-			persisted = append(persisted, t)
+			persisted = append(persisted, tokens)
 			mu.Unlock()
 			return nil
 		},
-		&AuthOptions{Issuer: srv.URL})
+		Login: LoginOptions{Issuer: srv.URL},
+	})
 
 	var wg sync.WaitGroup
 	for range 5 {
@@ -86,9 +88,9 @@ func TestTokenSource_PermanentErrorsNeedReauth(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = io.WriteString(w, tc.body)
 		}))
-		src := NewTokenSource(Tokens{RefreshToken: "rt.x"}, nil, &AuthOptions{Issuer: srv.URL})
+		src := newTokenSource(t, &TokenSourceOptions{Tokens: Tokens{RefreshToken: "rt.x"}, Login: LoginOptions{Issuer: srv.URL}})
 		_, err := src.Token(context.Background())
-		if errors.Is(err, ErrReauthRequired) != tc.reauth {
+		if errors.Is(err, ErrReauthenticationRequired) != tc.reauth {
 			t.Errorf("%d %s: err = %v, reauth want %v", tc.status, tc.body, err, tc.reauth)
 		}
 		srv.Close()
@@ -119,7 +121,7 @@ func TestDeviceLogin_PendingThenSuccess(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	o := &AuthOptions{Issuer: srv.URL}
+	o := &LoginOptions{Issuer: srv.URL}
 
 	dc, err := StartDeviceLogin(context.Background(), o)
 	if err != nil || dc.UserCode != "K7QM-4XPD" || dc.Interval != 5*time.Second || dc.VerificationURL != srv.URL+"/codex/device" {
@@ -147,7 +149,7 @@ func TestParseAuthJSON(t *testing.T) {
 		"expired":       {file("chatgpt", expired), false},
 		"not json":      {[]byte("nope"), false},
 	} {
-		tok, err := ParseAuthJSON(tc.raw)
+		tok, err := ParseLogin(tc.raw)
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v", name, err)
 		}
@@ -167,11 +169,15 @@ func TestTokenSourceRefreshSurvivesCancel(t *testing.T) {
 	defer srv.Close()
 	var saved Tokens
 	persisted := make(chan struct{})
-	ts := NewTokenSource(Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now()}, func(_ context.Context, tok Tokens) error {
-		saved = tok
-		close(persisted)
-		return nil
-	}, &AuthOptions{Issuer: srv.URL})
+	ts := newTokenSource(t, &TokenSourceOptions{
+		Tokens: Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now()},
+		OnRefresh: func(_ context.Context, tokens Tokens) error {
+			saved = tokens
+			close(persisted)
+			return nil
+		},
+		Login: LoginOptions{Issuer: srv.URL},
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _, _ = ts.Token(ctx) }()
 	time.Sleep(50 * time.Millisecond)
@@ -184,5 +190,23 @@ func TestTokenSourceRefreshSurvivesCancel(t *testing.T) {
 	}
 	if saved.RefreshToken != "rt.new" {
 		t.Fatalf("persisted %q, want rt.new", saved.RefreshToken)
+	}
+}
+
+func newTokenSource(t *testing.T, options *TokenSourceOptions) *TokenSource {
+	t.Helper()
+	source, err := NewTokenSource(options)
+	if err != nil {
+		t.Fatalf("NewTokenSource: %v", err)
+	}
+	return source
+}
+
+func TestNewTokenSourceRequiresRefreshToken(t *testing.T) {
+	if _, err := NewTokenSource(nil); err == nil {
+		t.Error("NewTokenSource(nil) returned no error")
+	}
+	if _, err := NewTokenSource(&TokenSourceOptions{Tokens: Tokens{AccessToken: "at"}}); err == nil {
+		t.Error("NewTokenSource without RefreshToken returned no error")
 	}
 }

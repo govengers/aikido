@@ -34,7 +34,7 @@ func TestValidatePath_Rejects(t *testing.T) {
 		{"parent traversal", "../etc/passwd", "parent"},
 		{"parent traversal mid", "a/../b", "parent"},
 		{"null byte", "a\x00b", "null"},
-		{"oversized", strings.Repeat("a", MaxPathBytes+1), "exceeds"},
+		{"oversized", strings.Repeat("a", MaximumPathBytes+1), "exceeds"},
 	}
 	for _, tt := range bad {
 		t.Run(tt.name, func(t *testing.T) {
@@ -50,8 +50,8 @@ func TestValidatePath_Rejects(t *testing.T) {
 }
 
 func TestValidatePath_BoundaryLength(t *testing.T) {
-	exact := strings.Repeat("a", MaxPathBytes)
+	exact := strings.Repeat("a", MaximumPathBytes)
 	if err := ValidatePath(exact); err != nil {
-		t.Errorf("path of exactly %d bytes should be accepted, got %v", MaxPathBytes, err)
+		t.Errorf("path of exactly %d bytes should be accepted, got %v", MaximumPathBytes, err)
 	}
 }

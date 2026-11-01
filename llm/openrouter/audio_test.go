@@ -38,7 +38,9 @@ func TestAudioInputOnWire(t *testing.T) {
 		var text string
 		var err error
 		if stream {
-			text, _, _, _, err = llm.Collect(context.Background(), c, req)
+			var resp llm.Response
+			resp, err = llm.Collect(context.Background(), c, req)
+			text = resp.Text
 		} else {
 			var resp llm.Response
 			resp, err = c.Complete(context.Background(), req)

@@ -200,7 +200,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, accep
 func statusSentinel(status int) error {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusPaymentRequired:
-		return llm.ErrAuth
+		return llm.ErrAuthentication
 	case status == http.StatusTooManyRequests:
 		return llm.ErrRateLimited
 	case status >= 500 || status == http.StatusRequestTimeout:

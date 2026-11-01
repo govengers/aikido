@@ -10,7 +10,7 @@
 //	var knowledgeFS embed.FS
 //
 //	knowledge, _ := fs.Sub(knowledgeFS, "knowledge")
-//	storage := embedfs.NewStorage(knowledge)
+//	storage, err := embedfs.New(&embedfs.Options{FileSystem: knowledge})
 //
 // Storage satisfies vfs.Searchable with case-insensitive substring matching
 // against file contents — same syntax as vfs/memory.
@@ -18,6 +18,7 @@ package embedfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -37,21 +38,30 @@ var (
 	_ vfs.Searchable = (*Storage)(nil)
 )
 
-// NewStorage wraps fsys. The fsys is consulted on every call; nothing is cached.
-//
-// Caller-bound subdirectories: pass fs.Sub(fsys, "data") if your embed includes
-// a parent prefix you want to hide from the model.
-func NewStorage(fsys fs.FS) *Storage {
-	return &Storage{fsys: fsys}
+// Options configure a Storage.
+type Options struct {
+	// FileSystem is the corpus, required. It is consulted on every call; nothing
+	// is cached. Pass fs.Sub(fileSystem, "data") to hide a parent prefix of an
+	// embed from the model.
+	FileSystem fs.FS
+}
+
+// New wraps options.FileSystem. It returns an error if options or the
+// FileSystem is nil.
+func New(options *Options) (*Storage, error) {
+	if options == nil || options.FileSystem == nil {
+		return nil, errors.New("aikido/vfs/embedfs: FileSystem is required")
+	}
+	return &Storage{fsys: options.FileSystem}, nil
 }
 
 // ListFiles walks the entire fs and returns every file (no directories).
 // Paths are relative; deterministic alphabetical order.
-func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
+func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var out []vfs.FileMeta
+	var out []vfs.FileMetadata
 	err := fs.WalkDir(s.fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -63,7 +73,7 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
 		if err != nil {
 			return err
 		}
-		out = append(out, vfs.FileMeta{
+		out = append(out, vfs.FileMetadata{
 			Path:        p,
 			ContentType: contentTypeFor(p),
 			Size:        info.Size(),
@@ -79,22 +89,22 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
 }
 
 // ReadFile returns the bytes for the requested path.
-func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMeta, error) {
+func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	if err := vfs.ValidatePath(p); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	data, err := fs.ReadFile(s.fsys, p)
 	if err != nil {
 		if isNotExist(err) {
-			return nil, vfs.FileMeta{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, p)
+			return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, p)
 		}
-		return nil, vfs.FileMeta{}, fmt.Errorf("aikido/vfs/embedfs: ReadFile: %w", err)
+		return nil, vfs.FileMetadata{}, fmt.Errorf("aikido/vfs/embedfs: ReadFile: %w", err)
 	}
 	info, statErr := fs.Stat(s.fsys, p)
-	meta := vfs.FileMeta{
+	meta := vfs.FileMetadata{
 		Path:        p,
 		ContentType: contentTypeFor(p),
 		Size:        int64(len(data)),

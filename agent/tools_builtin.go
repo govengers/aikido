@@ -15,8 +15,8 @@ import (
 	"github.com/govengers/aikido/vfs"
 )
 
-func readFileDef() llm.ToolDef {
-	return llm.ToolDef{
+func readFileDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "read_file",
 		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines starting at offset (1-based line, default 1), plus the content type, the byte size, total_lines and truncated (true when lines follow the returned range). Content is raw, without line numbers.", defaultReadLimit),
 		Parameters: tools.Object(map[string]any{
@@ -27,8 +27,8 @@ func readFileDef() llm.ToolDef {
 	}
 }
 
-func writeFileDef() llm.ToolDef {
-	return llm.ToolDef{
+func writeFileDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "write_file",
 		Description: "Create or overwrite a file at the given path. Use markdown by default; binary writes are not supported.",
 		Parameters: tools.Object(map[string]any{
@@ -39,16 +39,16 @@ func writeFileDef() llm.ToolDef {
 	}
 }
 
-func listFilesDef() llm.ToolDef {
-	return llm.ToolDef{
+func listFilesDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "list_files",
 		Description: "List every file in the workspace, sorted by path. Hidden paths are filtered when configured.",
 		Parameters:  tools.Object(map[string]any{}),
 	}
 }
 
-func deleteFileDef() llm.ToolDef {
-	return llm.ToolDef{
+func deleteFileDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "delete_file",
 		Description: "Delete a file by path. Errors if the file does not exist.",
 		Parameters: tools.Object(map[string]any{
@@ -57,8 +57,8 @@ func deleteFileDef() llm.ToolDef {
 	}
 }
 
-func editFileDef() llm.ToolDef {
-	return llm.ToolDef{
+func editFileDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "edit_file",
 		Description: "Replace old_string with new_string in an existing file. old_string must match exactly (whitespace included) and be unique in the file unless replace_all is true. Use write_file to create files.",
 		Parameters: tools.Object(map[string]any{
@@ -70,9 +70,9 @@ func editFileDef() llm.ToolDef {
 	}
 }
 
-func searchDef(s vfs.Searchable) llm.ToolDef {
+func searchDef(s vfs.Searchable) llm.ToolDefinition {
 	desc := "Search the workspace for files matching a query. " + s.SearchSyntax()
-	return llm.ToolDef{
+	return llm.ToolDefinition{
 		Name:        "search",
 		Description: desc,
 		Parameters: tools.Object(map[string]any{
@@ -82,7 +82,7 @@ func searchDef(s vfs.Searchable) llm.ToolDef {
 }
 
 func readFileHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, env tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
 		var v struct {
 			Path   string `json:"path"`
 			Offset int    `json:"offset"`
@@ -119,13 +119,12 @@ func readFileHandler(opts VFSToolOptions) tools.Handler {
 				"total_lines":  len(lines),
 				"truncated":    end < len(lines),
 			},
-			Display: fmt.Sprintf("read %s (%d bytes, lines %d-%d of %d)", v.Path, meta.Size, start+1, end, len(lines)),
 		}, nil
 	}
 }
 
 func writeFileHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, env tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
 		var v struct {
 			Path        string `json:"path"`
 			Content     string `json:"content"`
@@ -137,8 +136,8 @@ func writeFileHandler(opts VFSToolOptions) tools.Handler {
 		if err := validatePolicyPath(opts, v.Path); err != nil {
 			return tools.Result{}, err
 		}
-		if int64(len(v.Content)) > opts.MaxFileBytes {
-			return tools.Result{}, fmt.Errorf("%w: %d > %d (caller-policy MaxFileBytes)", vfs.ErrFileTooLarge, len(v.Content), opts.MaxFileBytes)
+		if int64(len(v.Content)) > opts.MaximumFileBytes {
+			return tools.Result{}, fmt.Errorf("%w: %d > %d (caller-policy MaxFileBytes)", vfs.ErrFileTooLarge, len(v.Content), opts.MaximumFileBytes)
 		}
 		ct := v.ContentType
 		if ct == "" {
@@ -149,13 +148,12 @@ func writeFileHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"path": v.Path, "size": int64(len(v.Content))},
-			Display: fmt.Sprintf("wrote %s (%d bytes)", v.Path, len(v.Content)),
 		}, nil
 	}
 }
 
 func listFilesHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, _ json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, _ json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		files, err := opts.Storage.ListFiles(ctx)
 		if err != nil {
 			return tools.Result{}, err
@@ -173,13 +171,12 @@ func listFilesHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"files": out},
-			Display: fmt.Sprintf("listed %d files", len(out)),
 		}, nil
 	}
 }
 
 func deleteFileHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var v struct {
 			Path string `json:"path"`
 		}
@@ -194,13 +191,12 @@ func deleteFileHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"path": v.Path},
-			Display: fmt.Sprintf("deleted %s", v.Path),
 		}, nil
 	}
 }
 
 func editFileHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var v struct {
 			Path       string `json:"path"`
 			OldString  string `json:"old_string"`
@@ -234,8 +230,8 @@ func editFileHandler(opts VFSToolOptions) tools.Handler {
 			return tools.Result{}, fmt.Errorf("aikido/agent: edit_file: old_string matches %d times in %s; add context to make it unique or set replace_all", n, v.Path)
 		}
 		updated := strings.ReplaceAll(string(content), v.OldString, v.NewString)
-		if int64(len(updated)) > opts.MaxFileBytes {
-			return tools.Result{}, fmt.Errorf("%w: %d > %d (caller-policy MaxFileBytes)", vfs.ErrFileTooLarge, len(updated), opts.MaxFileBytes)
+		if int64(len(updated)) > opts.MaximumFileBytes {
+			return tools.Result{}, fmt.Errorf("%w: %d > %d (caller-policy MaxFileBytes)", vfs.ErrFileTooLarge, len(updated), opts.MaximumFileBytes)
 		}
 		ct := meta.ContentType
 		if ct == "" {
@@ -246,13 +242,12 @@ func editFileHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"path": v.Path, "replacements": n, "size": int64(len(updated))},
-			Display: fmt.Sprintf("edited %s (%d replacements)", v.Path, n),
 		}, nil
 	}
 }
 
 func searchHandler(opts VFSToolOptions, s vfs.Searchable) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var v struct {
 			Query string `json:"query"`
 		}
@@ -272,7 +267,6 @@ func searchHandler(opts VFSToolOptions, s vfs.Searchable) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"paths": filtered},
-			Display: fmt.Sprintf("search hit %d files", len(filtered)),
 		}, nil
 	}
 }

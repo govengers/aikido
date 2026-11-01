@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// FileMeta describes one file's metadata.
-type FileMeta struct {
+// FileMetadata describes one file's metadata.
+type FileMetadata struct {
 	Path        string
 	ContentType string
 	Size        int64
@@ -22,8 +22,8 @@ type FileMeta struct {
 // Atomicity: each call is atomic at the backend level. The agent loop is not
 // transactional in v1 (ADR-019).
 type Storage interface {
-	ListFiles(ctx context.Context) ([]FileMeta, error)
-	ReadFile(ctx context.Context, path string) ([]byte, FileMeta, error)
+	ListFiles(ctx context.Context) ([]FileMetadata, error)
+	ReadFile(ctx context.Context, path string) ([]byte, FileMetadata, error)
 	WriteFile(ctx context.Context, path string, content []byte, contentType string) error
 	DeleteFile(ctx context.Context, path string) error
 }

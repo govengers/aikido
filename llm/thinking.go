@@ -8,23 +8,23 @@ const (
 	ThinkingEffortHigh   ThinkingEffort = "high"
 )
 
-// ThinkingConfig configures provider-side thinking. Use ThinkingByEffort or
+// ThinkingConfiguration configures provider-side thinking. Use ThinkingByEffort or
 // ThinkingByBudget — the unexported fields prevent setting both.
-type ThinkingConfig struct {
+type ThinkingConfiguration struct {
 	effort ThinkingEffort
 	budget int
 }
 
-func ThinkingByEffort(e ThinkingEffort) *ThinkingConfig {
-	return &ThinkingConfig{effort: e}
+func ThinkingByEffort(e ThinkingEffort) *ThinkingConfiguration {
+	return &ThinkingConfiguration{effort: e}
 }
 
-func ThinkingByBudget(n int) *ThinkingConfig {
-	return &ThinkingConfig{budget: n}
+func ThinkingByBudget(n int) *ThinkingConfiguration {
+	return &ThinkingConfiguration{budget: n}
 }
 
 // Effort returns the configured coarse effort, empty string if budget-based.
-func (t *ThinkingConfig) Effort() ThinkingEffort {
+func (t *ThinkingConfiguration) Effort() ThinkingEffort {
 	if t == nil {
 		return ""
 	}
@@ -32,7 +32,7 @@ func (t *ThinkingConfig) Effort() ThinkingEffort {
 }
 
 // Budget returns the configured token budget, 0 if effort-based.
-func (t *ThinkingConfig) Budget() int {
+func (t *ThinkingConfiguration) Budget() int {
 	if t == nil {
 		return 0
 	}

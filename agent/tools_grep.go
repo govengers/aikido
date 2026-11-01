@@ -22,8 +22,8 @@ const (
 
 const globSyntax = "Glob syntax: `*` matches within one path segment, `**` across segments (`**/*.md` = every markdown file), `?` one character, `{a,b}` alternatives. Paths are relative, without a leading slash."
 
-func grepDef() llm.ToolDef {
-	return llm.ToolDef{
+func grepDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name: "grep",
 		Description: fmt.Sprintf("Search file contents with a regular expression (Go RE2 syntax, no backreferences or lookaround). "+
 			"output_mode content (default) returns `path:line:text` for matches and `path-line-text` for context lines; "+
@@ -40,8 +40,8 @@ func grepDef() llm.ToolDef {
 	}
 }
 
-func globDef() llm.ToolDef {
-	return llm.ToolDef{
+func globDef() llm.ToolDefinition {
+	return llm.ToolDefinition{
 		Name:        "glob",
 		Description: fmt.Sprintf("List file paths matching a glob pattern, sorted by path, at most %d. %s", globMaxPaths, globSyntax),
 		Parameters: tools.Object(map[string]any{
@@ -51,7 +51,7 @@ func globDef() llm.ToolDef {
 }
 
 func globHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var v struct {
 			Pattern string `json:"pattern"`
 		}
@@ -80,13 +80,12 @@ func globHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"paths": paths, "truncated": truncated},
-			Display: fmt.Sprintf("glob %s: %d paths", v.Pattern, len(paths)),
 		}, nil
 	}
 }
 
 func grepHandler(opts VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, args json.RawMessage, _ tools.Env) (tools.Result, error) {
+	return func(ctx context.Context, args json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var v struct {
 			Pattern         string `json:"pattern"`
 			PathGlob        string `json:"path_glob"`
@@ -207,7 +206,6 @@ func grepHandler(opts VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: content,
-			Display: fmt.Sprintf("grep %s: %d results", v.Pattern, entries),
 		}, nil
 	}
 }

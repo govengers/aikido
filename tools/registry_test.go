@@ -16,24 +16,24 @@ func TestRegistry_RegisterAndDispatch(t *testing.T) {
 	type echoArgs struct {
 		Msg string `json:"msg"`
 	}
-	var seenEnv Env
+	var seenEnv Environment
 	var seenArgs echoArgs
 
-	def := llm.ToolDef{Name: "echo", Description: "echo", Parameters: Object(map[string]any{
+	def := llm.ToolDefinition{Name: "echo", Description: "echo", Parameters: Object(map[string]any{
 		"msg": String("text"),
 	}, "msg")}
-	if err := reg.Register(def, func(ctx context.Context, args json.RawMessage, env Env) (Result, error) {
+	if err := reg.Register(def, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
 		seenEnv = env
 		if err := json.Unmarshal(args, &seenArgs); err != nil {
 			return Result{}, err
 		}
-		return Result{Content: seenArgs.Msg, Display: "echoed " + seenArgs.Msg}, nil
+		return Result{Content: seenArgs.Msg}, nil
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
 	// Second tool, different name.
-	if err := reg.Register(llm.ToolDef{Name: "noop"}, func(ctx context.Context, args json.RawMessage, env Env) (Result, error) {
+	if err := reg.Register(llm.ToolDefinition{Name: "noop"}, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
 		return Result{Content: "ok"}, nil
 	}); err != nil {
 		t.Fatalf("register noop: %v", err)
@@ -49,7 +49,7 @@ func TestRegistry_RegisterAndDispatch(t *testing.T) {
 		t.Error("Has(nope) = true; want false")
 	}
 
-	defs := reg.Defs()
+	defs := reg.Definitions()
 	if len(defs) != 2 {
 		t.Fatalf("len(defs) = %d, want 2", len(defs))
 	}
@@ -62,7 +62,7 @@ func TestRegistry_RegisterAndDispatch(t *testing.T) {
 		ID:        "c1",
 		Name:      "echo",
 		Arguments: `{"msg":"hello"}`,
-	}, Env{SessionID: "s-1", TurnID: tid})
+	}, Environment{SessionID: "s-1", TurnID: tid})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -72,20 +72,20 @@ func TestRegistry_RegisterAndDispatch(t *testing.T) {
 	if seenEnv.SessionID != "s-1" || seenEnv.TurnID != tid {
 		t.Errorf("seenEnv = %+v", seenEnv)
 	}
-	if res.Content != "hello" || res.Display != "echoed hello" {
+	if res.Content != "hello" {
 		t.Errorf("res = %+v", res)
 	}
 }
 
 func TestRegistry_DuplicateTool(t *testing.T) {
 	reg := NewRegistry()
-	noop := func(ctx context.Context, args json.RawMessage, env Env) (Result, error) {
+	noop := func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
 		return Result{}, nil
 	}
-	if err := reg.Register(llm.ToolDef{Name: "x"}, noop); err != nil {
+	if err := reg.Register(llm.ToolDefinition{Name: "x"}, noop); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
-	err := reg.Register(llm.ToolDef{Name: "x"}, noop)
+	err := reg.Register(llm.ToolDefinition{Name: "x"}, noop)
 	if !errors.Is(err, ErrDuplicateTool) {
 		t.Errorf("err = %v, want ErrDuplicateTool", err)
 	}
@@ -93,7 +93,7 @@ func TestRegistry_DuplicateTool(t *testing.T) {
 
 func TestRegistry_DispatchUnknown(t *testing.T) {
 	reg := NewRegistry()
-	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "ghost"}, Env{})
+	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "ghost"}, Environment{})
 	if !errors.Is(err, ErrUnknownTool) {
 		t.Errorf("err = %v, want ErrUnknownTool", err)
 	}
@@ -101,17 +101,17 @@ func TestRegistry_DispatchUnknown(t *testing.T) {
 
 func TestRegistry_RegisterEmptyName(t *testing.T) {
 	reg := NewRegistry()
-	noop := func(ctx context.Context, args json.RawMessage, env Env) (Result, error) {
+	noop := func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
 		return Result{}, nil
 	}
-	if err := reg.Register(llm.ToolDef{Name: ""}, noop); err == nil {
+	if err := reg.Register(llm.ToolDefinition{Name: ""}, noop); err == nil {
 		t.Error("expected error for empty name")
 	}
 }
 
 func TestRegistry_RegisterNilHandler(t *testing.T) {
 	reg := NewRegistry()
-	if err := reg.Register(llm.ToolDef{Name: "x"}, nil); err == nil {
+	if err := reg.Register(llm.ToolDefinition{Name: "x"}, nil); err == nil {
 		t.Error("expected error for nil handler")
 	}
 }
@@ -119,12 +119,12 @@ func TestRegistry_RegisterNilHandler(t *testing.T) {
 func TestRegistry_DispatchHandlerError(t *testing.T) {
 	reg := NewRegistry()
 	sentinel := errors.New("boom")
-	if err := reg.Register(llm.ToolDef{Name: "fail"}, func(ctx context.Context, args json.RawMessage, env Env) (Result, error) {
+	if err := reg.Register(llm.ToolDefinition{Name: "fail"}, func(ctx context.Context, args json.RawMessage, env Environment) (Result, error) {
 		return Result{}, sentinel
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "fail"}, Env{})
+	_, err := reg.Dispatch(context.Background(), llm.ToolCall{Name: "fail"}, Environment{})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want sentinel", err)
 	}

@@ -57,7 +57,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	storage := embedfs.NewStorage(knowledge)
+	storage, err := embedfs.New(&embedfs.Options{FileSystem: knowledge})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
@@ -74,7 +77,7 @@ func main() {
 		Tools:        registry,
 		Model:        "anthropic/claude-haiku-4.5",
 		SystemPrompt: systemPrompt,
-		MaxTurns:     10,
+		MaximumTurns:     10,
 	})
 	if err != nil {
 		log.Fatal(err)

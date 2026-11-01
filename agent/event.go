@@ -17,13 +17,17 @@ const (
 	EventEnd        EventKind = "end"
 )
 
+// EndReason says why a run ended; EventEnd carries it. The string values are
+// stable and safe to persist or send over the wire.
+type EndReason string
+
 // EndReason values emitted on EventEnd.
 const (
-	EndReasonStop      = "stop"
-	EndReasonMaxTurns  = "max_turns"
-	EndReasonError     = "error"
-	EndReasonTimeout   = "timeout"
-	EndReasonCancelled = "cancelled"
+	EndReasonStop         EndReason = "stop"
+	EndReasonMaximumTurns EndReason = "max_turns"
+	EndReasonError        EndReason = "error"
+	EndReasonTimeout      EndReason = "timeout"
+	EndReasonCancelled    EndReason = "cancelled"
 )
 
 // ToolResult is one tool execution result surfaced to the caller.
@@ -44,5 +48,5 @@ type Event struct {
 	Image      *llm.ImagePart
 	Usage      *llm.Usage
 	Err        error
-	EndReason  string
+	EndReason  EndReason
 }

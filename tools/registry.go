@@ -13,19 +13,19 @@ import (
 type Registry struct {
 	mu       sync.RWMutex
 	order    []string
-	defs     map[string]llm.ToolDef
+	defs     map[string]llm.ToolDefinition
 	handlers map[string]Handler
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		defs:     make(map[string]llm.ToolDef),
+		defs:     make(map[string]llm.ToolDefinition),
 		handlers: make(map[string]Handler),
 	}
 }
 
 // Register adds a tool. Returns ErrDuplicateTool if the name is taken.
-func (r *Registry) Register(def llm.ToolDef, h Handler) error {
+func (r *Registry) Register(def llm.ToolDefinition, h Handler) error {
 	if def.Name == "" {
 		return fmt.Errorf("aikido/tools: tool def has empty name")
 	}
@@ -43,11 +43,11 @@ func (r *Registry) Register(def llm.ToolDef, h Handler) error {
 	return nil
 }
 
-// Defs returns all registered ToolDefs in registration order.
-func (r *Registry) Defs() []llm.ToolDef {
+// Definitions returns all registered ToolDefs in registration order.
+func (r *Registry) Definitions() []llm.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]llm.ToolDef, 0, len(r.order))
+	out := make([]llm.ToolDefinition, 0, len(r.order))
 	for _, name := range r.order {
 		out = append(out, r.defs[name])
 	}
@@ -66,7 +66,7 @@ func (r *Registry) Has(name string) bool {
 //
 // Returns ErrUnknownTool if the name is not registered. Argument bytes are
 // passed verbatim — handlers parse them.
-func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall, env Env) (Result, error) {
+func (r *Registry) Dispatch(ctx context.Context, call llm.ToolCall, env Environment) (Result, error) {
 	r.mu.RLock()
 	h, ok := r.handlers[call.Name]
 	r.mu.RUnlock()

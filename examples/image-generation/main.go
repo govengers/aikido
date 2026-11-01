@@ -37,16 +37,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	_, _, images, usage, err := llm.Collect(ctx, client, llm.Request{
+	response, err := llm.Collect(ctx, client, llm.Request{
 		Model: "google/gemini-2.5-flash-image-preview",
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: "Generate a small pixel-art icon of a fox sitting in tall grass."},
 		},
-		MaxTokens: 1024,
+		MaximumTokens: 1024,
 	})
 	if err != nil {
 		log.Fatalf("Collect: %v", err)
 	}
+	images, usage := response.Images, response.Usage
 	if len(images) == 0 {
 		log.Fatal("provider returned no images")
 	}

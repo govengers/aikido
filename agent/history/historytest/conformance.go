@@ -1,6 +1,6 @@
-// Package history provides a reusable conformance suite for the agent.History
-// interface.
-package history
+// Package historytest is the conformance suite every agent.History backend
+// runs in its tests.
+package historytest
 
 import (
 	"context"

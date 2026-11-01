@@ -84,11 +84,11 @@ func runAgent(ctx context.Context, o agentOpts, out io.Writer, client llm.Client
 		Tools:        registry,
 		Model:        o.model,
 		SystemPrompt: o.system,
-		MaxTokens:    o.maxTokens,
-		MaxTurns:     o.maxTurns,
+		MaximumTokens:    o.maxTokens,
+		MaximumTurns:     o.maxTurns,
 	}
 	if o.temperature >= 0 {
-		opts.Temperature = llm.Float32(float32(o.temperature))
+		opts.Temperature = new(float32(o.temperature))
 	}
 	session, err := agent.NewLocalSession(opts)
 	if err != nil {

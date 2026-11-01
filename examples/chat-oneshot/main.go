@@ -34,22 +34,22 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	text, _, _, usage, err := llm.Collect(ctx, client, llm.Request{
+	response, err := llm.Collect(ctx, client, llm.Request{
 		Model: "anthropic/claude-haiku-4.5",
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: "Be concise. Reply in one sentence."},
 			{Role: llm.RoleUser, Content: "Give me one fun fact about the Go programming language."},
 		},
-		MaxTokens:   200,
-		Temperature: llm.Float32(0.7),
+		MaximumTokens:   200,
+		Temperature: new(float32(0.7)),
 	})
 	if err != nil {
 		log.Fatalf("Collect: %v", err)
 	}
 	fmt.Println("---")
-	fmt.Println(text)
+	fmt.Println(response.Text)
 	fmt.Println("---")
-	if usage != nil {
+	if usage := response.Usage; usage != nil {
 		fmt.Printf("tokens: prompt=%d completion=%d cost=$%.6f\n",
 			usage.PromptTokens, usage.CompletionTokens, usage.CostUSD)
 	}

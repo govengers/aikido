@@ -8,11 +8,12 @@ import (
 	"testing"
 
 	"github.com/govengers/aikido/vfs"
+	"github.com/govengers/aikido/vfs/vfstest"
 )
 
 func newStorage(t *testing.T, dir string) *Storage {
 	t.Helper()
-	s, err := New(dir)
+	s, err := New(&Options{Directory: dir})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -21,7 +22,7 @@ func newStorage(t *testing.T, dir string) *Storage {
 }
 
 func TestConformance(t *testing.T) {
-	vfs.RunConformance(t, func() vfs.Storage { return newStorage(t, t.TempDir()) })
+	vfstest.RunConformance(t, func() vfs.Storage { return newStorage(t, t.TempDir()) })
 }
 
 func TestSymlinkEscapeRejected(t *testing.T) {

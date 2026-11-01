@@ -25,8 +25,8 @@ func TestWithProvider_OverridesClientPrefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithProvider(context.Background(), &ProviderPrefs{
-		Only: []string{"azure"}, Sort: "throughput", MaxPrice: &MaxPrice{Completion: 6},
+	ctx := WithProvider(context.Background(), &ProviderPreferences{
+		Only: []string{"azure"}, Sort: "throughput", MaximumPrice: &MaximumPrice{Completion: 6},
 	})
 	resp, err := c.Complete(ctx, llm.Request{Model: "m"})
 	if err != nil {
@@ -104,10 +104,10 @@ func TestModelEndpoints(t *testing.T) {
 		t.Errorf("path = %s", path)
 	}
 	e := me.Endpoints[0]
-	if e.Tag != "azure/global" || e.Pricing.Completion.PerMillion() != 5 || e.LatencyLast30m.P50 != 414 || e.ThroughputLast30m.P50 != 84 || *e.UptimeLast30m != 100 {
+	if e.Tag != "azure/global" || e.Pricing.Completion.PerMillion() != 5 || e.LatencyLast30Minutes.P50 != 414 || e.ThroughputLast30Minutes.P50 != 84 || *e.UptimeLast30Minutes != 100 {
 		t.Errorf("endpoint = %+v", e)
 	}
-	if me.Endpoints[1].LatencyLast30m != nil {
+	if me.Endpoints[1].LatencyLast30Minutes != nil {
 		t.Error("null latency should stay nil")
 	}
 	if _, err := c.ModelEndpoints(context.Background(), "noslash"); err == nil {

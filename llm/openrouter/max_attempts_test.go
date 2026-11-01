@@ -48,7 +48,7 @@ func TestMaxAttempts(t *testing.T) {
 					http.Error(w, `{"error":{"message":"down"}}`, http.StatusServiceUnavailable)
 				}))
 				defer srv.Close()
-				c, err := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaxAttempts: tc.maxAttempts})
+				c, err := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaximumAttempts: tc.maxAttempts})
 				if err != nil {
 					t.Fatal(err)
 				}

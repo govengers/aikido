@@ -21,14 +21,14 @@ type SessionOptions struct {
 	Model        string
 	SystemPrompt string
 
-	MaxTurns       int
+	MaximumTurns   int
 	RunTimeout     time.Duration
 	LLMCallTimeout time.Duration
-	MaxTokens      int
+	MaximumTokens  int
 	Temperature    *float32
 	// Thinking sets the reasoning effort or budget of every model call, e.g.
 	// llm.ThinkingByEffort(llm.ThinkingEffortLow). Nil leaves the model default.
-	Thinking *llm.ThinkingConfig
+	Thinking *llm.ThinkingConfiguration
 
 	Logger *slog.Logger
 }
@@ -63,8 +63,8 @@ func NewSession(opts *SessionOptions) (*Session, error) {
 	}
 
 	cp := *opts
-	if cp.MaxTurns <= 0 {
-		cp.MaxTurns = 20
+	if cp.MaximumTurns <= 0 {
+		cp.MaximumTurns = 20
 	}
 	if cp.RunTimeout < 0 {
 		return nil, fmt.Errorf("aikido/agent: SessionOptions.RunTimeout must be >= 0, got %v", cp.RunTimeout)
@@ -78,8 +78,8 @@ func NewSession(opts *SessionOptions) (*Session, error) {
 	if cp.LLMCallTimeout == 0 {
 		cp.LLMCallTimeout = 180 * time.Second
 	}
-	if cp.MaxTokens == 0 {
-		cp.MaxTokens = 16384
+	if cp.MaximumTokens == 0 {
+		cp.MaximumTokens = 16384
 	}
 	if cp.Logger == nil {
 		cp.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -41,7 +41,7 @@ type Options struct {
 
 	// Provider is the default provider-routing block for chat calls; a
 	// context from WithProvider overrides it per call.
-	Provider *ProviderPrefs
+	Provider *ProviderPreferences
 
 	// ProviderOrder is shorthand for Provider when only the order matters:
 	// a single entry locks to one provider (allow_fallbacks=false), multiple
@@ -49,11 +49,11 @@ type Options struct {
 	// Provider is set.
 	ProviderOrder []string
 
-	// MaxAttempts is the total number of HTTP attempts per call on 429, 5xx
+	// MaximumAttempts is the total number of HTTP attempts per call on 429, 5xx
 	// and network errors, on every path (Stream, Complete, transcription,
 	// images, speech, each video submit/poll/download request). 0 keeps the default of 3; 1 disables retry, for
 	// callers that run their own job-level retry. Negative is treated as 1.
-	MaxAttempts int
+	MaximumAttempts int
 
 	// VideoPollInterval is how often GenerateVideo polls a running job.
 	// 0 keeps the default of 3 s.
@@ -67,7 +67,7 @@ type Client struct {
 	httpClient  *http.Client
 	httpReferer string
 	xTitle      string
-	provider    *ProviderPrefs
+	provider    *ProviderPreferences
 	maxAttempts int
 	videoPoll   time.Duration
 }
@@ -87,7 +87,7 @@ func NewClient(opts *Options) (*Client, error) {
 		httpReferer: opts.HTTPReferer,
 		xTitle:      opts.XTitle,
 		provider:    opts.Provider,
-		maxAttempts: opts.MaxAttempts,
+		maxAttempts: opts.MaximumAttempts,
 		videoPoll:   opts.VideoPollInterval,
 	}
 	if c.provider == nil {
@@ -182,7 +182,7 @@ func (c *Client) buildBody(ctx context.Context, req llm.Request, stream bool) ([
 		Messages:    msgs,
 		Tools:       buildAPITools(req.Tools),
 		Stream:      stream,
-		MaxTokens:   req.MaxTokens,
+		MaxTokens:   req.MaximumTokens,
 		Temperature: req.Temperature,
 		Stop:        req.StopSequences,
 		Modalities:  req.Modalities,
@@ -191,7 +191,7 @@ func (c *Client) buildBody(ctx context.Context, req llm.Request, stream bool) ([
 		// not want it simply ignores Usage.CostUSD.
 		Usage: &apiUsageOptions{Include: true},
 	}
-	if ic := req.ImageConfig; ic != nil && (ic.AspectRatio != "" || ic.ImageSize != "") {
+	if ic := req.ImageConfiguration; ic != nil && (ic.AspectRatio != "" || ic.ImageSize != "") {
 		cr.ImageConfig = &apiImageConfig{
 			AspectRatio: ic.AspectRatio,
 			ImageSize:   ic.ImageSize,

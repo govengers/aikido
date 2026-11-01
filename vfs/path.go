@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// MaxPathBytes is the structural cap on a path's byte length.
-const MaxPathBytes = 512
+// MaximumPathBytes is the structural cap on a path's byte length.
+const MaximumPathBytes = 512
 
 // ValidatePath enforces aikido-wide structural invariants on a path.
 //
@@ -16,8 +16,8 @@ func ValidatePath(path string) error {
 	if path == "" {
 		return fmt.Errorf("%w: empty path", ErrPathInvalid)
 	}
-	if len(path) > MaxPathBytes {
-		return fmt.Errorf("%w: path exceeds %d bytes", ErrPathInvalid, MaxPathBytes)
+	if len(path) > MaximumPathBytes {
+		return fmt.Errorf("%w: path exceeds %d bytes", ErrPathInvalid, MaximumPathBytes)
 	}
 	if strings.ContainsRune(path, 0) {
 		return fmt.Errorf("%w: contains null byte", ErrPathInvalid)

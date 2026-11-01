@@ -114,7 +114,7 @@ func TranscribeDetailed(ctx context.Context, c Client, req TranscribeRequest) (T
 			Content: prompt,
 			Audio:   []AudioPart{{Data: req.Audio, Format: req.Format}},
 		}},
-		Temperature: Float32(0),
+		Temperature: new(float32(0)),
 	})
 	if err != nil {
 		return Transcription{Usage: resp.Usage}, err

@@ -28,7 +28,7 @@ func dispatch(t *testing.T, reg *tools.Registry, name, args string) (tools.Resul
 	t.Helper()
 	return reg.Dispatch(context.Background(), llm.ToolCall{
 		ID: "c", Name: name, Arguments: args,
-	}, tools.Env{SessionID: "s", TurnID: uuid.New()})
+	}, tools.Environment{SessionID: "s", TurnID: uuid.New()})
 }
 
 func TestRegisterVFSTools_Defaults(t *testing.T) {
@@ -200,7 +200,7 @@ func TestWriteFile_AllowedExtensions(t *testing.T) {
 func TestWriteFile_MaxFileBytes(t *testing.T) {
 	storage := vfsmem.NewStorage()
 	reg := newRegistryWithVFS(t, &VFSToolOptions{
-		Storage: storage, MaxFileBytes: 8,
+		Storage: storage, MaximumFileBytes: 8,
 	})
 	args, _ := json.Marshal(map[string]any{"path": "x.md", "content": "this is too big"})
 	_, err := dispatch(t, reg, "write_file", string(args))
@@ -242,8 +242,8 @@ func TestSearch_HidesHidden(t *testing.T) {
 func TestSearch_DescriptionEmbedsSyntax(t *testing.T) {
 	storage := vfsmem.NewStorage()
 	reg := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
-	defs := reg.Defs()
-	var searchDef llm.ToolDef
+	defs := reg.Definitions()
+	var searchDef llm.ToolDefinition
 	for _, d := range defs {
 		if d.Name == "search" {
 			searchDef = d
@@ -307,9 +307,9 @@ func TestVFSToolsViaSession_RoundTrip(t *testing.T) {
 // nonSearchableStorage implements only vfs.Storage.
 type nonSearchableStorage struct{}
 
-func (nonSearchableStorage) ListFiles(_ context.Context) ([]vfs.FileMeta, error) { return nil, nil }
-func (nonSearchableStorage) ReadFile(_ context.Context, _ string) ([]byte, vfs.FileMeta, error) {
-	return nil, vfs.FileMeta{}, vfs.ErrFileNotFound
+func (nonSearchableStorage) ListFiles(_ context.Context) ([]vfs.FileMetadata, error) { return nil, nil }
+func (nonSearchableStorage) ReadFile(_ context.Context, _ string) ([]byte, vfs.FileMetadata, error) {
+	return nil, vfs.FileMetadata{}, vfs.ErrFileNotFound
 }
 func (nonSearchableStorage) WriteFile(_ context.Context, _ string, _ []byte, _ string) error {
 	return nil

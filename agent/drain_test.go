@@ -170,7 +170,7 @@ func TestRunWithMessages_DrainEndToEnd(t *testing.T) {
 
 func TestRunWithMessages_ToolDispatchOnPassedHistory(t *testing.T) {
 	reg := tools.NewRegistry()
-	_ = reg.Register(llm.ToolDef{Name: "ping"}, func(ctx context.Context, _ json.RawMessage, _ tools.Env) (tools.Result, error) {
+	_ = reg.Register(llm.ToolDefinition{Name: "ping"}, func(ctx context.Context, _ json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		return tools.Result{Content: "pong"}, nil
 	})
 	stub := llmtest.NewStubClient(

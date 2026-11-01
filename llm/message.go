@@ -90,8 +90,8 @@ func (u *Usage) SetTiming(start, firstOutput, end time.Time) {
 type CacheTTL string
 
 const (
-	CacheTTL5Min  CacheTTL = "5m"
-	CacheTTL1Hour CacheTTL = "1h"
+	CacheTTLFiveMinutes  CacheTTL = "5m"
+	CacheTTLOneHour CacheTTL = "1h"
 )
 
 // CacheBreakpoint marks a message as a cache breakpoint on providers that

@@ -43,8 +43,8 @@ func TestNewSession_DefaultsApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if s.opts.MaxTurns != 20 {
-		t.Errorf("MaxTurns default = %d; want 20", s.opts.MaxTurns)
+	if s.opts.MaximumTurns != 20 {
+		t.Errorf("MaxTurns default = %d; want 20", s.opts.MaximumTurns)
 	}
 	if s.opts.RunTimeout != 10*time.Minute {
 		t.Errorf("RunTimeout default = %v; want 10m", s.opts.RunTimeout)
@@ -52,8 +52,8 @@ func TestNewSession_DefaultsApplied(t *testing.T) {
 	if s.opts.LLMCallTimeout != 180*time.Second {
 		t.Errorf("LLMCallTimeout default = %v; want 180s", s.opts.LLMCallTimeout)
 	}
-	if s.opts.MaxTokens != 16384 {
-		t.Errorf("MaxTokens default = %d; want 16384", s.opts.MaxTokens)
+	if s.opts.MaximumTokens != 16384 {
+		t.Errorf("MaxTokens default = %d; want 16384", s.opts.MaximumTokens)
 	}
 	if s.opts.Logger == nil {
 		t.Error("Logger should be set to a no-op default")

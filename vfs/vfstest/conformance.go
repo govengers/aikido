@@ -1,4 +1,6 @@
-package vfs
+// Package vfstest is the conformance suite every vfs.Storage backend runs in
+// its tests.
+package vfstest
 
 import (
 	"context"
@@ -6,16 +8,18 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/govengers/aikido/vfs"
 )
 
-// RunConformance executes the standard conformance suite against a Storage
-// factory. Each sub-test calls the factory to obtain a fresh Storage. Tests
+// RunConformance executes the standard conformance suite against a vfs.Storage
+// factory. Each sub-test calls the factory to obtain a fresh vfs.Storage. Tests
 // are serial — implementations that want parallel execution can opt in with
 // their own t.Parallel() inside the factory if applicable.
 //
-// Searchable-related sub-tests run only when the factory's Storage satisfies
+// vfs.Searchable-related sub-tests run only when the factory's vfs.Storage satisfies
 // vfs.Searchable.
-func RunConformance(t *testing.T, factory func() Storage) {
+func RunConformance(t *testing.T, factory func() vfs.Storage) {
 	t.Helper()
 
 	t.Run("ListEmpty", func(t *testing.T) {
@@ -76,8 +80,8 @@ func RunConformance(t *testing.T, factory func() Storage) {
 	t.Run("ReadMissing", func(t *testing.T) {
 		s := factory()
 		_, _, err := s.ReadFile(context.Background(), "missing.md")
-		if !errors.Is(err, ErrFileNotFound) {
-			t.Errorf("err = %v; want ErrFileNotFound", err)
+		if !errors.Is(err, vfs.ErrFileNotFound) {
+			t.Errorf("err = %v; want vfs.ErrFileNotFound", err)
 		}
 	})
 
@@ -89,16 +93,16 @@ func RunConformance(t *testing.T, factory func() Storage) {
 			t.Fatalf("DeleteFile: %v", err)
 		}
 		_, _, err := s.ReadFile(ctx, "x.md")
-		if !errors.Is(err, ErrFileNotFound) {
-			t.Errorf("after delete, ReadFile err = %v; want ErrFileNotFound", err)
+		if !errors.Is(err, vfs.ErrFileNotFound) {
+			t.Errorf("after delete, ReadFile err = %v; want vfs.ErrFileNotFound", err)
 		}
 	})
 
 	t.Run("DeleteMissing", func(t *testing.T) {
 		s := factory()
 		err := s.DeleteFile(context.Background(), "missing.md")
-		if !errors.Is(err, ErrFileNotFound) {
-			t.Errorf("err = %v; want ErrFileNotFound", err)
+		if !errors.Is(err, vfs.ErrFileNotFound) {
+			t.Errorf("err = %v; want vfs.ErrFileNotFound", err)
 		}
 	})
 
@@ -149,8 +153,8 @@ func RunConformance(t *testing.T, factory func() Storage) {
 		bad := []string{"", "/abs", "../parent.md", "trailing/", "double//slash", "with\x00null"}
 		for _, p := range bad {
 			err := s.WriteFile(ctx, p, []byte("x"), "text/plain")
-			if !errors.Is(err, ErrPathInvalid) {
-				t.Errorf("WriteFile(%q) err = %v; want ErrPathInvalid", p, err)
+			if !errors.Is(err, vfs.ErrPathInvalid) {
+				t.Errorf("WriteFile(%q) err = %v; want vfs.ErrPathInvalid", p, err)
 			}
 		}
 	})
@@ -158,29 +162,29 @@ func RunConformance(t *testing.T, factory func() Storage) {
 	t.Run("DeleteRejectsInvalidPath", func(t *testing.T) {
 		s := factory()
 		err := s.DeleteFile(context.Background(), "../etc/passwd")
-		if !errors.Is(err, ErrPathInvalid) {
-			t.Errorf("DeleteFile invalid path err = %v; want ErrPathInvalid", err)
+		if !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("DeleteFile invalid path err = %v; want vfs.ErrPathInvalid", err)
 		}
 	})
 
 	t.Run("ReadRejectsInvalidPath", func(t *testing.T) {
 		s := factory()
 		_, _, err := s.ReadFile(context.Background(), "../etc/passwd")
-		if !errors.Is(err, ErrPathInvalid) {
-			t.Errorf("ReadFile invalid path err = %v; want ErrPathInvalid", err)
+		if !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("ReadFile invalid path err = %v; want vfs.ErrPathInvalid", err)
 		}
 	})
 
-	if _, ok := factory().(Searchable); ok {
+	if _, ok := factory().(vfs.Searchable); ok {
 		runSearchableConformance(t, factory)
 	}
 }
 
-func runSearchableConformance(t *testing.T, factory func() Storage) {
+func runSearchableConformance(t *testing.T, factory func() vfs.Storage) {
 	t.Helper()
 
-	t.Run("Searchable/EmptyCorpus", func(t *testing.T) {
-		s, _ := factory().(Searchable)
+	t.Run("vfs.Searchable/EmptyCorpus", func(t *testing.T) {
+		s, _ := factory().(vfs.Searchable)
 		paths, err := s.Search(context.Background(), "anything")
 		if err != nil {
 			t.Fatalf("Search: %v", err)
@@ -190,13 +194,13 @@ func runSearchableConformance(t *testing.T, factory func() Storage) {
 		}
 	})
 
-	t.Run("Searchable/SubstringMatch", func(t *testing.T) {
+	t.Run("vfs.Searchable/SubstringMatch", func(t *testing.T) {
 		st := factory()
 		ctx := context.Background()
 		_ = st.WriteFile(ctx, "a.md", []byte("apple banana"), "text/markdown")
 		_ = st.WriteFile(ctx, "b.md", []byte("carrot date"), "text/markdown")
 		_ = st.WriteFile(ctx, "c.md", []byte("avocado banana"), "text/markdown")
-		s, _ := st.(Searchable)
+		s, _ := st.(vfs.Searchable)
 		paths, err := s.Search(ctx, "banana")
 		if err != nil {
 			t.Fatalf("Search: %v", err)
@@ -209,8 +213,8 @@ func runSearchableConformance(t *testing.T, factory func() Storage) {
 		}
 	})
 
-	t.Run("Searchable/SyntaxNonEmpty", func(t *testing.T) {
-		s, _ := factory().(Searchable)
+	t.Run("vfs.Searchable/SyntaxNonEmpty", func(t *testing.T) {
+		s, _ := factory().(vfs.Searchable)
 		if syn := s.SearchSyntax(); syn == "" {
 			t.Error("SearchSyntax() returned empty")
 		}

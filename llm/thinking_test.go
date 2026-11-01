@@ -23,7 +23,7 @@ func TestThinkingByBudget_RoundTrip(t *testing.T) {
 }
 
 func TestThinkingConfig_NilSafe(t *testing.T) {
-	var cfg *ThinkingConfig
+	var cfg *ThinkingConfiguration
 	if cfg.Effort() != "" {
 		t.Error("nil ThinkingConfig.Effort should return empty")
 	}

@@ -33,7 +33,7 @@ type RunOptions struct {
 	SystemSuffix string
 	// Thinking replaces SessionOptions.Thinking for this run's model calls.
 	// Nil keeps the session's setting.
-	Thinking *llm.ThinkingConfig
+	Thinking *llm.ThinkingConfiguration
 }
 
 // RunWithOptions is Run with per-run options. A nil opts is Run.
@@ -116,12 +116,12 @@ func (s *Session) runLoop(userCtx context.Context, out chan<- Event, userText st
 		appended = []llm.Message{userMsg}
 	}
 
-	var toolDefs []llm.ToolDef
+	var toolDefs []llm.ToolDefinition
 	if s.opts.Tools != nil {
-		toolDefs = s.opts.Tools.Defs()
+		toolDefs = s.opts.Tools.Definitions()
 	}
 
-	for turn := 0; turn < s.opts.MaxTurns; turn++ {
+	for turn := 0; turn < s.opts.MaximumTurns; turn++ {
 		turnID := uuid.New()
 
 		callCtx := runCtx
@@ -131,12 +131,12 @@ func (s *Session) runLoop(userCtx context.Context, out chan<- Event, userText st
 		}
 
 		req := llm.Request{
-			Model:       s.opts.Model,
-			Messages:    msgs,
-			Tools:       toolDefs,
-			MaxTokens:   s.opts.MaxTokens,
-			Temperature: s.opts.Temperature,
-			Thinking:    thinking,
+			Model:         s.opts.Model,
+			Messages:      msgs,
+			Tools:         toolDefs,
+			MaximumTokens: s.opts.MaximumTokens,
+			Temperature:   s.opts.Temperature,
+			Thinking:      thinking,
 		}
 
 		events, streamErr := s.opts.Client.Stream(callCtx, req)
@@ -180,7 +180,7 @@ func (s *Session) runLoop(userCtx context.Context, out chan<- Event, userText st
 			return
 		}
 
-		env := tools.Env{SessionID: s.opts.ID, TurnID: turnID}
+		env := tools.Environment{SessionID: s.opts.ID, TurnID: turnID}
 		for i := range calls {
 			call := calls[i]
 			res, dispErr := s.dispatch(runCtx, call, env)
@@ -207,12 +207,12 @@ func (s *Session) runLoop(userCtx context.Context, out chan<- Event, userText st
 			return
 		}
 	}
-	out <- Event{Kind: EventEnd, EndReason: EndReasonMaxTurns}
+	out <- Event{Kind: EventEnd, EndReason: EndReasonMaximumTurns}
 }
 
 // dispatch routes a tool call. If the registry is nil we treat every tool name
 // as unknown; the model self-corrects on the next turn.
-func (s *Session) dispatch(ctx context.Context, call llm.ToolCall, env tools.Env) (tools.Result, error) {
+func (s *Session) dispatch(ctx context.Context, call llm.ToolCall, env tools.Environment) (tools.Result, error) {
 	if s.opts.Tools == nil {
 		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrUnknownTool, call.Name)
 	}
@@ -273,7 +273,7 @@ func (s *Session) emitErrEnd(out chan<- Event, userCtx, runCtx context.Context, 
 //
 // Order matters: caller cancellation always wins, then RunTimeout, then
 // LLMCallTimeout, then everything else is EndReasonError.
-func resolveEndReason(userCtx, runCtx context.Context, callErr error) string {
+func resolveEndReason(userCtx, runCtx context.Context, callErr error) EndReason {
 	if userCtx != nil {
 		switch {
 		case errors.Is(userCtx.Err(), context.Canceled):

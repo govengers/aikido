@@ -30,9 +30,9 @@ const (
 	deviceCodeTTL = 15 * time.Minute
 )
 
-// ErrReauthRequired means the login is gone for good (refresh token reused,
+// ErrReauthenticationRequired means the login is gone for good (refresh token reused,
 // expired or revoked): the user has to log in again. Retrying cannot help.
-var ErrReauthRequired = errors.New("aikido/codex: ChatGPT login expired or revoked, log in again")
+var ErrReauthenticationRequired = errors.New("aikido/codex: ChatGPT login expired or revoked, log in again")
 
 // ErrDeviceLoginDisabled means the issuer does not offer device-code login
 // (it answered 404 to the user-code request).
@@ -52,22 +52,22 @@ type Tokens struct {
 	ExpiresAt time.Time
 }
 
-// AuthOptions configure the login endpoints. Nil or zero fields use defaults.
-type AuthOptions struct {
+// LoginOptions configure the login endpoints. Nil or zero fields use defaults.
+type LoginOptions struct {
 	// Issuer overrides DefaultIssuer (tests).
 	Issuer string
 	// HTTPClient overrides a 30 s timeout client.
 	HTTPClient *http.Client
 }
 
-func (o *AuthOptions) issuer() string {
+func (o *LoginOptions) issuer() string {
 	if o != nil && o.Issuer != "" {
 		return strings.TrimRight(o.Issuer, "/")
 	}
 	return DefaultIssuer
 }
 
-func (o *AuthOptions) client() *http.Client {
+func (o *LoginOptions) client() *http.Client {
 	if o != nil && o.HTTPClient != nil {
 		return o.HTTPClient
 	}
@@ -106,10 +106,10 @@ func TokensFromJWT(accessToken, refreshToken, idToken string) (Tokens, error) {
 	}, nil
 }
 
-// ParseAuthJSON reads a Codex CLI ~/.codex/auth.json. Only ChatGPT logins with
+// ParseLogin reads a Codex CLI ~/.codex/auth.json. Only ChatGPT logins with
 // an unexpired access token are accepted. Note the refresh token is then
 // shared with that CLI: whichever side refreshes first logs the other out.
-func ParseAuthJSON(raw []byte) (Tokens, error) {
+func ParseLogin(raw []byte) (Tokens, error) {
 	var f struct {
 		AuthMode string `json:"auth_mode"`
 		Tokens   *struct {
@@ -141,7 +141,7 @@ func ParseAuthJSON(raw []byte) (Tokens, error) {
 // DeviceCode is a started device login: show VerificationURL and UserCode to
 // the user, then call PollDeviceLogin.
 type DeviceCode struct {
-	DeviceAuthID    string
+	DeviceAuthorizationID    string
 	UserCode        string
 	VerificationURL string
 	Interval        time.Duration
@@ -149,7 +149,7 @@ type DeviceCode struct {
 }
 
 // StartDeviceLogin asks the issuer for a device code.
-func StartDeviceLogin(ctx context.Context, o *AuthOptions) (DeviceCode, error) {
+func StartDeviceLogin(ctx context.Context, o *LoginOptions) (DeviceCode, error) {
 	var resp struct {
 		DeviceAuthID string          `json:"device_auth_id"`
 		UserCode     string          `json:"user_code"`
@@ -177,7 +177,7 @@ func StartDeviceLogin(ctx context.Context, o *AuthOptions) (DeviceCode, error) {
 	}
 	seconds, _ := strconv.Atoi(strings.Trim(string(resp.Interval), `" `))
 	return DeviceCode{
-		DeviceAuthID:    resp.DeviceAuthID,
+		DeviceAuthorizationID:    resp.DeviceAuthID,
 		UserCode:        resp.UserCode,
 		VerificationURL: o.issuer() + "/codex/device",
 		Interval:        time.Duration(max(seconds, 3)) * time.Second,
@@ -187,10 +187,10 @@ func StartDeviceLogin(ctx context.Context, o *AuthOptions) (DeviceCode, error) {
 
 // PollDeviceLogin waits until the user confirmed the code (or it expired, or
 // ctx ended), then exchanges it for tokens.
-func PollDeviceLogin(ctx context.Context, o *AuthOptions, dc DeviceCode) (Tokens, error) {
+func PollDeviceLogin(ctx context.Context, o *LoginOptions, dc DeviceCode) (Tokens, error) {
 	for {
 		status, body, err := postJSON(ctx, o, "/api/accounts/deviceauth/token",
-			map[string]string{"device_auth_id": dc.DeviceAuthID, "user_code": dc.UserCode})
+			map[string]string{"device_auth_id": dc.DeviceAuthorizationID, "user_code": dc.UserCode})
 		if err != nil {
 			return Tokens{}, err
 		}
@@ -233,14 +233,29 @@ func PollDeviceLogin(ctx context.Context, o *AuthOptions, dc DeviceCode) (Tokens
 type TokenSource struct {
 	mu        sync.Mutex
 	tok       Tokens
-	opts      *AuthOptions
+	opts      *LoginOptions
 	onRefresh func(context.Context, Tokens) error
 }
 
-// NewTokenSource wraps a login. onRefresh (may be nil) receives every rotated
-// login and should persist it; aikido never writes tokens anywhere.
-func NewTokenSource(t Tokens, onRefresh func(context.Context, Tokens) error, o *AuthOptions) *TokenSource {
-	return &TokenSource{tok: t, opts: o, onRefresh: onRefresh}
+// TokenSourceOptions configure a TokenSource.
+type TokenSourceOptions struct {
+	// Tokens is the login to keep valid, required to carry a RefreshToken.
+	Tokens Tokens
+	// OnRefresh, optional, receives every rotated login and should persist it;
+	// aikido never writes tokens anywhere.
+	OnRefresh func(ctx context.Context, tokens Tokens) error
+	// Login configures the refresh endpoint; the zero value uses the defaults.
+	Login LoginOptions
+}
+
+// NewTokenSource wraps a login. It returns an error if options is nil or the
+// login has no RefreshToken, since such a login cannot be kept valid.
+func NewTokenSource(options *TokenSourceOptions) (*TokenSource, error) {
+	if options == nil || options.Tokens.RefreshToken == "" {
+		return nil, errors.New("aikido/codex: token source: Tokens.RefreshToken is required")
+	}
+	login := options.Login
+	return &TokenSource{tok: options.Tokens, opts: &login, onRefresh: options.OnRefresh}, nil
 }
 
 // Token returns a login whose access token is valid for at least a few more
@@ -285,7 +300,7 @@ var permanentRefreshErrors = []string{"refresh_token_reused", "refresh_token_exp
 
 // exchange calls /oauth/token: with form for an authorization code, or a
 // refresh when refreshToken is set.
-func exchange(ctx context.Context, o *AuthOptions, form url.Values, refreshToken string) (Tokens, error) {
+func exchange(ctx context.Context, o *LoginOptions, form url.Values, refreshToken string) (Tokens, error) {
 	var (
 		status int
 		body   []byte
@@ -304,11 +319,11 @@ func exchange(ctx context.Context, o *AuthOptions, form url.Values, refreshToken
 	if status != http.StatusOK {
 		if refreshToken != "" && status < 500 && status != http.StatusTooManyRequests {
 			if status == http.StatusUnauthorized {
-				return Tokens{}, ErrReauthRequired
+				return Tokens{}, ErrReauthenticationRequired
 			}
 			for _, code := range permanentRefreshErrors {
 				if bytes.Contains(body, []byte(code)) {
-					return Tokens{}, fmt.Errorf("%s: %w", code, ErrReauthRequired)
+					return Tokens{}, fmt.Errorf("%s: %w", code, ErrReauthenticationRequired)
 				}
 			}
 		}
@@ -325,7 +340,7 @@ func exchange(ctx context.Context, o *AuthOptions, form url.Values, refreshToken
 	return TokensFromJWT(t.AccessToken, t.RefreshToken, t.IDToken)
 }
 
-func postJSON(ctx context.Context, o *AuthOptions, path string, v any) (int, []byte, error) {
+func postJSON(ctx context.Context, o *LoginOptions, path string, v any) (int, []byte, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return 0, nil, err
@@ -333,7 +348,7 @@ func postJSON(ctx context.Context, o *AuthOptions, path string, v any) (int, []b
 	return post(ctx, o, path, "application/json", raw)
 }
 
-func post(ctx context.Context, o *AuthOptions, path, contentType string, body []byte) (int, []byte, error) {
+func post(ctx context.Context, o *LoginOptions, path, contentType string, body []byte) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.issuer()+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err

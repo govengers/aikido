@@ -121,7 +121,7 @@ func buildVideoBody(req llm.VideoRequest) ([]byte, error) {
 		AspectRatio:   req.AspectRatio,
 		Resolution:    req.Resolution,
 		Size:          req.Size,
-		Duration:      req.Duration,
+		Duration:      req.DurationSeconds,
 		GenerateAudio: req.GenerateAudio,
 		Seed:          req.Seed,
 	}

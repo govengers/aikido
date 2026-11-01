@@ -21,7 +21,7 @@ type chatRequest struct {
 	Temperature *float32         `json:"temperature,omitempty"`
 	Stop        []string         `json:"stop,omitempty"`
 	Reasoning   *apiReasoning    `json:"reasoning,omitempty"`
-	Provider    *ProviderPrefs   `json:"provider,omitempty"`
+	Provider    *ProviderPreferences   `json:"provider,omitempty"`
 	Modalities  []string         `json:"modalities,omitempty"`
 	ImageConfig *apiImageConfig  `json:"image_config,omitempty"`
 	Usage       *apiUsageOptions `json:"usage,omitempty"`
@@ -258,7 +258,7 @@ func toLLMUsage(u *apiUsage) *llm.Usage {
 // ADR-016): <2048 → low, <16384 → medium, ≥16384 → high. Direct Anthropic
 // (v2) honors budget verbatim; here we lose precision, which is fine because
 // OpenRouter maps "effort" to an internal budget anyway.
-func effortFromConfig(t *llm.ThinkingConfig) string {
+func effortFromConfig(t *llm.ThinkingConfiguration) string {
 	if t == nil {
 		return ""
 	}
@@ -374,7 +374,7 @@ func buildContentParts(m llm.Message) ([]map[string]any, error) {
 	}
 	if m.Cache != nil {
 		cc := map[string]any{"type": "ephemeral"}
-		if m.Cache.TTL == llm.CacheTTL1Hour {
+		if m.Cache.TTL == llm.CacheTTLOneHour {
 			cc["ttl"] = "1h"
 		}
 		parts[len(parts)-1]["cache_control"] = cc
@@ -383,7 +383,7 @@ func buildContentParts(m llm.Message) ([]map[string]any, error) {
 }
 
 // buildAPITools converts ToolDefs onto the wire shape.
-func buildAPITools(defs []llm.ToolDef) []apiTool {
+func buildAPITools(defs []llm.ToolDefinition) []apiTool {
 	if len(defs) == 0 {
 		return nil
 	}
@@ -484,7 +484,7 @@ type decisionsRequest struct {
 	Model     string                         `json:"model"`
 	State     any                            `json:"state"`
 	Questions map[string]apiDecisionQuestion `json:"questions"`
-	Provider  *ProviderPrefs                 `json:"provider,omitempty"`
+	Provider  *ProviderPreferences                 `json:"provider,omitempty"`
 }
 
 // apiDecisionQuestion's criteria is a map for choice and noul, a list for

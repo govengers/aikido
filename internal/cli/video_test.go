@@ -41,7 +41,7 @@ func TestVideoCommand_WritesClipAndThreadsFlags(t *testing.T) {
 		t.Fatalf("requests = %d", len(reqs))
 	}
 	r := reqs[0]
-	if r.Model != defaultVideoModel || r.Prompt != "a cat yawns" || r.Duration != 4 || r.Resolution != "720p" || r.AspectRatio != "9:16" {
+	if r.Model != defaultVideoModel || r.Prompt != "a cat yawns" || r.DurationSeconds != 4 || r.Resolution != "720p" || r.AspectRatio != "9:16" {
 		t.Errorf("request = %+v", r)
 	}
 	if r.GenerateAudio == nil || *r.GenerateAudio || r.Seed != nil {
@@ -71,7 +71,7 @@ func TestVideoCommand_AudioUnsetStaysNil(t *testing.T) {
 	if !errors.Is(err, llm.ErrContentFiltered) || !strings.Contains(err.Error(), "job9") {
 		t.Fatalf("err = %v, want the filter error with the job id", err)
 	}
-	if r := stub.VideoRequests()[0]; r.GenerateAudio != nil || r.Duration != 0 {
+	if r := stub.VideoRequests()[0]; r.GenerateAudio != nil || r.DurationSeconds != 0 {
 		t.Errorf("unset flags were sent: %+v", r)
 	}
 }

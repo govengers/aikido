@@ -73,9 +73,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	storage, err := embedfs.New(&embedfs.Options{FileSystem: knowledge})
+	if err != nil {
+		log.Fatal(err)
+	}
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
-		Storage:  embedfs.NewStorage(knowledge),
+		Storage:  storage,
 		ReadOnly: true,
 	}); err != nil {
 		log.Fatal(err)
@@ -86,7 +90,7 @@ func main() {
 		Tools:        registry,
 		Model:        "anthropic/claude-haiku-4.5",
 		SystemPrompt: systemPrompt,
-		MaxTurns:     10,
+		MaximumTurns:     10,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -98,7 +102,7 @@ func main() {
 		Speech:           client,
 		SpeechModel:      voice.DefaultSpeechModel, // elevenlabs/eleven-v4-turbo
 		Voice:            "sarah",
-		SpeechUSDPerChar: 0.00002,
+		SpeechUSDPerCharacter: 0.00002,
 		SpokenStyle:      voice.DefaultSpokenStyle,
 	})
 	if err != nil {

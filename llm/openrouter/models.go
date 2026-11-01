@@ -35,7 +35,7 @@ type Architecture struct {
 // TopProvider is the limits of the provider OpenRouter routes to by default.
 type TopProvider struct {
 	ContextLength       int  `json:"context_length"`
-	MaxCompletionTokens int  `json:"max_completion_tokens"`
+	MaximumCompletionTokens int  `json:"max_completion_tokens"`
 	IsModerated         bool `json:"is_moderated"`
 }
 
@@ -88,22 +88,22 @@ type Endpoint struct {
 	Tag                 string   `json:"tag"` // provider slug for ProviderPrefs ("azure/global")
 	Quantization        string   `json:"quantization"`
 	ContextLength       int      `json:"context_length"`
-	MaxCompletionTokens int      `json:"max_completion_tokens"`
-	MaxPromptTokens     int      `json:"max_prompt_tokens"`
+	MaximumCompletionTokens int      `json:"max_completion_tokens"`
+	MaximumPromptTokens     int      `json:"max_prompt_tokens"`
 	Pricing             Pricing  `json:"pricing"`
 	SupportedParameters []string `json:"supported_parameters"`
 	// Status is 0 when the endpoint is healthy; negative values mean degraded
 	// or down.
 	Status int `json:"status"`
-	// UptimeLast30m is the success percentage over the last 30 minutes; nil
+	// UptimeLast30Minutes is the success percentage over the last 30 minutes; nil
 	// without traffic.
-	UptimeLast30m *float64 `json:"uptime_last_30m"`
-	// LatencyLast30m is the time to first token in milliseconds; nil without
+	UptimeLast30Minutes *float64 `json:"uptime_last_30m"`
+	// LatencyLast30Minutes is the time to first token in milliseconds; nil without
 	// traffic.
-	LatencyLast30m *Percentiles `json:"latency_last_30m"`
-	// ThroughputLast30m is in tokens per second; nil without traffic. Its
+	LatencyLast30Minutes *Percentiles `json:"latency_last_30m"`
+	// ThroughputLast30Minutes is in tokens per second; nil without traffic. Its
 	// percentiles rank from fastest (P50) to slowest (P99).
-	ThroughputLast30m *Percentiles `json:"throughput_last_30m"`
+	ThroughputLast30Minutes *Percentiles `json:"throughput_last_30m"`
 }
 
 // Percentiles is a p50/p75/p90/p99 distribution.

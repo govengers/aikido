@@ -73,7 +73,7 @@ func TestGenerateVideo_SubmitsPollsAndDownloads(t *testing.T) {
 	off, seed := false, 7
 	resp, err := f.client(t).GenerateVideo(context.Background(), llm.VideoRequest{
 		Model: "kwaivgi/kling-v3.0-pro", Prompt: "the cup steams", AspectRatio: "9:16", Resolution: "720p",
-		Duration: 5, GenerateAudio: &off, Seed: &seed,
+		DurationSeconds: 5, GenerateAudio: &off, Seed: &seed,
 		FirstFrame: &llm.ImagePart{Data: []byte("jpg"), ContentType: "image/jpeg"},
 		LastFrame:  &llm.ImagePart{URL: "https://example.com/last.png"},
 	})
@@ -157,14 +157,14 @@ func TestGenerateVideo_SubmitErrors(t *testing.T) {
 	}{
 		{400, `{"error":{"message":"prompt violates our content policy"}}`, llm.ErrContentFiltered},
 		{400, `{"error":{"message":"Duration 5s is not supported"}}`, llm.ErrInvalidRequest},
-		{402, `{"error":{"message":"insufficient credits"}}`, llm.ErrAuth},
+		{402, `{"error":{"message":"insufficient credits"}}`, llm.ErrAuthentication},
 	}
 	for _, tc := range cases {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaxAttempts: 1})
+		c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaximumAttempts: 1})
 		_, err := c.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
 		srv.Close()
 		if !errors.Is(err, tc.want) {

@@ -31,20 +31,30 @@ type Storage struct {
 
 var _ vfs.Storage = (*Storage)(nil)
 
-// New opens dir as the storage root. dir must exist.
-func New(dir string) (*Storage, error) {
-	r, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, fmt.Errorf("aikido/vfs/osfs: open root %q: %w", dir, err)
+// Options configure a Storage.
+type Options struct {
+	// Directory is the storage root, required. It must exist; nothing outside it
+	// is reachable, symlinks included (os.Root).
+	Directory string
+}
+
+// New opens options.Directory as the storage root. Close the Storage when done.
+func New(options *Options) (*Storage, error) {
+	if options == nil || options.Directory == "" {
+		return nil, errors.New("aikido/vfs/osfs: Directory is required")
 	}
-	return &Storage{root: r}, nil
+	root, err := os.OpenRoot(options.Directory)
+	if err != nil {
+		return nil, fmt.Errorf("aikido/vfs/osfs: open root %q: %w", options.Directory, err)
+	}
+	return &Storage{root: root}, nil
 }
 
 // Close releases the root directory handle.
 func (s *Storage) Close() error { return s.root.Close() }
 
-func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
-	var out []vfs.FileMeta
+func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
+	var out []vfs.FileMetadata
 	err := fs.WalkDir(s.root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -73,25 +83,25 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	if out == nil {
-		out = []vfs.FileMeta{}
+		out = []vfs.FileMetadata{}
 	}
 	return out, nil
 }
 
-func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMeta, error) {
+func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	if err := vfs.ValidatePath(p); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	info, err := s.regularFile(p)
 	if err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	content, err := s.root.ReadFile(p)
 	if err != nil {
-		return nil, vfs.FileMeta{}, mapErr(p, err)
+		return nil, vfs.FileMetadata{}, mapErr(p, err)
 	}
 	meta := metaFor(p, info)
 	meta.Size = int64(len(content))
@@ -160,12 +170,12 @@ func (s *Storage) regularFile(p string) (fs.FileInfo, error) {
 	return info, nil
 }
 
-func metaFor(p string, info fs.FileInfo) vfs.FileMeta {
+func metaFor(p string, info fs.FileInfo) vfs.FileMetadata {
 	ct := vfs.ContentTypeFor(p)
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
-	return vfs.FileMeta{Path: p, ContentType: ct, Size: info.Size(), UpdatedAt: info.ModTime()}
+	return vfs.FileMetadata{Path: p, ContentType: ct, Size: info.Size(), UpdatedAt: info.ModTime()}
 }
 
 // mapErr turns not-exist into vfs.ErrFileNotFound and a root escape into

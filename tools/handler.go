@@ -7,8 +7,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Env carries per-call execution context to a Handler.
-type Env struct {
+// Environment carries per-call execution context to a Handler.
+type Environment struct {
 	SessionID string
 	TurnID    uuid.UUID
 }
@@ -16,8 +16,7 @@ type Env struct {
 // Result is what a Handler returns. Content is JSON-serialized to the model.
 type Result struct {
 	Content any
-	Display string
 }
 
 // Handler is the function signature every tool implements.
-type Handler func(ctx context.Context, args json.RawMessage, env Env) (Result, error)
+type Handler func(ctx context.Context, args json.RawMessage, env Environment) (Result, error)

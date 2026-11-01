@@ -17,15 +17,15 @@ import (
 
 // Policy configures Do.
 type Policy struct {
-	// MaxAttempts is the total number of attempts (>= 1). MaxAttempts == 1 is
+	// MaximumAttempts is the total number of attempts (>= 1). MaximumAttempts == 1 is
 	// "no retry, just call once."
-	MaxAttempts int
+	MaximumAttempts int
 
 	// BaseDelay is the initial backoff delay before the second attempt.
 	BaseDelay time.Duration
 
-	// MaxDelay caps any single backoff sleep.
-	MaxDelay time.Duration
+	// MaximumDelay caps any single backoff sleep.
+	MaximumDelay time.Duration
 
 	// Multiplier is the exponential growth factor between attempts (>= 1.0).
 	Multiplier float64
@@ -45,31 +45,31 @@ type Policy struct {
 // predicate.
 func DefaultPolicy() Policy {
 	return Policy{
-		MaxAttempts: 3,
+		MaximumAttempts: 3,
 		BaseDelay:   500 * time.Millisecond,
-		MaxDelay:    30 * time.Second,
+		MaximumDelay:    30 * time.Second,
 		Multiplier:  2.0,
 		Jitter:      0.2,
 		ShouldRetry: func(err error) bool { return err != nil },
 	}
 }
 
-// RetryAfterError is an error that overrides the policy's computed backoff
+// AfterError is an error that overrides the policy's computed backoff
 // with an explicit duration. Provider clients wrap their 429-with-Retry-After
-// failures in RetryAfterError so this package honors the server's hint.
-type RetryAfterError struct {
+// failures in AfterError so this package honors the server's hint.
+type AfterError struct {
 	Cause error
 	After time.Duration
 }
 
-func (e *RetryAfterError) Error() string {
+func (e *AfterError) Error() string {
 	if e.Cause == nil {
 		return "retry after"
 	}
 	return e.Cause.Error()
 }
 
-func (e *RetryAfterError) Unwrap() error { return e.Cause }
+func (e *AfterError) Unwrap() error { return e.Cause }
 
 // Do invokes fn until it returns nil, ctx cancels, MaxAttempts is reached, or
 // fn returns an error policy.ShouldRetry deems non-retryable. Returns the
@@ -78,15 +78,15 @@ func (e *RetryAfterError) Unwrap() error { return e.Cause }
 //
 // The attempt argument passed to fn is 1-based.
 func Do(ctx context.Context, policy Policy, fn func(attempt int) error) error {
-	if policy.MaxAttempts < 1 {
-		policy.MaxAttempts = 1
+	if policy.MaximumAttempts < 1 {
+		policy.MaximumAttempts = 1
 	}
 	if policy.ShouldRetry == nil {
 		policy.ShouldRetry = func(err error) bool { return err != nil }
 	}
 
 	var lastErr error
-	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+	for attempt := 1; attempt <= policy.MaximumAttempts; attempt++ {
 		// Bail on context before each attempt.
 		if err := ctx.Err(); err != nil {
 			if lastErr != nil {
@@ -104,21 +104,21 @@ func Do(ctx context.Context, policy Policy, fn func(attempt int) error) error {
 		if !policy.ShouldRetry(err) {
 			return err
 		}
-		if attempt == policy.MaxAttempts {
+		if attempt == policy.MaximumAttempts {
 			return err
 		}
 
 		// Determine sleep duration. If the error carries an explicit
 		// Retry-After hint, honor it (capped by MaxDelay).
 		var sleep time.Duration
-		var rae *RetryAfterError
+		var rae *AfterError
 		if errors.As(err, &rae) && rae.After > 0 {
 			sleep = rae.After
 		} else {
 			sleep = computeBackoff(policy, attempt)
 		}
-		if policy.MaxDelay > 0 && sleep > policy.MaxDelay {
-			sleep = policy.MaxDelay
+		if policy.MaximumDelay > 0 && sleep > policy.MaximumDelay {
+			sleep = policy.MaximumDelay
 		}
 
 		select {

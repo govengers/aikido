@@ -42,15 +42,15 @@ func NewStorage() *Storage {
 	}
 }
 
-func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
+func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]vfs.FileMeta, 0, len(s.files))
+	out := make([]vfs.FileMetadata, 0, len(s.files))
 	for path, e := range s.files {
-		out = append(out, vfs.FileMeta{
+		out = append(out, vfs.FileMetadata{
 			Path:        path,
 			ContentType: e.contentType,
 			Size:        int64(len(e.content)),
@@ -61,22 +61,22 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMeta, error) {
 	return out, nil
 }
 
-func (s *Storage) ReadFile(ctx context.Context, path string) ([]byte, vfs.FileMeta, error) {
+func (s *Storage) ReadFile(ctx context.Context, path string) ([]byte, vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	if err := vfs.ValidatePath(path); err != nil {
-		return nil, vfs.FileMeta{}, err
+		return nil, vfs.FileMetadata{}, err
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.files[path]
 	if !ok {
-		return nil, vfs.FileMeta{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, path)
+		return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, path)
 	}
 	out := make([]byte, len(e.content))
 	copy(out, e.content)
-	return out, vfs.FileMeta{
+	return out, vfs.FileMetadata{
 		Path:        path,
 		ContentType: e.contentType,
 		Size:        int64(len(e.content)),

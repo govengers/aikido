@@ -13,6 +13,29 @@ import (
 	"github.com/govengers/aikido/vfs/embedfs"
 )
 
+func newTestStorage(t *testing.T) *embedfs.Storage {
+	t.Helper()
+	return newStorage(t, newTestFS())
+}
+
+func newStorage(t *testing.T, fileSystem fs.FS) *embedfs.Storage {
+	t.Helper()
+	storage, err := embedfs.New(&embedfs.Options{FileSystem: fileSystem})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return storage
+}
+
+func TestNewRejectsMissingFileSystem(t *testing.T) {
+	if _, err := embedfs.New(nil); err == nil {
+		t.Error("New(nil) returned no error")
+	}
+	if _, err := embedfs.New(&embedfs.Options{}); err == nil {
+		t.Error("New without FileSystem returned no error")
+	}
+}
+
 func newTestFS() fstest.MapFS {
 	return fstest.MapFS{
 		"a.md":      &fstest.MapFile{Data: []byte("# A\n\nApple Banana")},
@@ -23,7 +46,7 @@ func newTestFS() fstest.MapFS {
 }
 
 func TestStorage_ListFiles(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	files, err := s.ListFiles(context.Background())
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
@@ -39,9 +62,9 @@ func TestStorage_ListFiles(t *testing.T) {
 }
 
 func TestStorage_ListFiles_Meta(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	files, _ := s.ListFiles(context.Background())
-	var aMeta vfs.FileMeta
+	var aMeta vfs.FileMetadata
 	for _, f := range files {
 		if f.Path == "a.md" {
 			aMeta = f
@@ -56,7 +79,7 @@ func TestStorage_ListFiles_Meta(t *testing.T) {
 }
 
 func TestStorage_ReadFile(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	data, meta, err := s.ReadFile(context.Background(), "a.md")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -73,7 +96,7 @@ func TestStorage_ReadFile(t *testing.T) {
 }
 
 func TestStorage_ReadFile_Missing(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	_, _, err := s.ReadFile(context.Background(), "nope.md")
 	if !errors.Is(err, vfs.ErrFileNotFound) {
 		t.Errorf("err = %v; want ErrFileNotFound", err)
@@ -81,7 +104,7 @@ func TestStorage_ReadFile_Missing(t *testing.T) {
 }
 
 func TestStorage_ReadFile_InvalidPath(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	_, _, err := s.ReadFile(context.Background(), "../escape.md")
 	if !errors.Is(err, vfs.ErrPathInvalid) {
 		t.Errorf("err = %v; want ErrPathInvalid", err)
@@ -89,7 +112,7 @@ func TestStorage_ReadFile_InvalidPath(t *testing.T) {
 }
 
 func TestStorage_WriteFile_ReadOnly(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	err := s.WriteFile(context.Background(), "x.md", []byte("hi"), "text/markdown")
 	if !errors.Is(err, vfs.ErrReadOnly) {
 		t.Errorf("err = %v; want ErrReadOnly", err)
@@ -97,7 +120,7 @@ func TestStorage_WriteFile_ReadOnly(t *testing.T) {
 }
 
 func TestStorage_DeleteFile_ReadOnly(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	err := s.DeleteFile(context.Background(), "a.md")
 	if !errors.Is(err, vfs.ErrReadOnly) {
 		t.Errorf("err = %v; want ErrReadOnly", err)
@@ -105,7 +128,7 @@ func TestStorage_DeleteFile_ReadOnly(t *testing.T) {
 }
 
 func TestStorage_Search(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	hits, err := s.Search(context.Background(), "apple")
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -119,14 +142,14 @@ func TestStorage_Search(t *testing.T) {
 }
 
 func TestStorage_SearchSyntax_NonEmpty(t *testing.T) {
-	s := embedfs.NewStorage(newTestFS())
+	s := newTestStorage(t)
 	if syn := s.SearchSyntax(); syn == "" {
 		t.Error("SearchSyntax should be non-empty")
 	}
 }
 
 func TestStorage_AsSearchable(t *testing.T) {
-	var s vfs.Storage = embedfs.NewStorage(newTestFS())
+	var s vfs.Storage = newTestStorage(t)
 	if _, ok := s.(vfs.Searchable); !ok {
 		t.Error("Storage should satisfy vfs.Searchable")
 	}
@@ -143,7 +166,7 @@ func TestStorage_FsSubScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fs.Sub: %v", err)
 	}
-	s := embedfs.NewStorage(sub)
+	s := newStorage(t, sub)
 	files, _ := s.ListFiles(context.Background())
 	if len(files) != 2 {
 		t.Fatalf("len(files) = %d; want 2 (filtered)", len(files))

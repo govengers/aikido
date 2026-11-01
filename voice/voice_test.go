@@ -130,7 +130,7 @@ func TestRun_FourModes(t *testing.T) {
 			stt := llmtest.NewStubClient(transcriptTurn("Wo kommt die Dusche hin?"))
 			chat := llmtest.NewStubClient(replyTurn(0.002, "Die Dusche passt ", "an die Fensterwand. Der Wasch", "tisch kommt gegenüber."))
 			tts := &fakeSpeech{}
-			p, err := New(&Options{Transcriber: stt, Speech: tts, SpokenStyle: DefaultSpokenStyle, SpeechUSDPerChar: 0.00002})
+			p, err := New(&Options{Transcriber: stt, Speech: tts, SpokenStyle: DefaultSpokenStyle, SpeechUSDPerCharacter: 0.00002})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,13 +192,13 @@ func TestRun_UsageAggregatesAllStages(t *testing.T) {
 	t.Parallel()
 	stt := llmtest.NewStubClient(transcriptTurn("Hallo."))
 	chat := llmtest.NewStubClient(replyTurn(0.002, answer1+answer2))
-	p, _ := New(&Options{Transcriber: stt, Speech: &fakeSpeech{}, SpeechUSDPerChar: 0.00002})
+	p, _ := New(&Options{Transcriber: stt, Speech: &fakeSpeech{}, SpeechUSDPerCharacter: 0.00002})
 	session, _ := newSession(t, chat)
 	ch, _ := p.Run(context.Background(), session, Input{Audio: []byte("x"), ContentType: "audio/wav", Output: OutputSpeech})
 	evs := collect(t, ch)
 	u := evs[len(evs)-1].Usage
 	chars := len([]rune(strings.TrimSpace(answer1))) + len([]rune(answer2))
-	if u == nil || u.SpeechChars != chars || u.LLM.PromptTokens != 10 || u.Transcription == nil || u.Transcription.PromptTokens != 100 {
+	if u == nil || u.SpeechCharacters != chars || u.LLM.PromptTokens != 10 || u.Transcription == nil || u.Transcription.PromptTokens != 100 {
 		t.Fatalf("usage = %+v", u)
 	}
 	want := 0.0001 + 0.002 + float64(chars)*0.00002
@@ -224,7 +224,7 @@ func TestRun_SpeechChunksKeepOrderWhenSynthesisIsNot(t *testing.T) {
 		t.Fatalf("chunks = %d", len(speech))
 	}
 	for i, ev := range speech {
-		if ev.Speech.Seq != i || string(ev.Speech.Audio) != "audio:"+ev.Speech.Text {
+		if ev.Speech.Sequence != i || string(ev.Speech.Audio) != "audio:"+ev.Speech.Text {
 			t.Errorf("chunk %d = %+v", i, ev.Speech)
 		}
 	}
@@ -244,7 +244,7 @@ func TestRun_SpeechStartsBeforeTheReplyEnds(t *testing.T) {
 	var evs []Event
 	for ev := range ch {
 		evs = append(evs, ev)
-		if ev.Kind == EventSpeech && ev.Speech.Seq == 0 {
+		if ev.Kind == EventSpeech && ev.Speech.Sequence == 0 {
 			close(release)
 		}
 	}
@@ -349,14 +349,14 @@ func TestRun_FailedChunkDoesNotEndTheTurn(t *testing.T) {
 	ch, _ := p.Run(context.Background(), session, Input{Text: "Hallo", Output: OutputSpeech})
 	evs := collect(t, ch)
 	errs := only(evs, EventError)
-	if len(errs) != 1 || errs[0].Speech == nil || errs[0].Speech.Seq != 0 || !errors.Is(errs[0].Err, llm.ErrServerError) {
+	if len(errs) != 1 || errs[0].Speech == nil || errs[0].Speech.Sequence != 0 || !errors.Is(errs[0].Err, llm.ErrServerError) {
 		t.Fatalf("errors = %+v", errs)
 	}
 	speech := only(evs, EventSpeech)
-	if len(speech) != 1 || speech[0].Speech.Seq != 1 {
+	if len(speech) != 1 || speech[0].Speech.Sequence != 1 {
 		t.Errorf("speech = %+v", speech)
 	}
-	if last := evs[len(evs)-1]; last.EndReason != agent.EndReasonStop || last.Usage.SpeechChars != len([]rune(answer2)) {
+	if last := evs[len(evs)-1]; last.EndReason != agent.EndReasonStop || last.Usage.SpeechCharacters != len([]rune(answer2)) {
 		t.Errorf("done = %+v %+v", last, last.Usage)
 	}
 }
@@ -476,13 +476,13 @@ func TestRun_DeadlineMidTTSStillDeliversDone(t *testing.T) {
 	t.Parallel()
 	chat := llmtest.NewStubClient(replyTurn(0.002, answer1+answer2))
 	speech := &fakeSpeech{delay: func(string) time.Duration { return time.Minute }}
-	p, _ := New(&Options{Speech: speech, SpeechUSDPerChar: 0.00002})
+	p, _ := New(&Options{Speech: speech, SpeechUSDPerCharacter: 0.00002})
 	session, _ := newSession(t, chat)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	ch, _ := p.Run(ctx, session, Input{Text: "Hallo", Output: OutputSpeech})
 	done := lastDone(t, collect(t, ch))
-	if done.EndReason != agent.EndReasonTimeout || done.Usage.LLM.CostUSD != 0.002 || done.Usage.SpeechChars != 0 {
+	if done.EndReason != agent.EndReasonTimeout || done.Usage.LLM.CostUSD != 0.002 || done.Usage.SpeechCharacters != 0 {
 		t.Fatalf("done = %+v usage %+v", done, done.Usage)
 	}
 }

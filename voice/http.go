@@ -31,8 +31,8 @@ type HandlerOptions struct {
 	// Nil (the default, and the return for results to keep private) sends
 	// no content.
 	ToolResult func(res agent.ToolResult) any
-	// MaxAudioBytes caps the upload. Default 8 MiB; larger answers 413.
-	MaxAudioBytes int64
+	// MaximumAudioBytes caps the upload. Default 8 MiB; larger answers 413.
+	MaximumAudioBytes int64
 	// Timeout caps the turn, which runs detached from the request context so
 	// a client that goes away does not lose it. Default 5 minutes.
 	Timeout time.Duration
@@ -76,8 +76,8 @@ func NewHandler(opts *HandlerOptions) (*Handler, error) {
 		return nil, errors.New("aikido/voice: HandlerOptions need Pipeline and Session")
 	}
 	cp := *opts
-	if cp.MaxAudioBytes <= 0 {
-		cp.MaxAudioBytes = 8 << 20
+	if cp.MaximumAudioBytes <= 0 {
+		cp.MaximumAudioBytes = 8 << 20
 	}
 	if cp.Timeout <= 0 {
 		cp.Timeout = 5 * time.Minute
@@ -139,7 +139,7 @@ type wireEvent struct {
 	ContentType string     `json:"content_type,omitempty"`
 	Audio       []byte     `json:"audio,omitempty"`
 	Error       string     `json:"error,omitempty"`
-	EndReason   string     `json:"end_reason,omitempty"`
+	EndReason   agent.EndReason `json:"end_reason,omitempty"`
 	Usage       *wireUsage `json:"usage,omitempty"`
 }
 
@@ -159,7 +159,7 @@ func (h *Handler) toWire(ev Event) wireEvent {
 		}
 	}
 	if s := ev.Speech; s != nil {
-		seq := s.Seq
+		seq := s.Sequence
 		w.Seq, w.Text, w.ContentType, w.Audio = &seq, s.Text, s.ContentType, s.Audio
 	}
 	if u := ev.Usage; u != nil {
@@ -167,7 +167,7 @@ func (h *Handler) toWire(ev Event) wireEvent {
 			CostUSD:          u.CostUSD,
 			LLMCostUSD:       u.LLM.CostUSD,
 			SpeechCostUSD:    u.SpeechCostUSD,
-			SpeechChars:      u.SpeechChars,
+			SpeechChars:      u.SpeechCharacters,
 			PromptTokens:     u.LLM.PromptTokens,
 			CompletionTokens: u.LLM.CompletionTokens,
 		}
@@ -243,11 +243,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // readInput parses the three request shapes into an Input.
 func (h *Handler) readInput(w http.ResponseWriter, r *http.Request) (Input, int, error) {
 	mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	body := http.MaxBytesReader(w, r.Body, h.opts.MaxAudioBytes)
+	body := http.MaxBytesReader(w, r.Body, h.opts.MaximumAudioBytes)
 	tooLarge := func(err error) (Input, int, error) {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return Input{}, http.StatusRequestEntityTooLarge, fmt.Errorf("body exceeds %d bytes", h.opts.MaxAudioBytes)
+			return Input{}, http.StatusRequestEntityTooLarge, fmt.Errorf("body exceeds %d bytes", h.opts.MaximumAudioBytes)
 		}
 		return Input{}, http.StatusBadRequest, err
 	}
@@ -270,7 +270,7 @@ func (h *Handler) readInput(w http.ResponseWriter, r *http.Request) (Input, int,
 		in = Input{Text: req.Text, Output: req.Output, Language: req.Language}
 	case mt == "multipart/form-data":
 		r.Body = body
-		if err := r.ParseMultipartForm(h.opts.MaxAudioBytes); err != nil {
+		if err := r.ParseMultipartForm(h.opts.MaximumAudioBytes); err != nil {
 			return tooLarge(err)
 		}
 		in = Input{

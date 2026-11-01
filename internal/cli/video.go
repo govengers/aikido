@@ -60,7 +60,7 @@ func videoCommand(factory ClientFactory) *urfavecli.Command {
 					AspectRatio: cmd.String("aspect"),
 					Resolution:  cmd.String("resolution"),
 					Size:        cmd.String("size"),
-					Duration:    int(cmd.Int("duration")),
+					DurationSeconds:    int(cmd.Int("duration")),
 				},
 				outDir:     cmd.String("out"),
 				firstFrame: cmd.String("first-frame"),

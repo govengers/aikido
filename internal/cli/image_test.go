@@ -146,14 +146,14 @@ func TestImageCommand_ThreadsAspectAndSize(t *testing.T) {
 	}
 	select {
 	case req := <-captured:
-		if req.ImageConfig == nil {
+		if req.ImageConfiguration == nil {
 			t.Fatal("ImageConfig not threaded")
 		}
-		if req.ImageConfig.AspectRatio != "16:9" {
-			t.Errorf("AspectRatio = %q, want 16:9", req.ImageConfig.AspectRatio)
+		if req.ImageConfiguration.AspectRatio != "16:9" {
+			t.Errorf("AspectRatio = %q, want 16:9", req.ImageConfiguration.AspectRatio)
 		}
-		if req.ImageConfig.ImageSize != "2K" {
-			t.Errorf("ImageSize = %q, want 2K", req.ImageConfig.ImageSize)
+		if req.ImageConfiguration.ImageSize != "2K" {
+			t.Errorf("ImageSize = %q, want 2K", req.ImageConfiguration.ImageSize)
 		}
 	default:
 		t.Fatal("no request captured")
@@ -176,8 +176,8 @@ func TestImageCommand_OmitsImageConfigWhenUnset(t *testing.T) {
 	}
 	select {
 	case req := <-captured:
-		if req.ImageConfig != nil {
-			t.Errorf("ImageConfig = %+v, want nil when flags unset", req.ImageConfig)
+		if req.ImageConfiguration != nil {
+			t.Errorf("ImageConfig = %+v, want nil when flags unset", req.ImageConfiguration)
 		}
 	default:
 		t.Fatal("no request captured")
@@ -719,7 +719,7 @@ func TestImageCommand_UnsupportedFrameFallsBackForDefaultModel(t *testing.T) {
 		t.Fatalf("app.Run: %v", err)
 	}
 	reqs := chat.Requests()
-	if len(reqs) != 1 || reqs[0].Model != fallbackImageModel || reqs[0].ImageConfig == nil || reqs[0].ImageConfig.AspectRatio != "1:4" {
+	if len(reqs) != 1 || reqs[0].Model != fallbackImageModel || reqs[0].ImageConfiguration == nil || reqs[0].ImageConfiguration.AspectRatio != "1:4" {
 		t.Errorf("chat requests = %+v, want one %s call with 1:4", reqs, fallbackImageModel)
 	}
 	if n := len(chat.ImageRequests()); n != 0 {

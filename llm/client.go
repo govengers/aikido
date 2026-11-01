@@ -8,10 +8,10 @@ import (
 type Request struct {
 	Model         string
 	Messages      []Message
-	Tools         []ToolDef
-	MaxTokens     int
+	Tools         []ToolDefinition
+	MaximumTokens     int
 	Temperature   *float32
-	Thinking      *ThinkingConfig
+	Thinking      *ThinkingConfiguration
 	StopSequences []string
 
 	// Modalities lists the output modalities the caller wants the model to
@@ -20,10 +20,10 @@ type Request struct {
 	// returns a provider error. Empty leaves the provider default.
 	Modalities []string
 
-	// ImageConfig tunes image-output generation (aspect ratio, resolution).
+	// ImageConfiguration tunes image-output generation (aspect ratio, resolution).
 	// Honored only by image-capable models. Nil leaves provider defaults
 	// (typically 1:1 / 1K).
-	ImageConfig *ImageConfig
+	ImageConfiguration *ImageConfiguration
 	// ResponseFormat asks for JSON matching a schema (structured output).
 	// Nil leaves free-form text.
 	ResponseFormat *JSONSchema
@@ -42,7 +42,7 @@ type JSONSchema struct {
 	Strict bool
 }
 
-// ImageConfig configures image-output generation. Forwarded as the
+// ImageConfiguration configures image-output generation. Forwarded as the
 // `image_config` field on the OpenRouter chat-completions request. Non-image
 // models ignore it.
 //
@@ -56,7 +56,7 @@ type JSONSchema struct {
 //
 // Empty fields are omitted from the wire body, letting the provider default
 // apply per-field.
-type ImageConfig struct {
+type ImageConfiguration struct {
 	AspectRatio string
 	ImageSize   string
 }

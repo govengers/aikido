@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"github.com/govengers/aikido/vfs"
+	"github.com/govengers/aikido/vfs/vfstest"
 )
 
 func TestConformance(t *testing.T) {
-	vfs.RunConformance(t, func() vfs.Storage { return NewStorage() })
+	vfstest.RunConformance(t, func() vfs.Storage { return NewStorage() })
 }
 
 func TestSearch_GlobalEmpty(t *testing.T) {

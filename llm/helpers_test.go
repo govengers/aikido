@@ -58,9 +58,13 @@ func TestCollect_HappyPath(t *testing.T) {
 		{Kind: EventTextDelta, Text: "world."},
 		{Kind: EventToolCall, Tool: &ToolCall{ID: "c1", Name: "fn", Arguments: `{"a":1}`}},
 		{Kind: EventUsage, Usage: &Usage{PromptTokens: 4, CompletionTokens: 7}},
-		{Kind: EventEnd},
+		{Kind: EventEnd, FinishReason: "tool_calls"},
 	}}
-	text, calls, images, usage, err := Collect(context.Background(), cc, Request{})
+	response, err := Collect(context.Background(), cc, Request{})
+	text, calls, images, usage := response.Text, response.ToolCalls, response.Images, response.Usage
+	if response.FinishReason != "tool_calls" {
+		t.Errorf("finish reason = %q, want tool_calls", response.FinishReason)
+	}
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -86,7 +90,8 @@ func TestCollect_Images(t *testing.T) {
 		{Kind: EventImage, Image: &ImagePart{URL: "https://example.com/x.png", ContentType: "image/png"}},
 		{Kind: EventEnd},
 	}}
-	text, _, images, _, err := Collect(context.Background(), cc, Request{})
+	response, err := Collect(context.Background(), cc, Request{})
+	text, images := response.Text, response.Images
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -111,7 +116,8 @@ func TestCollect_ThinkingExcludedFromText(t *testing.T) {
 		{Kind: EventThinking, Text: "more thinking"},
 		{Kind: EventEnd},
 	}}
-	text, _, _, _, err := Collect(context.Background(), cc, Request{})
+	response, err := Collect(context.Background(), cc, Request{})
+	text := response.Text
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -127,7 +133,8 @@ func TestCollect_PropagatesEventError(t *testing.T) {
 		{Kind: EventError, Err: sentinel},
 		{Kind: EventEnd},
 	}}
-	text, _, _, _, err := Collect(context.Background(), cc, Request{})
+	response, err := Collect(context.Background(), cc, Request{})
+	text := response.Text
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
 	}
@@ -139,7 +146,7 @@ func TestCollect_PropagatesEventError(t *testing.T) {
 func TestCollect_PropagatesStreamError(t *testing.T) {
 	sentinel := errors.New("dial failure")
 	cc := &chanClient{err: sentinel}
-	_, _, _, _, err := Collect(context.Background(), cc, Request{})
+	_, err := Collect(context.Background(), cc, Request{})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v, want %v", err, sentinel)
 	}
@@ -150,7 +157,7 @@ func TestCollect_ContextCancellation(t *testing.T) {
 	cc := &fakeClient{ch: ch}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, _, _, err := Collect(ctx, cc, Request{})
+	_, err := Collect(ctx, cc, Request{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
@@ -165,21 +172,4 @@ func (f *fakeClient) Stream(ctx context.Context, req Request) (<-chan Event, err
 func (f *fakeClient) Complete(ctx context.Context, req Request) (Response, error) {
 	<-ctx.Done()
 	return Response{}, ctx.Err()
-}
-
-func TestFloat32(t *testing.T) {
-	p := Float32(0)
-	if p == nil {
-		t.Fatal("Float32(0) returned nil; the deterministic-zero foot-gun is open")
-	}
-	if *p != 0 {
-		t.Errorf("*Float32(0) = %v, want 0", *p)
-	}
-	q := Float32(0.7)
-	if *q != 0.7 {
-		t.Errorf("*Float32(0.7) = %v, want 0.7", *q)
-	}
-	if p == q {
-		t.Error("Float32 returned aliased pointers")
-	}
 }

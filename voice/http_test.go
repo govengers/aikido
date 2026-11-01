@@ -31,7 +31,7 @@ func newTestHandler(t *testing.T, stt, chat llm.Client, maxBytes int64) (*Handle
 	h, err := NewHandler(&HandlerOptions{
 		Pipeline:      p,
 		Session:       func(*http.Request) (Runner, error) { return session, nil },
-		MaxAudioBytes: maxBytes,
+		MaximumAudioBytes: maxBytes,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,8 +221,8 @@ func TestHandler_TimeoutStillWritesDone(t *testing.T) {
 func TestHandler_ToolResultContentAndExtraFields(t *testing.T) {
 	t.Parallel()
 	reg := tools.NewRegistry()
-	_ = reg.Register(llm.ToolDef{Name: "highlight", Parameters: tools.Object(map[string]any{})},
-		func(context.Context, json.RawMessage, tools.Env) (tools.Result, error) {
+	_ = reg.Register(llm.ToolDefinition{Name: "highlight", Parameters: tools.Object(map[string]any{})},
+		func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
 			return tools.Result{Content: map[string]string{"ui": "highlight:shower"}}, nil
 		})
 	chat := llmtest.NewStubClient(

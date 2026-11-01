@@ -28,7 +28,7 @@ func newTestSession(t *testing.T, client llm.Client, reg *tools.Registry, hist H
 		Locker:       NewLocalLocker(),
 		Model:        "test/model",
 		SystemPrompt: "you are a test",
-		MaxTurns:     5,
+		MaximumTurns: 5,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -67,7 +67,7 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 
 	var text strings.Builder
 	var sawUsage, sawEnd bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		switch ev.Kind {
 		case EventText:
@@ -104,7 +104,7 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 
 func TestRun_ToolCallThenEnd(t *testing.T) {
 	reg := tools.NewRegistry()
-	if err := reg.Register(llm.ToolDef{Name: "echo"}, func(ctx context.Context, args json.RawMessage, env tools.Env) (tools.Result, error) {
+	if err := reg.Register(llm.ToolDefinition{Name: "echo"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
 		var v map[string]any
 		_ = json.Unmarshal(args, &v)
 		return tools.Result{Content: map[string]any{"echoed": v["msg"]}}, nil
@@ -132,7 +132,7 @@ func TestRun_ToolCallThenEnd(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var sawToolCall, sawToolResult bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		switch ev.Kind {
 		case EventToolCall:
@@ -166,7 +166,7 @@ func TestRun_ToolCallThenEnd(t *testing.T) {
 func TestRun_ToolErrorContinues(t *testing.T) {
 	reg := tools.NewRegistry()
 	sentinel := errors.New("tool exploded")
-	_ = reg.Register(llm.ToolDef{Name: "boom"}, func(ctx context.Context, args json.RawMessage, env tools.Env) (tools.Result, error) {
+	_ = reg.Register(llm.ToolDefinition{Name: "boom"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
 		return tools.Result{}, sentinel
 	})
 	stub := llmtest.NewStubClient(
@@ -184,7 +184,7 @@ func TestRun_ToolErrorContinues(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var sawToolResultFail bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventToolResult && ev.ToolResult != nil && !ev.ToolResult.OK {
 			sawToolResultFail = true
@@ -217,7 +217,7 @@ func TestRun_MidStreamErrorSkipsHistoryAppend(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var sawErr bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventError {
 			sawErr = true
@@ -241,7 +241,7 @@ func TestRun_MidStreamErrorSkipsHistoryAppend(t *testing.T) {
 func TestRun_MaxTurnsHitsCap(t *testing.T) {
 	// Always emit a tool call so the loop never reaches stop.
 	reg := tools.NewRegistry()
-	_ = reg.Register(llm.ToolDef{Name: "loop"}, func(ctx context.Context, args json.RawMessage, env tools.Env) (tools.Result, error) {
+	_ = reg.Register(llm.ToolDefinition{Name: "loop"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
 		return tools.Result{Content: "ok"}, nil
 	})
 	turns := make([]llmtest.TurnScript, 10)
@@ -253,18 +253,18 @@ func TestRun_MaxTurnsHitsCap(t *testing.T) {
 	}
 	stub := llmtest.NewStubClient(turns...)
 	hist := memory.NewHistory()
-	s := newTestSession(t, stub, reg, hist, func(o *SessionOptions) { o.MaxTurns = 3 })
+	s := newTestSession(t, stub, reg, hist, func(o *SessionOptions) { o.MaximumTurns = 3 })
 
 	ch, _ := s.Run(context.Background(), "go")
 	events := collectEvents(t, ch)
 
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventEnd {
 			endReason = ev.EndReason
 		}
 	}
-	if endReason != EndReasonMaxTurns {
+	if endReason != EndReasonMaximumTurns {
 		t.Errorf("end = %q; want max_turns", endReason)
 	}
 	// History flushed: user + 3 turns of (asst + tool) = 1 + 6 = 7 messages.
@@ -282,7 +282,7 @@ func TestRun_RunTimeout(t *testing.T) {
 	ch, _ := s.Run(context.Background(), "go")
 	events := collectEvents(t, ch)
 
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventEnd {
 			endReason = ev.EndReason
@@ -301,7 +301,7 @@ func TestRun_LLMCallTimeout(t *testing.T) {
 	ch, _ := s.Run(context.Background(), "go")
 	events := collectEvents(t, ch)
 
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventEnd {
 			endReason = ev.EndReason
@@ -324,7 +324,7 @@ func TestRun_Cancellation(t *testing.T) {
 	}()
 	events := collectEvents(t, ch)
 
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventEnd {
 			endReason = ev.EndReason
@@ -348,7 +348,7 @@ func TestRun_StrictHistoryReadError(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var sawErr bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventError && ev.Err != nil && strings.Contains(ev.Err.Error(), "read boom") {
 			sawErr = true
@@ -377,7 +377,7 @@ func TestRun_StrictHistoryAppendError(t *testing.T) {
 	ch, _ := s.Run(context.Background(), "go")
 	events := collectEvents(t, ch)
 
-	var endReason string
+	var endReason EndReason
 	var sawErr bool
 	for _, ev := range events {
 		if ev.Kind == EventError && strings.Contains(ev.Err.Error(), "append boom") {
@@ -410,7 +410,7 @@ func TestRun_StrictLockerError(t *testing.T) {
 	events := collectEvents(t, ch)
 
 	var sawErr bool
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventError && strings.Contains(ev.Err.Error(), "lock boom") {
 			sawErr = true
@@ -439,7 +439,7 @@ func TestRun_StreamDialError(t *testing.T) {
 	}
 	ch, _ := s.Run(context.Background(), "go")
 	events := collectEvents(t, ch)
-	var endReason string
+	var endReason EndReason
 	for _, ev := range events {
 		if ev.Kind == EventEnd {
 			endReason = ev.EndReason
@@ -465,7 +465,7 @@ func TestRun_LocalLocker_SerializesSameID_AcrossDistinctSessions(t *testing.T) {
 	mkSession := func(client llm.Client) *Session {
 		s, err := NewSession(&SessionOptions{
 			ID: "shared", Client: client, Model: "m",
-			History: hist, Locker: locker, MaxTurns: 1,
+			History: hist, Locker: locker, MaximumTurns: 1,
 		})
 		if err != nil {
 			t.Fatal(err)

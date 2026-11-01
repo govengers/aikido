@@ -37,7 +37,7 @@ const DefaultSpokenStyle = `Your reply will be read aloud by a text-to-speech vo
 
 // EndReasonNoSpeech ends a turn whose audio held no intelligible speech. The
 // agent does not run.
-const EndReasonNoSpeech = "no_speech"
+const EndReasonNoSpeech agent.EndReason = "no_speech"
 
 // Output selects what a turn produces.
 type Output string
@@ -69,10 +69,10 @@ type Options struct {
 	Voice       string   // default DefaultVoice
 	Format      string   // "mp3" (default) or "pcm"
 	Speed       *float32 // nil leaves the provider default
-	// SpeechUSDPerChar prices synthesized characters for Usage.SpeechCostUSD.
+	// SpeechUSDPerCharacter prices synthesized characters for Usage.SpeechCostUSD.
 	// OpenRouter reports no cost on speech responses, so this is the only
 	// way to a per-turn price. eleven-v4-turbo lists 0.00002 (10.2026).
-	SpeechUSDPerChar float64
+	SpeechUSDPerCharacter float64
 	// SpeechConcurrency bounds parallel synthesis calls. Default 2.
 	SpeechConcurrency int
 
@@ -161,14 +161,14 @@ type Event struct {
 	ToolResult *agent.ToolResult
 	Speech     *SpeechChunk
 	Err        error
-	EndReason  string
+	EndReason  agent.EndReason
 	Usage      *Usage
 }
 
 // SpeechChunk is one synthesized sentence. Text is what was spoken, after
 // Speakable.
 type SpeechChunk struct {
-	Seq          int
+	Sequence          int
 	Text         string
 	Audio        []byte
 	ContentType  string
@@ -183,7 +183,7 @@ type Usage struct {
 	Transcription *llm.Usage
 	LLM           llm.Usage
 	LLMCalls      []llm.Usage
-	SpeechChars   int
+	SpeechCharacters   int
 	SpeechCostUSD float64
 	CostUSD       float64
 }
@@ -245,7 +245,7 @@ func (p *Pipeline) run(ctx context.Context, r Runner, in Input, format string, o
 		}
 	}
 	usage := &Usage{}
-	done := func(reason string) {
+	done := func(reason agent.EndReason) {
 		usage.CostUSD = usage.LLM.CostUSD + usage.SpeechCostUSD
 		if usage.Transcription != nil {
 			usage.CostUSD += usage.Transcription.CostUSD
@@ -407,8 +407,8 @@ func (s *speaker) close(u *Usage) {
 	s.flush()
 	close(s.queue)
 	<-s.done
-	u.SpeechChars = s.chars
-	u.SpeechCostUSD = float64(s.chars) * s.p.opts.SpeechUSDPerChar
+	u.SpeechCharacters = s.chars
+	u.SpeechCostUSD = float64(s.chars) * s.p.opts.SpeechUSDPerCharacter
 }
 
 func (s *speaker) speak(text string) {
@@ -416,7 +416,7 @@ func (s *speaker) speak(text string) {
 	if text == "" {
 		return
 	}
-	chunk := SpeechChunk{Seq: s.seq, Text: text}
+	chunk := SpeechChunk{Sequence: s.seq, Text: text}
 	s.seq++
 	ch := make(chan Event, 1)
 	s.queue <- ch
@@ -432,7 +432,7 @@ func (s *speaker) speak(text string) {
 			Speed:  o.Speed,
 		})
 		if err != nil {
-			ch <- Event{Kind: EventError, Speech: &chunk, Err: fmt.Errorf("aikido/voice: speak chunk %d: %w", chunk.Seq, err)}
+			ch <- Event{Kind: EventError, Speech: &chunk, Err: fmt.Errorf("aikido/voice: speak chunk %d: %w", chunk.Sequence, err)}
 			return
 		}
 		s.mu.Lock()

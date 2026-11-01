@@ -137,14 +137,14 @@ func printEndpoints(ctx context.Context, out io.Writer, c modelCatalog, id strin
 	fmt.Fprintln(tw, "PROVIDER\tTAG\tQUANT\tCONTEXT\t$/M IN\t$/M OUT\tUPTIME 30m\tLATENCY p50\tTHROUGHPUT p50\tSTATUS")
 	for _, e := range me.Endpoints {
 		uptime, latency, throughput := "-", "-", "-"
-		if e.UptimeLast30m != nil {
-			uptime = fmt.Sprintf("%.1f%%", *e.UptimeLast30m)
+		if e.UptimeLast30Minutes != nil {
+			uptime = fmt.Sprintf("%.1f%%", *e.UptimeLast30Minutes)
 		}
-		if e.LatencyLast30m != nil {
-			latency = fmt.Sprintf("%.0f ms", e.LatencyLast30m.P50)
+		if e.LatencyLast30Minutes != nil {
+			latency = fmt.Sprintf("%.0f ms", e.LatencyLast30Minutes.P50)
 		}
-		if e.ThroughputLast30m != nil {
-			throughput = fmt.Sprintf("%.0f tok/s", e.ThroughputLast30m.P50)
+		if e.ThroughputLast30Minutes != nil {
+			throughput = fmt.Sprintf("%.0f tok/s", e.ThroughputLast30Minutes.P50)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%.2f\t%.2f\t%s\t%s\t%s\t%d\n",
 			e.ProviderName, e.Tag, e.Quantization, e.ContextLength,
@@ -167,7 +167,7 @@ func withProviderFlag(ctx context.Context, cmd *urfavecli.Command) context.Conte
 		return ctx
 	}
 	fallbacks := len(order) > 1
-	return openrouter.WithProvider(ctx, &openrouter.ProviderPrefs{Order: order, AllowFallbacks: &fallbacks})
+	return openrouter.WithProvider(ctx, &openrouter.ProviderPreferences{Order: order, AllowFallbacks: &fallbacks})
 }
 
 // formatUsage renders one model call's usage line.

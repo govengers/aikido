@@ -18,7 +18,7 @@ func newClient(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	src := NewTokenSource(Tokens{AccessToken: "at", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}, nil, nil)
+	src := newTokenSource(t, &TokenSourceOptions{Tokens: Tokens{AccessToken: "at", RefreshToken: "rt", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}})
 	c, err := NewClient(&Options{Tokens: src, Originator: "casa-mapa", BaseURL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestComplete_RequestShapeAndText(t *testing.T) {
 			{Role: llm.RoleUser, Content: "what is this?", Images: []llm.ImagePart{{Data: []byte("\x89PNG\r\n\x1a\n0000"), ContentType: "image/png"}}},
 		},
 		ResponseFormat: &llm.JSONSchema{Name: "meal", Strict: true, Schema: json.RawMessage(`{"type":"object"}`)},
-		MaxTokens:      500,
+		MaximumTokens:      500,
 	})
 	if err != nil || res.Text != `{"kcal":640}` || res.Usage == nil || res.Usage.PromptTokens != 900 || res.FinishReason != "stop" {
 		t.Fatalf("Complete = %+v, %v", res, err)
@@ -104,7 +104,7 @@ func TestStream_DoneWithoutDeltasAndFailures(t *testing.T) {
 func TestStream_RejectsToolsAndMapsStatus(t *testing.T) {
 	t.Parallel()
 	c := newClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) })
-	if _, err := c.Stream(context.Background(), llm.Request{Tools: []llm.ToolDef{{Name: "x"}}}); !errors.Is(err, llm.ErrInvalidRequest) {
+	if _, err := c.Stream(context.Background(), llm.Request{Tools: []llm.ToolDefinition{{Name: "x"}}}); !errors.Is(err, llm.ErrInvalidRequest) {
 		t.Errorf("tools: %v", err)
 	}
 	audio := llm.Request{Messages: []llm.Message{{Role: llm.RoleUser, Audio: []llm.AudioPart{{Data: []byte{1}, Format: "wav"}}}}}

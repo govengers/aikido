@@ -7,12 +7,12 @@ import (
 	"unicode/utf8"
 )
 
-// MaxVocabularyPromptTerms and MaxVocabularyPromptBytes cap how much of
+// MaximumVocabularyPromptTerms and MaximumVocabularyPromptBytes cap how much of
 // Vocabulary.Terms goes into the transcription prompt. Terms past the cap are
 // still used for post-correction.
 const (
-	MaxVocabularyPromptTerms = 200
-	MaxVocabularyPromptBytes = 3000
+	MaximumVocabularyPromptTerms = 200
+	MaximumVocabularyPromptBytes = 3000
 )
 
 // Vocabulary is a dictionary of well-known terms that corrects voice input in
@@ -50,7 +50,7 @@ func (v *Vocabulary) promptLine() string {
 		if t == "" {
 			continue
 		}
-		if n == MaxVocabularyPromptTerms || b.Len()+len(t)+2 > MaxVocabularyPromptBytes {
+		if n == MaximumVocabularyPromptTerms || b.Len()+len(t)+2 > MaximumVocabularyPromptBytes {
 			break
 		}
 		if n > 0 {

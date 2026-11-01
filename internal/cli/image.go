@@ -301,11 +301,11 @@ func generateViaChat(ctx context.Context, o imageOpts, refs []llm.ImagePart, cli
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: o.prompt, Images: refs},
 		},
-		MaxTokens:  o.maxTokens,
+		MaximumTokens:  o.maxTokens,
 		Modalities: []string{"image", "text"},
 	}
 	if o.aspectRatio != "" || o.imageSize != "" {
-		req.ImageConfig = &llm.ImageConfig{
+		req.ImageConfiguration = &llm.ImageConfiguration{
 			AspectRatio: o.aspectRatio,
 			ImageSize:   o.imageSize,
 		}

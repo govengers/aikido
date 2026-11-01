@@ -54,7 +54,7 @@ func TestSpeak_RequestAndResponse(t *testing.T) {
 		Input:  "Hallo Welt.",
 		Voice:  "sarah",
 		Format: "mp3",
-		Speed:  llm.Float32(1.1),
+		Speed:  new(float32(1.1)),
 	})
 	if err != nil {
 		t.Fatalf("Speak: %v", err)
@@ -112,7 +112,7 @@ func TestSpeak_Errors(t *testing.T) {
 		{"no input", llm.SpeechRequest{Model: "m"}, 0, "", "", llm.ErrInvalidRequest},
 		{"no model", llm.SpeechRequest{Input: "x"}, 0, "", "", llm.ErrInvalidRequest},
 		{"bad voice", llm.SpeechRequest{Model: "m", Input: "x", Voice: "nope"}, 400, "application/json", `{"error":{"code":400,"message":"unknown voice"}}`, llm.ErrInvalidRequest},
-		{"no credits", llm.SpeechRequest{Model: "m", Input: "x"}, 402, "application/json", `{"error":{"code":402,"message":"insufficient credits"}}`, llm.ErrAuth},
+		{"no credits", llm.SpeechRequest{Model: "m", Input: "x"}, 402, "application/json", `{"error":{"code":402,"message":"insufficient credits"}}`, llm.ErrAuthentication},
 		{"json on 200", llm.SpeechRequest{Model: "m", Input: "x"}, 200, "application/json", `{"error":{"code":500,"message":"boom"}}`, llm.ErrServerError},
 		{"empty audio", llm.SpeechRequest{Model: "m", Input: "x"}, 200, "audio/mpeg", "", llm.ErrServerError},
 	}

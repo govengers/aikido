@@ -94,7 +94,7 @@ func TestTranscribe_VocabularyPromptCap(t *testing.T) {
 	}
 	prompt := stub.Requests()[0].Messages[0].Content
 	line := prompt[strings.Index(prompt, "like this: "):]
-	if n := strings.Count(line, ","); n+1 > llm.MaxVocabularyPromptTerms || len(line) > llm.MaxVocabularyPromptBytes+100 {
+	if n := strings.Count(line, ","); n+1 > llm.MaximumVocabularyPromptTerms || len(line) > llm.MaximumVocabularyPromptBytes+100 {
 		t.Errorf("prompt line not capped: %d terms, %d bytes", n+1, len(line))
 	}
 }

@@ -123,7 +123,7 @@ func TestDecide_ErrorsAndMissingAnswer(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
-	c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaxAttempts: 1})
+	c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaximumAttempts: 1})
 	req := llm.DecisionRequest{Model: "m", State: "s", Questions: map[string]llm.DecisionQuestion{"q": llm.NoulQuestion("ok?")}}
 
 	if _, err := c.Decide(context.Background(), req); !errors.Is(err, llm.ErrInvalidRequest) {

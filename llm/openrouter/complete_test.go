@@ -354,7 +354,7 @@ func TestComplete_4xxNoRetry(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
-	if !errors.Is(err, llm.ErrAuth) {
+	if !errors.Is(err, llm.ErrAuthentication) {
 		t.Errorf("err = %v, want ErrAuth", err)
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {
@@ -405,7 +405,7 @@ func TestComplete_ImageConfigOnWire(t *testing.T) {
 		Model:       "any",
 		Messages:    []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
 		Modalities:  []string{"image", "text"},
-		ImageConfig: &llm.ImageConfig{AspectRatio: "16:9", ImageSize: "2K"},
+		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestComplete_ChatImageFixture(t *testing.T) {
 			Images:  []llm.ImagePart{{URL: "data:image/jpeg;base64,QUJD", ContentType: "image/jpeg"}},
 		}},
 		Modalities:  []string{"image", "text"},
-		ImageConfig: &llm.ImageConfig{AspectRatio: "16:9", ImageSize: "2K"},
+		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)

@@ -62,19 +62,19 @@ func runChat(ctx context.Context, o chatOpts, out io.Writer, client llm.Client) 
 	req := llm.Request{
 		Model:     o.model,
 		Messages:  msgs,
-		MaxTokens: o.maxTokens,
+		MaximumTokens: o.maxTokens,
 	}
 	if o.temperature >= 0 {
-		req.Temperature = llm.Float32(float32(o.temperature))
+		req.Temperature = new(float32(o.temperature))
 	}
 
-	text, _, _, usage, err := llm.Collect(ctx, client, req)
+	response, err := llm.Collect(ctx, client, req)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, text)
-	if usage != nil {
-		fmt.Fprintf(out, "\n%s\n", formatUsage(usage))
+	fmt.Fprintln(out, response.Text)
+	if response.Usage != nil {
+		fmt.Fprintf(out, "\n%s\n", formatUsage(response.Usage))
 	}
 	return nil
 }
