@@ -89,3 +89,26 @@ func TestHostEnvironmentIsNotInherited(t *testing.T) {
 		t.Fatalf("output = %q", result.Output)
 	}
 }
+
+// TestInterpreterTempPathsStayVirtual replays the review's FIFO bypass: the
+// interpreter opens "<its temp dir>/sh-interp-*" on the host past the open
+// handler, and TMPDIR picks that directory.
+func TestInterpreterTempPathsStayVirtual(t *testing.T) {
+	name := "sh-interp-aikido-" + strings.ReplaceAll(t.Name(), "/", "-")
+	hostTemp := os.TempDir()
+	t.Cleanup(func() {
+		_ = os.Remove(filepath.Join("/tmp", name))
+		_ = os.Remove(filepath.Join(hostTemp, name))
+	})
+	shell, _ := newTestShell(t, nil, nil)
+	script := "env TMPDIR=/tmp bash -c 'echo x >/tmp/" + name + "'; export TMPDIR=/tmp; echo y >>/tmp/" + name + "; cat /tmp/" + name +
+		"; echo z 2>/dev/null > " + filepath.Join(hostTemp, name) + "; true"
+	if result := mustRun(t, shell, script); result.Output != "x\ny\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	for _, host := range []string{filepath.Join("/tmp", name), filepath.Join(hostTemp, name)} {
+		if _, err := os.Stat(host); !os.IsNotExist(err) {
+			t.Fatalf("the script wrote the host file %s (%v)", host, err)
+		}
+	}
+}

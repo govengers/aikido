@@ -73,8 +73,9 @@ type runnerStart struct {
 // newRunner returns an interpreter whose every file access and command goes
 // through the session.
 func (s *session) newRunner(start runnerStart) (*interp.Runner, error) {
+	environ := &interpreterEnviron{Environ: expand.ListEnviron(start.environment...), resetting: true}
 	runnerOptions := []interp.RunnerOption{
-		interp.Env(expand.ListEnviron(start.environment...)),
+		interp.Env(environ),
 		interp.StdIO(stdinFile(start.stdin), start.stdout, start.stderr),
 		interp.ExecHandlers(func(interp.ExecHandlerFunc) interp.ExecHandlerFunc { return s.execute }),
 		interp.CallHandler(s.rewrite),
@@ -92,9 +93,11 @@ func (s *session) newRunner(start runnerStart) (*interp.Runner, error) {
 		return nil, fmt.Errorf("aikido/tools/shell: start the interpreter: %v", err)
 	}
 	// The interpreter's directory is a virtual absolute path: "/" is the
-	// workspace root. interp.Dir would check it on the host, so it is set
-	// directly, before the first Run captures it.
+	// root of the session Storage. interp.Dir would check it on the host, so
+	// it is set directly, before the reset captures it.
 	runner.Dir = "/" + start.directory
+	runner.Reset()
+	environ.resetting = false
 	return runner, nil
 }
 

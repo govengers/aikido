@@ -128,7 +128,7 @@ stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl 
 
 ## Security
 
-- Every file access of the interpreter goes through handlers over the Storage: redirects, `source`, globs, `test -f`, `cd`. The handlers resolve paths with `shell.Resolve`; nothing above the root resolves. `pwd -P` and `source name` (which would consult the host's symlinks and `PATH`) are rewritten before they run, and `command -v`/`type` answer registered commands without a host lookup.
+- Every file access of the interpreter goes through handlers over the Storage: redirects, `source`, globs, `test -f`, `cd`. The handlers resolve paths with `shell.Resolve`; nothing above the root resolves. `pwd -P` and `source name` (which would consult the host's symlinks and `PATH`) are rewritten before they run, and `command -v`/`type` answer registered commands without a host lookup. The interpreter would open paths named `sh-interp-*` in its temporary directory (`$TMPDIR`) on the host and create process substitution FIFOs there; the shell gives it a temporary directory no host call can open, so `/tmp/sh-interp-x` is an ordinary file of the virtual `/tmp` and no FIFO is ever created.
 - The script and the built-in commands never see the host environment; `HOME` defaults to `/`.
 - Host programs run only as `External` commands, with the environment you give them.
 - Each `Run` is bounded by `Timeout` (commands honour the context; `sleep`, `External` and loops stop) and its output by `MaximumOutputBytes`. A panicking `Command` becomes `name: internal error: ...` with status 2, not a crashed process.
