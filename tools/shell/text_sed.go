@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -165,27 +166,35 @@ func (o *sedOutput) write(text string, newline bool) {
 	}
 }
 
-// sedFile is one input with its lines.
-type sedFile struct {
+// sedInput is the stream of input lines over the operands, read one line
+// ahead so that $ is known. A file opens when the stream reaches it, as in
+// GNU sed, so only one line at a time is held.
+type sedInput struct {
+	names []string
+	// lines reads the open file; nil when none is open.
+	lines *lineReader
 	name  string
-	lines []string
-	// terminated is false when the last line has no newline.
-	terminated bool
-	content    string
+	// original is the open file's content, for sed -i's backup; opened says
+	// a file could be opened at all.
+	original []byte
+	opened   bool
+	// ahead is the next line, of file aheadFile, when hasAhead.
+	ahead, aheadFile string
+	aheadTerminated  bool
+	hasAhead         bool
 }
 
 // sedEditor runs a program over inputs.
 type sedEditor struct {
-	settings   sedSettings
-	program    []sedInstruction
-	invocation *Invocation
-	output     *sedOutput
-	// files are the inputs of the current stream, fileIndex and lineIndex
-	// the next line to read.
-	files                []sedFile
-	fileIndex, lineIndex int
-	lineNumber           int
-	currentFile          string
+	settings    sedSettings
+	program     []sedInstruction
+	invocation  *Invocation
+	output      *sedOutput
+	input       sedInput
+	lineNumber  int
+	currentFile string
+	// readStatus is 2 once an input could not be read.
+	readStatus ExitError
 	// patternTerminated says the pattern space came from a line with a
 	// newline.
 	patternTerminated     bool
@@ -193,8 +202,8 @@ type sedEditor struct {
 	appendQueue           []string
 	lastRegex             *posixRegexp
 	substituted, quitting bool
-	// failure is a run-time error found while matching, which ends the
-	// cycle (errNoPreviousRegex).
+	// failure is a run-time error found while matching or reading, which
+	// ends the cycle (errNoPreviousRegex, a directory operand).
 	failure     error
 	exitCode    int
 	rangeStates []sedRangeState
@@ -206,29 +215,27 @@ type sedRangeState struct {
 	end            int
 }
 
-// stream runs the program over all inputs as one stream to stdout.
+// stream runs the program over all inputs as one stream to stdout, or each
+// input on its own with -s.
 func (e *sedEditor) stream(ctx context.Context, operands []string) error {
-	files, status, err := e.loadFiles(ctx, operandsOrStdin(operands))
-	if err != nil {
-		return err
-	}
+	names := operandsOrStdin(operands)
 	e.output = &sedOutput{writer: e.invocation.Stdout}
-	if e.settings.separate {
-		for _, file := range files {
-			e.files, e.fileIndex, e.lineIndex, e.lineNumber = []sedFile{file}, 0, 0, 0
-			if err := e.run(ctx); err != nil || e.quitting {
-				return e.finish(err, status)
-			}
-		}
-		return e.finish(nil, status)
+	if !e.settings.separate {
+		e.input = sedInput{names: names}
+		return e.finish(e.run(ctx))
 	}
-	e.files = files
-	return e.finish(e.run(ctx), status)
+	for _, name := range names {
+		e.input, e.lineNumber = sedInput{names: []string{name}}, 0
+		if err := e.run(ctx); err != nil || e.quitting {
+			return e.finish(err)
+		}
+	}
+	return e.finish(nil)
 }
 
 // finish combines a run's error, the exit code of q, and the status of
 // unreadable inputs.
-func (e *sedEditor) finish(err error, status ExitError) error {
+func (e *sedEditor) finish(err error) error {
 	if err == nil {
 		err = e.output.err
 	}
@@ -238,34 +245,79 @@ func (e *sedEditor) finish(err error, status ExitError) error {
 	if e.quitting && e.exitCode != 0 {
 		return ExitError(e.exitCode) //nolint:gosec // G115: q's exit code is masked like a process status
 	}
-	return exitStatus(status)
+	return exitStatus(e.readStatus)
 }
 
-// loadFiles reads the inputs; a missing one is reported and skipped with
-// status 2, a directory stops sed with status 4.
-func (e *sedEditor) loadFiles(ctx context.Context, names []string) ([]sedFile, ExitError, error) {
-	var files []sedFile
-	var status ExitError
-	for _, name := range names {
-		content, err := readOperand(ctx, e.invocation, name)
-		if reason, ok := operandReason(err); ok {
-			if reason == reasonIsDirectory {
-				if e.settings.inPlace {
-					return nil, 0, sedTool.fatal(e.invocation, 4, "couldn't edit %s: not a regular file", name)
-				}
-				return nil, 0, sedTool.fatal(e.invocation, 4, "read error on %s: %s", name, reason)
+// openNext opens the next operand. A missing one is reported and skipped
+// with status 2, a directory stops sed with status 4 through failure.
+func (e *sedEditor) openNext(ctx context.Context) {
+	input := &e.input
+	name := input.names[0]
+	input.names = input.names[1:]
+	var reader io.Reader
+	content, err := []byte(nil), error(nil)
+	if e.settings.inPlace {
+		content, err = readOperand(ctx, e.invocation, name)
+		reader = bytes.NewReader(content)
+	} else {
+		reader, err = openOperand(ctx, e.invocation, name)
+	}
+	reason, ok := operandReason(err)
+	switch {
+	case ok && reason == reasonIsDirectory && e.settings.inPlace:
+		e.failure = sedTool.fatal(e.invocation, 4, "couldn't edit %s: not a regular file", name)
+	case ok && reason == reasonIsDirectory:
+		e.failure = sedTool.fatal(e.invocation, 4, "read error on %s: %s", name, reason)
+	case ok:
+		sedTool.complain(e.invocation, "can't read %s: %s", name, reason)
+		e.readStatus = 2
+	case err != nil:
+		e.failure = err
+	default:
+		input.lines, input.name, input.original, input.opened = newLineReader(reader), name, content, true
+	}
+}
+
+// fill reads the next line ahead, opening the following inputs as needed;
+// false at the end of input or on a failure.
+func (e *sedEditor) fill(ctx context.Context) bool {
+	input := &e.input
+	for !input.hasAhead && e.failure == nil {
+		if input.lines == nil {
+			if len(input.names) == 0 {
+				return false
 			}
-			sedTool.complain(e.invocation, "can't read %s: %s", name, reason)
-			status = 2
+			e.openNext(ctx)
 			continue
 		}
-		if err != nil {
-			return nil, 0, err
+		line, terminated, err := input.lines.next()
+		switch {
+		case err == nil:
+			input.ahead, input.aheadFile, input.aheadTerminated, input.hasAhead = line, input.name, terminated, true
+		case errors.Is(err, io.EOF):
+			input.lines = nil
+		default:
+			e.failure = err
 		}
-		lines, terminated := splitLines(string(content))
-		files = append(files, sedFile{name: name, lines: lines, terminated: terminated, content: string(content)})
 	}
-	return files, status, nil
+	return input.hasAhead
+}
+
+// nextLine reads the next input line; ok is false at the end of input.
+func (e *sedEditor) nextLine(ctx context.Context) (string, bool) {
+	if !e.fill(ctx) {
+		return "", false
+	}
+	input := &e.input
+	input.hasAhead = false
+	e.lineNumber++
+	e.currentFile, e.patternTerminated = input.aheadFile, input.aheadTerminated
+	return input.ahead, true
+}
+
+// isLastLine reports whether no input line follows the current one.
+func (e *sedEditor) isLastLine(ctx context.Context) bool {
+	return !e.fill(ctx)
 }
 
 // editInPlace runs the program over each file separately and writes the
@@ -274,31 +326,24 @@ func (e *sedEditor) editInPlace(ctx context.Context, operands []string) error {
 	if len(operands) == 0 {
 		return sedTool.fatal(e.invocation, 1, "no input files")
 	}
-	e.output = &sedOutput{writer: io.Discard}
-	var status ExitError
 	for _, name := range operands {
-		files, fileStatus, err := e.loadFiles(ctx, []string{name})
-		if err != nil {
-			return err
-		}
-		status = max(status, fileStatus)
-		if len(files) == 0 {
-			continue
-		}
 		var result strings.Builder
 		e.output = &sedOutput{writer: &result}
-		e.files, e.fileIndex, e.lineIndex, e.lineNumber = files, 0, 0, 0
+		e.input, e.lineNumber = sedInput{names: []string{name}}, 0
 		if err := e.run(ctx); err != nil {
 			return err
 		}
-		if err := e.writeBack(ctx, name, files[0].content, result.String()); err != nil {
+		if !e.input.opened {
+			continue
+		}
+		if err := e.writeBack(ctx, name, string(e.input.original), result.String()); err != nil {
 			return err
 		}
 		if e.quitting {
 			break
 		}
 	}
-	return e.finish(nil, status)
+	return e.finish(nil)
 }
 
 // writeBack stores the edited content and the optional backup.
@@ -327,38 +372,6 @@ func (e *sedEditor) writeBack(ctx context.Context, name, original, edited string
 	return nil
 }
 
-// nextLine reads the next input line; ok is false at the end of input.
-func (e *sedEditor) nextLine() (string, bool) {
-	for e.fileIndex < len(e.files) {
-		file := e.files[e.fileIndex]
-		if e.lineIndex < len(file.lines) {
-			text := file.lines[e.lineIndex]
-			e.lineIndex++
-			e.lineNumber++
-			e.currentFile = file.name
-			e.patternTerminated = e.lineIndex < len(file.lines) || file.terminated
-			return text, true
-		}
-		e.fileIndex++
-		e.lineIndex = 0
-	}
-	return "", false
-}
-
-// isLastLine reports whether no input line follows the current one.
-func (e *sedEditor) isLastLine() bool {
-	for index := e.fileIndex; index < len(e.files); index++ {
-		remaining := len(e.files[index].lines)
-		if index == e.fileIndex {
-			remaining -= e.lineIndex
-		}
-		if remaining > 0 {
-			return false
-		}
-	}
-	return true
-}
-
 // run executes cycles until the input ends or q.
 func (e *sedEditor) run(ctx context.Context) error {
 	e.rangeStates = make([]sedRangeState, len(e.program))
@@ -367,7 +380,7 @@ func (e *sedEditor) run(ctx context.Context) error {
 			e.rangeStates[index].active = true
 		}
 	}
-	text, ok := e.nextLine()
+	text, ok := e.nextLine(ctx)
 	for ok && !e.quitting {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -385,9 +398,9 @@ func (e *sedEditor) run(ctx context.Context) error {
 			text = e.patternSpace
 			continue
 		}
-		text, ok = e.nextLine()
+		text, ok = e.nextLine(ctx)
 	}
-	return nil
+	return e.failure
 }
 
 // flushAppends writes the text queued by a.
@@ -497,7 +510,7 @@ func (e *sedEditor) execute(ctx context.Context, counter int) (int, cycleOutcome
 		e.patternSpace = e.patternSpace[index+1:]
 		return 0, cycleRestart, nil
 	case 'n', 'N':
-		return e.readInto(counter, command.name == 'N')
+		return e.readInto(ctx, counter, command.name == 'N')
 	case 'q':
 		e.quitting, e.exitCode = true, command.exitCode
 		return 0, cycleEnd, nil
@@ -563,15 +576,15 @@ func translateCharacters(text string, translation map[rune]rune) string {
 
 // readInto is n and N: without a next line the cycle ends like in GNU sed,
 // printing the pattern space unless -n.
-func (e *sedEditor) readInto(counter int, appendLine bool) (int, cycleOutcome, error) {
-	if e.isLastLine() {
+func (e *sedEditor) readInto(ctx context.Context, counter int, appendLine bool) (int, cycleOutcome, error) {
+	if e.isLastLine(ctx) {
 		return 0, cycleEnd, nil
 	}
 	if !appendLine && !e.settings.quiet {
 		e.output.write(e.patternSpace, e.patternTerminated)
 	}
 	e.flushAppends()
-	text, _ := e.nextLine()
+	text, _ := e.nextLine(ctx)
 	if appendLine {
 		e.patternSpace += "\n" + text
 	} else {
@@ -665,7 +678,7 @@ func (e *sedEditor) matchesAddress(ctx context.Context, address *sedAddress) boo
 	case addressLine:
 		return e.lineNumber == address.number
 	case addressLast:
-		return e.isLastLine()
+		return e.isLastLine(ctx)
 	case addressStep:
 		if address.step <= 0 {
 			return e.lineNumber == address.number
