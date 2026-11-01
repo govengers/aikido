@@ -78,11 +78,12 @@ func hostCommands(options agentOptions) ([]shell.Command, error) {
 			return nil, err
 		}
 		command, err := shell.External(&shell.ExternalOptions{
-			Name:        name,
-			Path:        path,
-			Directory:   directory,
-			Environment: environment,
-			Summary:     "host program " + name,
+			Name:                   name,
+			Path:                   path,
+			Directory:              directory,
+			FollowWorkingDirectory: true,
+			Environment:            environment,
+			Summary:                "host program " + name,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("--allow %s: %w", allowed, err)

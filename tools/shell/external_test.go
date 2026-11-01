@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/govengers/aikido/vfs/osfs"
 )
 
 // hostProgram returns the path of a host binary or skips the test.
@@ -81,6 +83,53 @@ func TestExternalDirectory(t *testing.T) {
 	shell := externalShell(t, &ExternalOptions{Name: "hostpwd", Path: pwd, Directory: directory})
 	if result := mustRun(t, shell, "cd /tmp && hostpwd -P"); result.Output != directory+"\n" {
 		t.Fatalf("host pwd = %q; want %q", result.Output, directory)
+	}
+}
+
+func TestExternalFollowsTheWorkingDirectory(t *testing.T) {
+	pwd := hostProgram(t, "/bin/pwd", "/usr/bin/pwd")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "repos", "app"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "repos", "app", "README.md"), []byte("app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := osfs.New(&osfs.Options{Directory: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() }) // read-only use, nothing to flush
+	command, err := External(&ExternalOptions{Name: "hostpwd", Path: pwd, Directory: root, FollowWorkingDirectory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := New(&Options{Storage: storage, Commands: []Command{command}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testCases := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{"root", "cd / && hostpwd -P", root + "\n"},
+		{"subdirectory", "cd /repos/app && hostpwd -P", filepath.Join(root, "repos", "app") + "\n"},
+		{"back up", "cd /repos/app && cd ../.. && hostpwd -P", root + "\n"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if result := mustRun(t, shell, testCase.script); result.Output != testCase.want {
+				t.Fatalf("host pwd = %q; want %q", result.Output, testCase.want)
+			}
+		})
+	}
+	result := mustRun(t, shell, "mkdir -p only/in/memory && cd only/in/memory && hostpwd")
+	if result.ExitCode != 1 || !strings.Contains(result.Output, "does not exist on disk") {
+		t.Fatalf("a shell-only directory: exit %d, output %q; want exit 1 and the reason", result.ExitCode, result.Output)
 	}
 }
 
