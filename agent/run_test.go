@@ -856,6 +856,25 @@ func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
 	}
 }
 
+// panickingUnlockLocker hands out an unlock function that panics.
+type panickingUnlockLocker struct{}
+
+func (panickingUnlockLocker) Lock(context.Context, string) (func(), error) {
+	return func() { panic("unlock failed") }, nil
+}
+
+// Regression: the lock release ran outside recoverRun, so a panicking unlock
+// crashed the process.
+func TestRun_PanickingUnlockDoesNotCrash(t *testing.T) {
+	session := newTestSession(t, llmtest.NewStubClient(textTurn("hi")), nil, nil, func(options *SessionOptions) {
+		options.Locker = panickingUnlockLocker{}
+	})
+	events := runToEnd(t, session, "go")
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop, the unlock runs after EventEnd", reason)
+	}
+}
+
 // Regression: the run read the published ToolCall and ToolResult again for
 // the history, so a caller changing them raced with the run (go test -race).
 func TestRun_CallerMayChangePublishedToolEvents(t *testing.T) {

@@ -133,10 +133,15 @@ type sessionLock struct {
 	unlock func()
 }
 
+// release calls the Locker's unlock function. A panic in it is recovered and
+// dropped: release runs after EventEnd, so the run can no longer report it,
+// and it must not crash the caller's process (CON-001).
 func (l *sessionLock) release() {
-	if l.unlock != nil {
-		l.unlock()
+	if l.unlock == nil {
+		return
 	}
+	defer func() { _ = recover() }()
+	l.unlock()
 }
 
 // execute takes the session lock into lock and alternates model calls and

@@ -11,6 +11,8 @@ import (
 // History.Read at turn start) and releases it after EventEnd. Lock returns an
 // error if ctx ends before the lock is acquired. The unlock function returned
 // by Lock must be called exactly once; the agent always calls it via defer.
+// A panic in unlock is recovered and dropped, since it happens after EventEnd;
+// an implementation that needs to report unlock failures logs them itself.
 // Implementations must be safe for concurrent use.
 type Locker interface {
 	Lock(ctx context.Context, sessionID string) (unlock func(), err error)
