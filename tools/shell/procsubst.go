@@ -78,6 +78,33 @@ func (p processFileStorage) consume(ctx context.Context, resolved string) (relea
 	return func() { p.files.budget.release(size) }
 }
 
+// releaseNamed drops the process files arguments name (/dev/fd/63, also
+// inside a word like --file=/dev/fd/63) once the command that got them has
+// ended: bash closes the pipe of a <(list) after that command, so a loop
+// that hands a substitution to a command operand (diff <(sort f) want)
+// does not hold them all.
+func (p processFileStorage) releaseNamed(ctx context.Context, arguments []string) {
+	directory := "/" + processFileDirectory + "/"
+	for _, argument := range arguments {
+		rest := argument
+		for {
+			_, after, found := strings.Cut(rest, directory)
+			if !found {
+				break
+			}
+			end := strings.IndexFunc(after, func(character rune) bool { return character < '0' || character > '9' })
+			if end < 0 {
+				end = len(after)
+			}
+			if end > 0 {
+				// A name that is no process file (any more) leaves nothing to drop.
+				_ = p.files.DeleteFile(ctx, after[:end])
+			}
+			rest = after[end:]
+		}
+	}
+}
+
 // openProcessFile opens a fresh /dev/fd/N for the output of a <(list): it
 // writes the path to the substitution's output, which becomes the word, and
 // returns the file list writes to. Allocating at run time, not at parse

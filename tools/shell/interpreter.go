@@ -233,6 +233,7 @@ func workspaceDirectory(directory string) string {
 // not a function or a shell builtin.
 func (s *session) execute(ctx context.Context, arguments []string) (err error) {
 	defer recoverHandler(&err)
+	defer s.processFiles.releaseNamed(context.WithoutCancel(ctx), arguments)
 	handler := interp.HandlerCtx(ctx)
 	invocation := &Invocation{
 		Arguments:   arguments[1:],
