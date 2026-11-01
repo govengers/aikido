@@ -249,7 +249,7 @@ file tools `read_file` (numbered lines), `list_files`, `write_file`,
   to the user; only rerun with `--apply` (which writes the changes) when they
   want them.
 - `--mount NAME=PATH` adds a directory under `NAME/`, `NAME=PATH:ro` read-only;
-  writable mounts are written with `--apply` too.
+  writable mounts are written with `--apply` too. `--apply` writes nothing when the run ended with anything but `stop`.
 
 ### Video and decisions
 

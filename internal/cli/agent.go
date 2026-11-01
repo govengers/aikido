@@ -104,10 +104,35 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 	if err != nil {
 		return err
 	}
+	endReason := agent.EndReasonError
 	for event := range events {
 		printAgentEvent(out, event)
+		if event.Kind == agent.EventEnd {
+			endReason = event.EndReason
+		}
 	}
-	return workspace.report(ctx, out, options.apply)
+	return workspace.report(ctx, out, applyDecision(options.apply, endReason))
+}
+
+// applyDecision allows --apply only for a run the model finished itself: a run
+// cut off by an error, a timeout, a cancel or the turn cap may have left a
+// half-done edit, which stays a dry run.
+func applyDecision(applyRequested bool, endReason agent.EndReason) commitDecision {
+	switch {
+	case !applyRequested:
+		return commitDecision{}
+	case endReason != agent.EndReasonStop:
+		return commitDecision{refusedReason: string(endReason)}
+	default:
+		return commitDecision{apply: true}
+	}
+}
+
+// commitDecision says whether the workspace writes its changes; refusedReason
+// is set when --apply was requested but the run did not end normally.
+type commitDecision struct {
+	apply         bool
+	refusedReason string
 }
 
 func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Client) (*agent.Session, error) {

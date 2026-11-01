@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/govengers/aikido/agent"
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/llm/llmtest"
 )
@@ -94,6 +95,50 @@ func TestRunAgent_DirectoryApplyWrites(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(directory, "obsolete.md")); !os.IsNotExist(err) {
 		t.Errorf("obsolete.md still exists: %v", err)
+	}
+}
+
+func TestRunAgent_ApplyIsRefusedWhenTheRunDidNotFinish(t *testing.T) {
+	directory := newProjectDirectory(t)
+	var out bytes.Buffer
+	options := agentTestOptions()
+	options.directory, options.apply = directory, true
+	write := llm.ToolCall{ID: "c1", Name: "write_file", Arguments: `{"path":"notes.md","content":"half done\n"}`}
+	stub := llmtest.NewStubClient(
+		llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventToolCall, Tool: &write}, {Kind: llm.EventEnd}}},
+		llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventError, Err: llm.ErrServerError}, {Kind: llm.EventEnd}}},
+	)
+	err := runAgent(context.Background(), options, &out, stub)
+	if err == nil || !strings.Contains(err.Error(), "--apply refused") {
+		t.Fatalf("runAgent error = %v; want the apply refusal", err)
+	}
+	if !strings.Contains(out.String(), "not applied: the run ended with error") {
+		t.Errorf("output lacks the refusal line:\n%s", out.String())
+	}
+	if _, statError := os.Stat(filepath.Join(directory, "notes.md")); !os.IsNotExist(statError) {
+		t.Errorf("a failed run wrote notes.md: %v", statError)
+	}
+}
+
+func TestApplyDecision(t *testing.T) {
+	testCases := []struct {
+		name           string
+		applyRequested bool
+		endReason      agent.EndReason
+		want           commitDecision
+	}{
+		{"dry run", false, agent.EndReasonError, commitDecision{}},
+		{"finished run applies", true, agent.EndReasonStop, commitDecision{apply: true}},
+		{"turn cap refuses", true, agent.EndReasonMaximumTurns, commitDecision{refusedReason: "max_turns"}},
+		{"timeout refuses", true, agent.EndReasonTimeout, commitDecision{refusedReason: "timeout"}},
+		{"cancel refuses", true, agent.EndReasonCancelled, commitDecision{refusedReason: "cancelled"}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := applyDecision(testCase.applyRequested, testCase.endReason); got != testCase.want {
+				t.Errorf("applyDecision = %+v; want %+v", got, testCase.want)
+			}
+		})
 	}
 }
 

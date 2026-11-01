@@ -51,5 +51,5 @@ The rules agents and humans get wrong most often, one line each with the page th
 
 ## CLI
 
-- `aikido agent --dir` is a dry run; only `--apply` writes, and it writes what the run changed even when the run ended with an error. [CLI](CLI.md#agent)
+- `aikido agent --dir` is a dry run; only `--apply` writes, and only when the run ended with `stop`: after an error, timeout, cancel or the turn cap it prints the changes, writes nothing and exits non-zero. [CLI](CLI.md#agent)
 - An explicit `-m` image model is never switched for a frame it cannot render; the CLI errors instead. [CLI](CLI.md#image)

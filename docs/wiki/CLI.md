@@ -39,6 +39,7 @@ A `.env` in the working directory is loaded first; variables already set in the 
 - `--dir path` works on a copy-on-write overlay of the directory ([Files](Files.md#overlay)). At the end the CLI prints the changes and a unified diff; nothing is written unless `--apply` is set.
 - `--mount name=path` adds a directory under `name/`, `name=path:ro` read-only; writable mounts are written with `--apply` like `--dir`.
 - `--apply` without `--dir` or `--mount` is an error.
+- `--apply` writes only when the run ended with `stop`. After an error, a timeout, a cancel or `--max-turns` the changes are printed, nothing is written, and the command fails with `--apply refused: the run ended with <reason>`.
 
 | Flag | Default |
 |---|---|

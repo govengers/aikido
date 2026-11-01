@@ -133,7 +133,7 @@ func (w *workspace) close() {
 
 // report prints what the run left behind: the in-memory files, or the
 // directories' changes as a list and a unified diff, which apply then writes.
-func (w *workspace) report(ctx context.Context, out io.Writer, apply bool) error {
+func (w *workspace) report(ctx context.Context, out io.Writer, decision commitDecision) error {
 	if w.memory != nil {
 		// memory.Storage fails only on a done ctx, and then the run was
 		// interrupted and there is no final state worth printing.
@@ -152,7 +152,11 @@ func (w *workspace) report(ctx context.Context, out io.Writer, apply bool) error
 	if len(changes) == 0 {
 		return nil
 	}
-	if !apply {
+	if decision.refusedReason != "" {
+		fmt.Fprintf(out, "\nnot applied: the run ended with %s, nothing written\n", decision.refusedReason)
+		return fmt.Errorf("--apply refused: the run ended with %s", decision.refusedReason)
+	}
+	if !decision.apply {
 		fmt.Fprintln(out, "\ndry run: nothing written; run again with --apply to write the changes")
 		return nil
 	}
