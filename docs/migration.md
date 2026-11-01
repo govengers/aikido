@@ -114,6 +114,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | `vfs/embedfs` content type | unknown extensions were `text/plain` | `application/octet-stream`, like `osfs` |
 | `voice.Handler` | a broken multipart upload was taken as a text turn | 400 |
 | Codex token refresh | a failed refresh inside `Stream` was retried like a 429/5xx of the backend, replaying a refresh token the issuer may already have rotated (which revokes the login) | `Stream` never retries a failed refresh; a refresh without a complete answer fails with `codex.ErrRefreshInterrupted` (wrapping its cause, usually `llm.ErrServerError`), and a reuse failure right after it says so |
+| Codex response sizes | a login answer over 1 MiB was cut and failed as a decode error; the models catalog was read without a limit | both fail with an error naming the cap (1 MiB, 8 MiB) |
 | `voice.Handler` stream | a client that stopped reading blocked the handler (and its connection) until the client went away | each NDJSON line has a write deadline, `HandlerOptions.WriteTimeout` (default 30 s); after a failed or timed-out write the handler stops writing and drains the turn, so it still lands in History |
 
 ## Coming from v0.3.x (ASO Nexus Hub)

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -72,7 +71,8 @@ type Tokens struct {
 }
 
 // LoginOptions configure the login endpoints. A nil *LoginOptions and zero
-// fields use the defaults.
+// fields use the defaults. A login endpoint answer over 1 MiB is an error
+// wrapping llm.ErrServerError.
 type LoginOptions struct {
 	// Issuer overrides DefaultIssuer (tests).
 	Issuer string
@@ -454,7 +454,7 @@ func post(ctx context.Context, options *LoginOptions, path, contentType string, 
 		return 0, nil, transportError(ctx, "aikido/codex: "+path, err)
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maximumLoginResponseBytes))
+	raw, err := readAtMost(response.Body, maximumLoginResponseBytes)
 	if err != nil {
 		return 0, nil, fmt.Errorf("aikido/codex: %s: read response: %s: %w", path, err.Error(), llm.ErrServerError)
 	}

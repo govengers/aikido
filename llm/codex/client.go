@@ -42,6 +42,8 @@ const (
 	// maximumStreamLineBytes fits a large structured-output delta in one SSE line.
 	maximumStreamLineBytes = 4 << 20
 	initialLineBufferBytes = 64 << 10
+	// maximumModelsResponseBytes caps the models catalog.
+	maximumModelsResponseBytes = 8 << 20
 )
 
 // Options configure the Client.
@@ -153,7 +155,8 @@ func (c *Client) Complete(ctx context.Context, request llm.Request) (llm.Respons
 }
 
 // Models lists the model ids the subscription offers, in the backend's order,
-// hidden ones left out. Errors wrap the llm sentinels.
+// hidden ones left out. Errors wrap the llm sentinels; a catalog over 8 MiB
+// is an error.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
 	response, err := c.do(ctx, http.MethodGet, "/models?client_version="+clientVersion, nil, "application/json")
 	if err != nil {
@@ -166,7 +169,11 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 			Visibility string `json:"visibility"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
+	raw, err := readAtMost(response.Body, maximumModelsResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("codex: models: %w", err)
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
 		return nil, fmt.Errorf("codex: models: %w", err)
 	}
 	var ids []string
@@ -209,6 +216,20 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, accep
 		return nil, statusError(response)
 	}
 	return response, nil
+}
+
+// readAtMost reads reader to its end. It fails instead of truncating when
+// reader holds more than limit bytes, so an over-long answer is a clear error
+// rather than a confusing decode failure.
+func readAtMost(reader io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return raw, nil
 }
 
 // transportError wraps ctx.Err() when the request failed because ctx ended,
@@ -416,10 +437,15 @@ type streamReader struct {
 func processStream(ctx context.Context, body io.Reader, events chan<- llm.Event, start time.Time) {
 	reader := &streamReader{events: events, start: start}
 	defer reader.end(ctx)
-	reader.read(ctx, body)
-	if !reader.finished && ctx.Err() == nil {
-		reader.fail(ctx, "error", fmt.Errorf("codex: stream ended before completion: %w", llm.ErrServerError))
+	readError := reader.read(ctx, body)
+	if reader.finished || ctx.Err() != nil {
+		return
 	}
+	cause := "body ended"
+	if readError != nil {
+		cause = readError.Error() // LIB-010: the scanner and transport errors are not part of the API
+	}
+	reader.fail(ctx, "error", fmt.Errorf("codex: stream ended before completion: %s: %w", cause, llm.ErrServerError))
 }
 
 // end emits EventEnd. It recovers a panic of the stream goroutine, which would
@@ -432,8 +458,9 @@ func (r *streamReader) end(ctx context.Context) {
 }
 
 // read handles data lines until the response finished, the body ended or ctx
-// ended.
-func (r *streamReader) read(ctx context.Context, body io.Reader) {
+// ended. It returns why reading the body failed: a transport error, or
+// bufio.ErrTooLong for a line over maximumStreamLineBytes.
+func (r *streamReader) read(ctx context.Context, body io.Reader) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, initialLineBufferBytes), maximumStreamLineBytes)
 	for scanner.Scan() {
@@ -442,9 +469,10 @@ func (r *streamReader) read(ctx context.Context, body io.Reader) {
 			continue
 		}
 		if !r.handle(ctx, event) {
-			return
+			return nil
 		}
 	}
+	return scanner.Err()
 }
 
 // parseStreamLine decodes an SSE data line. "event:" lines repeat the type

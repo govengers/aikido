@@ -264,6 +264,20 @@ func TestPost_TransportFailureIsServerError(t *testing.T) {
 	}
 }
 
+// Regression: an over-long login answer was cut at the cap and then failed
+// as an unrelated decode error.
+func TestPost_OversizedAnswerIsAClearError(t *testing.T) {
+	t.Parallel()
+	testServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"user_code":"ABCD","padding":"`+strings.Repeat("x", maximumLoginResponseBytes)+`"}`)
+	}))
+	defer testServer.Close()
+	_, err := StartDeviceLogin(context.Background(), &LoginOptions{Issuer: testServer.URL})
+	if !errors.Is(err, llm.ErrServerError) || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want an over-cap llm.ErrServerError", err)
+	}
+}
+
 func TestParseLogin(t *testing.T) {
 	t.Parallel()
 	valid, expired := fakeJWT(t, time.Now().Add(time.Hour), ""), fakeJWT(t, time.Now().Add(-time.Hour), "")

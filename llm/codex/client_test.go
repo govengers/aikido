@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,47 @@ func TestModels_Failures(t *testing.T) {
 	garbage := newClient(t, func(writer http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(writer, "nope") })
 	if _, err := garbage.Models(context.Background()); err == nil {
 		t.Error("undecodable models list: no error")
+	}
+}
+
+// Regression: a stream line over the cap ended the stream as if the body had
+// just stopped, hiding the cause.
+func TestStream_OversizedLineNamesTheCap(t *testing.T) {
+	t.Parallel()
+	client := newClient(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "data: "+strings.Repeat("x", maximumStreamLineBytes)+"\n\n")
+	})
+	_, err := client.Complete(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{{Role: llm.RoleUser, Content: "x"}}})
+	if !errors.Is(err, llm.ErrServerError) || !strings.Contains(err.Error(), bufio.ErrTooLong.Error()) {
+		t.Fatalf("err = %v, want a server error naming the line cap", err)
+	}
+}
+
+// Regression: the models catalog was read without a limit.
+func TestModels_RejectsAnOversizedCatalog(t *testing.T) {
+	t.Parallel()
+	client := newClient(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"models":[{"slug":"gpt-5.5"}],"padding":"`+strings.Repeat("x", maximumModelsResponseBytes)+`"}`)
+	})
+	if _, err := client.Models(context.Background()); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want an over-cap error", err)
+	}
+}
+
+func TestReadAtMost(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		body    string
+		wantErr bool
+	}{
+		{"", false},
+		{"1234", false},
+		{"12345", true},
+	} {
+		raw, err := readAtMost(strings.NewReader(testCase.body), 4)
+		if (err != nil) != testCase.wantErr || (err == nil && string(raw) != testCase.body) {
+			t.Errorf("readAtMost(%q, 4) = %q, %v", testCase.body, raw, err)
+		}
 	}
 }
 
