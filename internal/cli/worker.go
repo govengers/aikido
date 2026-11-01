@@ -53,7 +53,7 @@ func registerShell(registry *tools.Registry, options agentOptions, storage vfs.S
 	if err != nil {
 		return err
 	}
-	shellOptions := &shell.Options{Storage: storage, Commands: commands}
+	shellOptions := &shell.Options{Storage: storage, Commands: commands, HideHiddenPaths: options.hideHidden}
 	if options.worker.direct {
 		// The workspace is the directory on disk: the shell shows it at its
 		// host path, so pwd and the paths a host program gets agree.

@@ -37,6 +37,12 @@ type Options struct {
 	// absolute path. It must not be /tmp or lie in /dev; below /tmp it is
 	// fine (the workspace then shows up in /tmp next to the scratch files).
 	MountPoint string
+	// HideHiddenPaths hides workspace files with a path segment that starts
+	// with "." or "_" (.env, .git/hooks, _private), the rule of
+	// agent.VFSToolOptions.HideHiddenPaths: listings, globs, ls, find and
+	// grep -r leave them out, and reading, writing or deleting one fails
+	// with "No such file or directory". /tmp is not affected.
+	HideHiddenPaths bool
 	// Commands are added to the built-in commands (Builtins); a Command with
 	// the name of a built-in replaces it. Names must be unique, and must not
 	// be shell builtins (cd, echo, test, ...), which the interpreter runs
@@ -245,8 +251,12 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 // newSession mounts the Shell's /tmp and a fresh /dev/fd for the files of
 // <(list) over the workspace for one Run.
 func (s *Shell) newSession() (*session, error) {
+	workspace := s.options.Storage
+	if s.options.HideHiddenPaths {
+		workspace = hiddenFilter{workspace}
+	}
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
-		{Prefix: s.root, Storage: s.options.Storage},
+		{Prefix: s.root, Storage: workspace},
 		{Prefix: scratchDirectory, Storage: s.scratch},
 		{Prefix: processFileDirectory, Storage: processFileStorage{memory.New()}},
 	}})
