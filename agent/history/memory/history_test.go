@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/govengers/aikido/agent"
@@ -37,6 +38,45 @@ func TestHistory_HonoursCancelledContext(t *testing.T) {
 	}
 	if _, err := history.Read(ctx, "s"); !errors.Is(err, context.Canceled) {
 		t.Errorf("Read = %v; want context.Canceled", err)
+	}
+}
+
+func TestHistory_SharesNoMemoryWithCallers(t *testing.T) {
+	ctx := context.Background()
+	original := func() llm.Message {
+		return llm.Message{
+			Role:      llm.RoleUser,
+			Images:    []llm.ImagePart{{URL: "u", Data: []byte("image")}},
+			Audio:     []llm.AudioPart{{Data: []byte("audio"), Format: "wav"}},
+			ToolCalls: []llm.ToolCall{{ID: "c1", Name: "tool"}},
+			Cache:     &llm.CacheBreakpoint{TTL: llm.CacheTTLFiveMinutes},
+		}
+	}
+	mutate := func(message *llm.Message) {
+		message.Images[0].Data[0] = 'X'
+		message.Images[0].URL = "changed"
+		message.Audio[0].Data[0] = 'X'
+		message.ToolCalls[0].ID = "changed"
+		message.Cache.TTL = "changed"
+	}
+	history := memory.New()
+	appended := original()
+	if err := history.Append(ctx, "s", appended); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&appended)
+	read, err := history.Read(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(&read[0])
+
+	again, err := history.Read(ctx, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again[0], original()) {
+		t.Errorf("stored message = %+v; want it untouched by the callers' changes", again[0])
 	}
 }
 

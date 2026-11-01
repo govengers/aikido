@@ -80,8 +80,8 @@ func (r *Registry) Has(name string) bool {
 // and error unchanged.
 //
 // Before the handler runs, Dispatch checks the arguments: empty arguments
-// count as {}, anything else must be a JSON object holding every required
-// field of the tool's schema (a JSON null counts as missing). The handler
+// count as {}, anything else must be a JSON object (not null) holding every
+// required field of the tool's schema (a JSON null field counts as missing). The handler
 // receives the arguments verbatim ({} for empty ones) and still parses them.
 //
 // It returns an error matching ErrUnknownTool if the name is not registered,
@@ -122,6 +122,9 @@ func checkArguments(raw string, required []string) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 		return nil, fmt.Errorf("arguments must be one JSON object (%w)", err)
+	}
+	if fields == nil {
+		return nil, errors.New("arguments must be one JSON object, got null")
 	}
 	for _, field := range required {
 		if value, present := fields[field]; !present || string(value) == "null" {

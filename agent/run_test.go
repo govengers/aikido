@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -771,5 +772,95 @@ func TestEventSink_DropsOnlyWhenAbandonedAndFull(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Error("the second event should have been dropped")
+	}
+}
+
+// Regression: with ctx done and the provider's channel closed at once, the
+// select could take the close and accept a cut reply after LLMCallTimeout.
+func TestReceiveReply_StreamClosedAfterContextEndIsAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink := eventSink{events: make(chan Event, 2*eventBufferSize), abandoned: ctx.Done()}
+	for range 100 {
+		providerEvents := make(chan llm.Event, 1)
+		providerEvents <- llm.Event{Kind: llm.EventTextDelta, Text: "cut"}
+		close(providerEvents)
+		if _, err := receiveReply(ctx, providerEvents, sink); !errors.Is(err, context.Canceled) {
+			t.Fatalf("receiveReply = %v; want context.Canceled", err)
+		}
+	}
+}
+
+// observingLocker grants the lock once the test passed it the run's event
+// channel; unlock reports how many events the run had queued by then.
+type observingLocker struct {
+	runEvents      chan (<-chan Event)
+	queuedAtUnlock chan int
+}
+
+func (l observingLocker) Lock(context.Context, string) (func(), error) {
+	events := <-l.runEvents
+	return func() { l.queuedAtUnlock <- len(events) }, nil
+}
+
+func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
+	locker := observingLocker{runEvents: make(chan (<-chan Event), 1), queuedAtUnlock: make(chan int, 1)}
+	session := newTestSession(t, llmtest.NewStubClient(textTurn("hi")), nil, nil, func(options *SessionOptions) {
+		options.Locker = locker
+	})
+	events, _ := session.Run(context.Background(), "go")
+	locker.runEvents <- events
+
+	queued := <-locker.queuedAtUnlock // nothing is read before the unlock
+	if all := collectEvents(t, events); queued != len(all) {
+		t.Errorf("unlock saw %d of the run's %d events queued; want EventEnd sent before the unlock", queued, len(all))
+	}
+}
+
+// Regression: the run read the published ToolCall and ToolResult again for
+// the history, so a caller changing them raced with the run (go test -race).
+func TestRun_CallerMayChangePublishedToolEvents(t *testing.T) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "ping", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		return tools.Result{Content: "pong"}, nil
+	})
+	history := memory.New()
+	session := newTestSession(t, llmtest.NewStubClient(toolCallTurn("c1", "ping", "{}"), textTurn("done")), registry, history)
+	events, _ := session.Run(context.Background(), "go")
+	for event := range events {
+		switch event.Kind {
+		case EventToolCall:
+			event.ToolCall.ID = "changed"
+		case EventToolResult:
+			event.ToolResult.ModelContent = "changed"
+		default:
+		}
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 4 || stored[2].ToolCallID != "c1" || stored[2].Content != `"pong"` {
+		t.Errorf("stored = %+v; want the tool message as the model saw it", stored)
+	}
+}
+
+func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventTextDelta, Text: "partial"},
+		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 7}},
+		{Kind: llm.EventError, Err: errors.New("content filter")},
+		{Kind: llm.EventEnd},
+	}})
+	events := runToEnd(t, newTestSession(t, stub, nil, nil), "go")
+
+	var kinds []EventKind
+	for _, event := range events {
+		if event.Kind == EventUsage && event.Usage.PromptTokens != 7 {
+			t.Errorf("usage = %+v; want the provider's", event.Usage)
+		}
+		if event.Kind != EventText {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	if want := []EventKind{EventUsage, EventError, EventEnd}; !slices.Equal(kinds, want) {
+		t.Errorf("events = %v; want %v", kinds, want)
 	}
 }

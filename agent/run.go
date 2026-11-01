@@ -95,17 +95,20 @@ func (state *runState) record(message llm.Message) {
 	state.produced = append(state.produced, message)
 }
 
-// runLoop owns the run goroutine: it closes events when the run is over and
-// turns a panic into EventError plus EventEnd (CON-001).
+// runLoop owns the run goroutine: it turns a panic into EventError plus
+// EventEnd (CON-001), then releases the session lock and closes events, so
+// the lock is held until the run's last event is sent (ADR-024).
 func (s *Session) runLoop(userContext context.Context, events chan<- Event, plan runPlan) {
 	defer close(events)
 	sink := eventSink{events: events, abandoned: userContext.Done()}
+	lock := &sessionLock{}
+	defer lock.release()
 	defer recoverRun(sink)
 
 	runContext, cancelRun := context.WithTimeout(userContext, s.options.RunTimeout)
 	defer cancelRun()
 
-	endReason, err := s.execute(userContext, runContext, sink, plan)
+	endReason, err := s.execute(userContext, runContext, sink, plan, lock)
 	if err != nil {
 		sink.send(Event{Kind: EventError, Err: err})
 	}
@@ -121,15 +124,27 @@ func recoverRun(sink eventSink) {
 	sink.send(Event{Kind: EventEnd, EndReason: EndReasonError})
 }
 
-// execute holds the session lock for the whole run and alternates model
-// calls and tool calls until the model stops asking for tools or the turn
-// limit is reached.
-func (s *Session) execute(userContext, runContext context.Context, sink eventSink, plan runPlan) (EndReason, error) {
+// sessionLock is a run's hold on the session lock; runLoop releases it after
+// the run's last event.
+type sessionLock struct {
+	unlock func()
+}
+
+func (l *sessionLock) release() {
+	if l.unlock != nil {
+		l.unlock()
+	}
+}
+
+// execute takes the session lock into lock and alternates model calls and
+// tool calls until the model stops asking for tools or the turn limit is
+// reached.
+func (s *Session) execute(userContext, runContext context.Context, sink eventSink, plan runPlan, lock *sessionLock) (EndReason, error) {
 	unlock, err := s.options.Locker.Lock(runContext, s.options.ID)
 	if err != nil {
 		return failedRun(userContext, runContext, nil, fmt.Errorf("aikido/agent: locker.Lock: %w", err))
 	}
-	defer unlock()
+	lock.unlock = unlock
 
 	state, err := s.startRun(runContext, plan)
 	if err != nil {
@@ -215,17 +230,20 @@ func (s *Session) callModel(runContext context.Context, sink eventSink, state *r
 		return llm.Message{}, callContext.Err(), fmt.Errorf("aikido/agent: client.Stream: %w", err)
 	}
 	builder, err := receiveReply(callContext, providerEvents, sink)
-	if err != nil {
-		return llm.Message{}, callContext.Err(), err
-	}
+	// A failed call can still be billed, so its usage is reported before the error.
 	if builder.usage != nil {
 		sink.send(Event{Kind: EventUsage, Usage: builder.usage})
+	}
+	if err != nil {
+		return llm.Message{}, callContext.Err(), err
 	}
 	return builder.message(), nil, nil
 }
 
 // receiveReply consumes the provider's stream until it closes or ctx ends.
-// The first EventError of the stream becomes the returned error.
+// The first EventError of the stream becomes the returned error. A stream
+// that closes once ctx is done is a failure too: a provider that ends its
+// stream on cancellation must not turn a cut reply into a complete one.
 func receiveReply(ctx context.Context, providerEvents <-chan llm.Event, sink eventSink) (*replyBuilder, error) {
 	builder := &replyBuilder{}
 	for {
@@ -234,6 +252,9 @@ func receiveReply(ctx context.Context, providerEvents <-chan llm.Event, sink eve
 			return builder, ctx.Err()
 		case event, open := <-providerEvents:
 			if !open {
+				if err := ctx.Err(); err != nil {
+					return builder, err
+				}
 				return builder, builder.streamError
 			}
 			builder.add(event, sink)
@@ -287,24 +308,26 @@ func (b *replyBuilder) message() llm.Message {
 	}
 }
 
-// runToolCalls dispatches the calls of one model reply in order, reports each
-// call and result to the caller and adds the results to the conversation.
-// A failing tool does not end the run: the model sees the error and can
-// self-correct on the next turn. The model's copy of a result is bounded by
-// MaximumToolResultBytes; the caller's EventToolResult is not.
+// runToolCalls reports every call of one model reply to the caller, then
+// dispatches them in order, reporting each result and adding it to the
+// conversation. Sending all calls before the first result marks the reply
+// boundary for Drain. A failing tool does not end the run: the model sees the
+// error and can self-correct on the next turn. The model's copy of a result
+// is bounded by MaximumToolResultBytes; the caller's EventToolResult is not.
 func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall) {
+	for _, call := range calls {
+		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
+	}
 	environment := tools.Environment{SessionID: s.options.ID, TurnID: uuid.New()}
 	for _, call := range calls {
 		result, err := s.dispatch(ctx, call, environment)
 		toolResult := buildToolResult(call, result, err)
 		toolResult.ModelContent = boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes)
-		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
+		// The caller owns what the event points to, so the conversation keeps
+		// its own copy, taken before it is sent.
+		message := llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: toolResult.ModelContent}
 		sink.send(Event{Kind: EventToolResult, ToolResult: &toolResult})
-		state.record(llm.Message{
-			Role:       llm.RoleTool,
-			ToolCallID: call.ID,
-			Content:    toolResult.ModelContent,
-		})
+		state.record(message)
 	}
 }
 

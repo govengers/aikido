@@ -59,6 +59,7 @@ func TestRegistry_DispatchChecksArguments(t *testing.T) {
 		{"empty counts as object", "read", ``, `missing required argument "path"`, ""},
 		{"malformed", "read", `{"path":`, "arguments must be one JSON object (unexpected end of JSON input)", ""},
 		{"not an object", "read", `["a.md"]`, "arguments must be one JSON object", ""},
+		{"null without schema", "free", `null`, "arguments must be one JSON object, got null", ""},
 		{"empty without schema", "free", "  ", "", "{}"},
 	}
 	for _, testCase := range testCases {

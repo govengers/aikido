@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -61,6 +62,51 @@ func TestDrain_WithToolCallsAndResults(t *testing.T) {
 	}
 	if messages[3].Role != llm.RoleAssistant || messages[3].Content != "done" {
 		t.Errorf("messages[3] = %+v", messages[3])
+	}
+}
+
+// Regression: consecutive tool-only replies used to merge into one assistant
+// message, so a log rebuilt with Drain differed from what the model saw.
+func TestRunWithMessages_DrainKeepsConsecutiveToolRepliesApart(t *testing.T) {
+	script := func() *llmtest.StubClient {
+		return llmtest.NewStubClient(
+			llmtest.TurnScript{Events: []llm.Event{
+				{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "ping", Arguments: "{}"}},
+				{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c2", Name: "ping", Arguments: "{}"}},
+				{Kind: llm.EventEnd},
+			}},
+			toolCallTurn("c3", "ping", "{}"),
+			textTurn("done"),
+		)
+	}
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "ping", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		return tools.Result{Content: "pong"}, nil
+	})
+
+	stored := newTestSession(t, script(), registry, nil)
+	runEvents := runToEnd(t, stored, "go")
+	events, _ := newTestSession(t, script(), registry, nil).RunWithMessages(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "go"}})
+	drained, err := Drain(events)
+	if err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	if want := storedMessages(t, stored.options.History, "s-test")[1:]; !reflect.DeepEqual(drained, want) {
+		t.Errorf("Drain = %+v\nwant the messages Run stored: %+v", drained, want)
+	}
+	var toolEvents []string
+	for _, event := range runEvents {
+		switch event.Kind {
+		case EventToolCall:
+			toolEvents = append(toolEvents, "call "+event.ToolCall.ID)
+		case EventToolResult:
+			toolEvents = append(toolEvents, "result "+event.ToolResult.CallID)
+		default:
+		}
+	}
+	if want := []string{"call c1", "call c2", "result c1", "result c2", "call c3", "result c3"}; !reflect.DeepEqual(toolEvents, want) {
+		t.Errorf("tool events = %v; want %v", toolEvents, want)
 	}
 }
 

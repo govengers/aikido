@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -18,9 +19,11 @@ import (
 )
 
 const (
-	defaultReadLimit = 2000     // read_file lines per call
-	readMaximumBytes = 40 << 10 // read_file content bytes per call, below the default tool result cap
-	binarySniffBytes = 8 << 10  // bytes isBinary checks for a NUL byte
+	defaultReadLimit = 2000 // read_file lines per call
+	// readMaximumBytes caps read_file's content per call as JSON-encoded
+	// bytes, so the whole result stays below the default tool result cap.
+	readMaximumBytes = 40 << 10
+	binarySniffBytes = 8 << 10 // bytes isBinary checks for a NUL byte
 	// unknownContentType is the content type of a written file whose
 	// extension vfs.ContentTypeFor does not know (planning question Q26).
 	unknownContentType = "text/markdown"
@@ -29,11 +32,12 @@ const (
 func readFileDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines (%d KiB) from offset, each prefixed with its line number and a tab that are not part of the file, plus content_type, size, total_lines and truncated (true when lines follow; continue at the next line number).", defaultReadLimit, readMaximumBytes>>10),
+		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines (%d KiB) from offset, each prefixed with its line number and a tab that are not part of the file, plus content_type, size, total_lines and truncated (true when lines follow; continue at the next line number). A line too long for one call is cut with a notice naming the offset and column to continue at.", defaultReadLimit, readMaximumBytes>>10),
 		Parameters: tools.Object(map[string]any{
 			"path":   tools.String("Relative file path within the workspace."),
 			"offset": tools.Integer("Optional 1-based line to start reading at."),
 			"limit":  tools.Integer(fmt.Sprintf("Optional maximum number of lines to return (default %d).", defaultReadLimit)),
+			"column": tools.Integer("Optional 1-based byte column in the offset line to start at, to continue a cut line."),
 		}, "path"),
 	}
 }
@@ -84,6 +88,7 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 			Path   string `json:"path"`
 			Offset int    `json:"offset"`
 			Limit  int    `json:"limit"`
+			Column int    `json:"column"`
 		}
 		if err := decodeArguments("read_file", rawArguments, &arguments); err != nil {
 			return tools.Result{}, err
@@ -104,7 +109,11 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 		if offset > 1 && offset > len(lines) {
 			return tools.Result{}, fmt.Errorf("aikido/agent: read_file: offset %d is past the end of %s (%d lines)", offset, arguments.Path, len(lines))
 		}
-		numbered, end := numberLines(lines, offset-1, min(offset-1+limit, len(lines)))
+		skip, err := columnBytes(lines, offset, arguments.Column)
+		if err != nil {
+			return tools.Result{}, fmt.Errorf("aikido/agent: read_file: %s: %w", arguments.Path, err)
+		}
+		numbered, end := numberLines(lines, offset-1, min(offset-1+limit, len(lines)), skip)
 		return tools.Result{
 			Content: map[string]any{
 				"content":      numbered,
@@ -118,19 +127,75 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 	}
 }
 
+// columnBytes turns read_file's 1-based byte column in line offset into the
+// bytes to skip, moved back to the start of a UTF-8 sequence. A column below
+// 2 skips nothing; one past the end of the line is an error.
+func columnBytes(lines []string, offset, column int) (int, error) {
+	if column <= 1 {
+		return 0, nil
+	}
+	if offset > len(lines) || column > len(lines[offset-1]) {
+		return 0, fmt.Errorf("column %d is past the end of line %d", column, offset)
+	}
+	line, skip := lines[offset-1], column-1
+	for skip > 0 && !utf8.RuneStart(line[skip]) {
+		skip--
+	}
+	return skip, nil
+}
+
 // numberLines renders lines[start:end] prefixed with their 1-based line
-// number and a tab, stopping early once the text reaches readMaximumBytes
-// (always after at least one line). It returns the text and the index after
-// the last rendered line.
-func numberLines(lines []string, start, end int) (numbered string, rendered int) {
+// number and a tab, the first line without its first skip bytes. It stops
+// before the JSON encoding of the text would pass readMaximumBytes, so the
+// model gets the window whole. A first line that alone does not fit is cut,
+// ending in a notice with the offset and column to continue at. It returns
+// the text and the index of the first line not rendered completely.
+func numberLines(lines []string, start, end, skip int) (numbered string, next int) {
 	width := len(strconv.Itoa(end))
 	var text strings.Builder
-	rendered = start
-	for rendered < end && (rendered == start || text.Len()+width+1+len(lines[rendered]) <= readMaximumBytes) {
-		fmt.Fprintf(&text, "%*d\t%s", width, rendered+1, lines[rendered])
-		rendered++
+	encodedBytes := 0
+	for next = start; next < end; next++ {
+		prefix := fmt.Sprintf("%*d\t", width, next+1)
+		line := lines[next]
+		if next == start {
+			line = line[skip:]
+		}
+		rendered := prefix + line
+		if cost := jsonStringBytes(rendered); encodedBytes+cost <= readMaximumBytes {
+			text.WriteString(rendered)
+			encodedBytes += cost
+			continue
+		}
+		if next == start {
+			text.WriteString(cutLine(prefix, line, next+1, skip))
+		}
+		return text.String(), next
 	}
-	return text.String(), rendered
+	return text.String(), next
+}
+
+// cutLine renders the longest head of line that fits readMaximumBytes with
+// prefix and a notice saying where line number lineNumber continues; skip is
+// the bytes of the line before line.
+func cutLine(prefix, line string, lineNumber, skip int) string {
+	notice := func(column int) string {
+		return fmt.Sprintf("\n[line %d is cut here; read on with offset %d and column %d]", lineNumber, lineNumber, column)
+	}
+	// The notice for the line's last column is the longest one possible.
+	budget := readMaximumBytes - jsonStringBytes(prefix) - jsonStringBytes(notice(skip+len(line)))
+	// Encoded size grows with the head, so the longest fitting head is one
+	// below the shortest that does not fit.
+	tooLong := sort.Search(len(line)+1, func(headBytes int) bool { return jsonStringBytes(utf8Prefix(line, headBytes)) > budget })
+	head := utf8Prefix(line, max(tooLong-1, 0))
+	return prefix + head + notice(skip+len(head)+1)
+}
+
+// jsonStringBytes is the length of text encoded as a JSON string, without
+// the quotes.
+func jsonStringBytes(text string) int {
+	// Marshalling a string cannot fail.
+	encoded, _ := json.Marshal(text)
+	return len(encoded) - 2
 }
 
 func writeFileHandler(options VFSToolOptions) tools.Handler {

@@ -11,7 +11,7 @@ The rules agents and humans get wrong most often, one line each with the page th
 - There is no way to rewind History; make runs reversible with an overlay and `Commit` after success. [Files](Files.md#overlay)
 - `RunWithMessages` never touches History; persist `Drain`'s messages yourself. [Agent](Agent.md#runs)
 - On `EventToolResult`, `ToolResult.Content` is the full result, `ModelContent` the capped JSON the model saw; store `ModelContent` (as `Drain` does) to replay what the model saw. [Agent](Agent.md#limits)
-- `EventToolCall` arrives after the tool ran, right before its result, not when the model asked. [Agent](Agent.md#events)
+- All `EventToolCall`s of one model reply arrive before the first tool runs, then the `EventToolResult`s follow in the same order; pair them by `ToolResult.CallID`, not by position. [Agent](Agent.md#events)
 - Negative `RunTimeout` or `LLMCallTimeout` is an error; negative `ToolCallTimeout` or `MaximumToolResultBytes` disables the cap. [Agent](Agent.md#limits)
 - Prompt caching is on by default and adds `Cache` to the request, never to History; a message that already has a breakpoint switches the automatic ones off. [Agent](Agent.md#prompt-caching)
 - `llm/codex` cannot run tools: an agent session over a Codex client fails as soon as tools are offered. [Models](Models.md#codex-chatgpt-subscription)

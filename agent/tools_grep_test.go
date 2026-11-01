@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs"
 	vfsmem "github.com/govengers/aikido/vfs/memory"
 )
 
@@ -39,6 +40,9 @@ func TestGlobToRegexp(t *testing.T) {
 		{"*.{md,txt}", "x.txt", true},
 		{"*.{md,txt}", "x.json", false},
 		{"a.md", "aXmd", false},
+		{"café/*.md", "café/a.md", true},
+		{"caf?/*.md", "café/a.md", true},
+		{"{über,unter}/*.md", "über/a.md", true},
 	}
 	for _, testCase := range testCases {
 		pattern, err := globToRegexp(testCase.glob)
@@ -91,6 +95,26 @@ func TestGrep_ContentContextAndPolicy(t *testing.T) {
 	want := "a.md-1-one|a.md:2:two needle|a.md-3-three|a.md-4-four|a.md:5:five needle"
 	if got != want {
 		t.Errorf("matches = %q; want %q", got, want)
+	}
+}
+
+func TestGrep_EndAnchorMatchesBeforeLineTerminator(t *testing.T) {
+	options := seeded(t, VFSToolOptions{}, map[string]string{
+		"a.md": "TODO:\nTODO: later\n\r\nend\r\n",
+	})
+	registry := newRegistryWithVFS(t, options)
+	for _, testCase := range []struct{ pattern, want string }{
+		{`TODO:$`, "a.md:1:TODO:"},
+		{`^\s*$`, "a.md:3:"},
+		{`^end$`, "a.md:4:end"},
+	} {
+		result, err := dispatch(t, registry, "grep", fmt.Sprintf(`{"pattern":%q}`, testCase.pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(result.Content.(map[string]any)["matches"].([]string), "|"); got != testCase.want {
+			t.Errorf("grep %s = %q; want %q", testCase.pattern, got, testCase.want)
+		}
 	}
 }
 
@@ -235,7 +259,7 @@ func TestParseGrepMode(t *testing.T) {
 }
 
 func TestGrep_ScanBudgetTruncates(t *testing.T) {
-	options := seeded(t, VFSToolOptions{}, map[string]string{
+	options := seeded(t, VFSToolOptions{MaximumFileBytes: grepScanBudget}, map[string]string{
 		"a.md": strings.Repeat("x", grepScanBudget),
 		"b.md": "needle\n",
 	})
@@ -243,6 +267,52 @@ func TestGrep_ScanBudgetTruncates(t *testing.T) {
 	content := mustDispatch(t, registry, "grep", `{"pattern":"needle"}`)
 	if matches := content["matches"].([]string); len(matches) != 0 || content["truncated"] != true {
 		t.Errorf("content = %v; want no matches and truncated after the budget", content)
+	}
+}
+
+// inflatedStorage lists one file with a larger size than it holds.
+type inflatedStorage struct {
+	vfs.Storage
+	path string
+	size int64
+}
+
+func (s inflatedStorage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
+	files, err := s.Storage.ListFiles(ctx)
+	for index := range files {
+		if files[index].Path == s.path {
+			files[index].Size = s.size
+		}
+	}
+	return files, err
+}
+
+func TestGrep_SkipsOversizedFilesUnread(t *testing.T) {
+	testCases := []struct {
+		name             string
+		maximumFileBytes int64
+		listedSize       int64
+		wantMatches      string
+	}{
+		{"over MaximumFileBytes is skipped", 16, 17, "small.md:1:needle"},
+		{"over the scan budget ends the scan", 2 * grepScanBudget, grepScanBudget + 1, ""},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			seededOptions := seeded(t, VFSToolOptions{MaximumFileBytes: testCase.maximumFileBytes}, map[string]string{
+				"big.md":   "needle\n",
+				"small.md": "needle\n",
+			})
+			seededOptions.Storage = faultyStorage{
+				Storage:       inflatedStorage{Storage: seededOptions.Storage, path: "big.md", size: testCase.listedSize},
+				readErrorPath: "big.md",
+				readError:     errors.New("big.md must not be read"),
+			}
+			content := mustDispatch(t, newRegistryWithVFS(t, seededOptions), "grep", `{"pattern":"needle"}`)
+			if got := strings.Join(content["matches"].([]string), "|"); got != testCase.wantMatches || content["truncated"] != true {
+				t.Errorf("content = %v; want matches %q and truncated", content, testCase.wantMatches)
+			}
+		})
 	}
 }
 

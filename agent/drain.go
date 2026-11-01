@@ -25,7 +25,8 @@ func Drain(events <-chan Event) ([]llm.Message, error) {
 
 // drainTranscript rebuilds the message log from a run's events. The pending
 // assistant message and its tool results are flushed when the next model
-// reply starts or the run ends.
+// reply starts (text, an image or a tool call after a tool result) or the run
+// ends.
 type drainTranscript struct {
 	messages    []llm.Message
 	text        strings.Builder
@@ -42,6 +43,7 @@ func (d *drainTranscript) add(event Event) {
 		d.text.WriteString(event.Text)
 	case EventToolCall:
 		if event.ToolCall != nil {
+			d.startReplyIfToolsAnswered()
 			d.toolCalls = append(d.toolCalls, *event.ToolCall)
 		}
 	case EventImage:
