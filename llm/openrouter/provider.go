@@ -31,7 +31,8 @@ type ProviderPreferences struct {
 	MaximumPrice *MaximumPrice `json:"max_price,omitempty"`
 }
 
-// MaximumPrice is the per-million-token price cap of ProviderPrefs.
+// MaximumPrice is the per-million-token price cap of ProviderPreferences.
+// A zero field leaves that side uncapped.
 type MaximumPrice struct {
 	Prompt     float64 `json:"prompt,omitempty"`
 	Completion float64 `json:"completion,omitempty"`
@@ -40,28 +41,29 @@ type MaximumPrice struct {
 type providerKey struct{}
 
 // WithProvider returns a context whose chat calls (Stream, Complete and
-// everything built on them: agent runs, voice turns, Transcribe) use p instead
-// of the client's Options.Provider. The prefs replace the client's, they are
-// not merged. Nil p falls back to the client's prefs.
-func WithProvider(ctx context.Context, p *ProviderPreferences) context.Context {
-	return context.WithValue(ctx, providerKey{}, p)
+// everything built on them: agent runs, voice turns, Transcribe) and Decide
+// calls use preferences instead of the client's Options.Provider. The
+// preferences replace the client's, they are not merged. Nil preferences fall
+// back to the client's.
+func WithProvider(ctx context.Context, preferences *ProviderPreferences) context.Context {
+	return context.WithValue(ctx, providerKey{}, preferences)
 }
 
-// providerPrefs resolves the routing block for one call: the context
+// providerPreferences resolves the routing block for one call: the context
 // override, else the client default.
-func (c *Client) providerPrefs(ctx context.Context) *ProviderPreferences {
-	if p, _ := ctx.Value(providerKey{}).(*ProviderPreferences); p != nil {
-		return p
+func (c *Client) providerPreferences(ctx context.Context) *ProviderPreferences {
+	if preferences, _ := ctx.Value(providerKey{}).(*ProviderPreferences); preferences != nil {
+		return preferences
 	}
 	return c.provider
 }
 
-// prefsFromOrder is the ProviderOrder shorthand: one entry pins the provider
-// (no fallbacks), several form a fallback chain.
-func prefsFromOrder(order []string) *ProviderPreferences {
+// preferencesFromOrder is the ProviderOrder shorthand: one entry pins the
+// provider (no fallbacks), several form a fallback chain.
+func preferencesFromOrder(order []string) *ProviderPreferences {
 	if len(order) == 0 {
 		return nil
 	}
-	fallbacks := len(order) > 1
-	return &ProviderPreferences{Order: append([]string(nil), order...), AllowFallbacks: &fallbacks}
+	allowFallbacks := len(order) > 1
+	return &ProviderPreferences{Order: append([]string(nil), order...), AllowFallbacks: &allowFallbacks}
 }
