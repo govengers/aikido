@@ -177,6 +177,16 @@ func awaitJobs(ctx context.Context, runner *interp.Runner) {
 	}
 }
 
+// recoverHandler turns a panic in an interpreter handler into its error,
+// which stops the script: handlers run on the interpreter's goroutines
+// (pipelines, background jobs), where a panic would end the host process.
+// The deferred call must be the handler's first.
+func recoverHandler(err *error) {
+	if recovered := recover(); recovered != nil {
+		*err = fmt.Errorf("aikido/tools/shell: internal error: %v", recovered)
+	}
+}
+
 // exitStatusOf returns the exit status a Run error carries, and whether the
 // error is one (nil is status 0).
 func exitStatusOf(err error) (int, bool) {
@@ -197,7 +207,8 @@ func workspaceDirectory(directory string) string {
 
 // execute is the interpreter's exec handler: every simple command that is
 // not a function or a shell builtin.
-func (s *session) execute(ctx context.Context, arguments []string) error {
+func (s *session) execute(ctx context.Context, arguments []string) (err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
 	invocation := &Invocation{
 		Arguments:   arguments[1:],
@@ -337,7 +348,8 @@ func runCommand(ctx context.Context, command Command, invocation *Invocation) (s
 // wording of cd's errors. A builtin reached through command, builtin or exec
 // is rewritten like a direct call: normalizeCall resolves those wrappers
 // first, in every form the interpreter accepts.
-func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, error) {
+func (s *session) rewrite(ctx context.Context, arguments []string) (_ []string, err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
 	call, failure := normalizeCall(arguments)
 	switch {
@@ -526,7 +538,8 @@ func pathError(name string, err error) error {
 // open is the interpreter's open handler for redirects and source. Reads get
 // a pipe filled from the file; writes are buffered and stored with one
 // WriteFile when the redirect closes.
-func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (io.ReadWriteCloser, error) {
+func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (_ io.ReadWriteCloser, err error) {
+	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
 	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
 	if err != nil {
@@ -641,7 +654,8 @@ func openDevice(name string, flag int, handler interp.HandlerContext) (io.ReadWr
 
 // stat is the interpreter's stat handler (test -e/-f/-d, cd); name is a
 // virtual absolute path.
-func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, error) {
+func (s *session) stat(ctx context.Context, name string, _ bool) (_ fs.FileInfo, err error) {
+	defer recoverHandler(&err)
 	resolved := workspaceDirectory(name)
 	found, err := s.files().stat(ctx, resolved)
 	if err != nil {
@@ -655,7 +669,8 @@ func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, e
 
 // readDirectory is the interpreter's glob handler; name is a virtual
 // absolute path.
-func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry, error) {
+func (s *session) readDirectory(ctx context.Context, name string) (_ []fs.DirEntry, err error) {
+	defer recoverHandler(&err)
 	resolved := workspaceDirectory(name)
 	if s.root != resolved && within(s.root, resolved) {
 		// The interpreter globs /work/repo/* one directory at a time; an
@@ -686,7 +701,8 @@ func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry
 
 // access is the interpreter's access handler (test -r/-w/-x, cd): every
 // existing path is readable and writable, only directories are executable.
-func (s *session) access(ctx context.Context, name string, mode interp.AccessMode) error {
+func (s *session) access(ctx context.Context, name string, mode interp.AccessMode) (err error) {
+	defer recoverHandler(&err)
 	found, err := s.files().stat(ctx, workspaceDirectory(name))
 	switch {
 	case err != nil:

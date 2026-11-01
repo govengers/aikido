@@ -79,6 +79,20 @@ func TestIsolatedScriptHelper(t *testing.T) {
 	}
 }
 
+// TestHandlerPanicsDoNotCrash checks that a panic in a handler (here a buggy
+// Storage read by a redirect in a background job and in a pipeline) stops
+// that job or the script instead of ending the host process. The
+// interpreter drops a background job's error, so only the pipeline reports.
+func TestHandlerPanicsDoNotCrash(t *testing.T) {
+	if result := runIsolated(t, "{ read x <panic; } & wait; echo after", isolatedPanicVariable+"=1"); result.Output != "after\n" {
+		t.Errorf("background job: %+v", result)
+	}
+	result := runIsolated(t, "cat <panic | cat", isolatedPanicVariable+"=1")
+	if result.ExitCode == 0 || !strings.Contains(result.Output, "internal error: storage bug") {
+		t.Errorf("pipeline: %+v", result)
+	}
+}
+
 // TestWrappedBuiltinsAreRewritten replays the review's wrapper bypasses:
 // every way to reach a builtin through command, builtin or exec gets the
 // rewrite a direct call gets (pwd -P resolved host symlinks; type and
