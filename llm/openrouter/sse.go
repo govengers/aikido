@@ -20,6 +20,19 @@ import (
 // arrive.
 const sseDoneToken = "[DONE]"
 
+const (
+	finishReasonError         = "error"
+	finishReasonContentFilter = "content_filter"
+)
+
+// Provider tool-call payloads can be large, so a line may grow to 1 MiB.
+// Anything longer fails the stream with ErrServerError; Complete is the
+// path for multi-MiB image payloads.
+const (
+	initialLineBufferSize = 64 * 1024
+	maximumLineSize       = 1024 * 1024
+)
+
 // processStream reads the SSE body and emits llm.Events onto out. It is
 // designed to be called from a producer goroutine; it always emits exactly
 // one EventEnd as the final event before returning. Channel close is the
@@ -27,16 +40,16 @@ const sseDoneToken = "[DONE]"
 // closes the channel after processStream returns).
 //
 // processStream respects ctx by checking on every send. On ctx.Done it
-// returns silently — the caller-side goroutine will still close the channel.
+// returns silently; the caller-side goroutine will still close the channel.
 //
 // Mid-stream errors (provider drops the connection mid-SSE, or the chunk
 // includes a top-level `error` envelope) are emitted as EventError followed
-// by EventEnd. They are NOT retried (per ADR-006 / ADR-022).
+// by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005).
 //
 // Content-filter signals come in two forms (per ADR-028):
-//  1. finish_reason="content_filter" on a regular chunk — emitted as
+//  1. finish_reason="content_filter" on a regular chunk, emitted as
 //     EventError{Err: ErrContentFiltered} so callers can branch on it.
-//  2. error envelope with code/message indicating content filtering — same.
+//  2. error envelope with code/message indicating content filtering, same.
 //
 // The closing EventEnd carries FinishReason populated from the provider's
 // last finish_reason (or "content_filter"/"error" when surfaced as an error).
@@ -44,213 +57,201 @@ const sseDoneToken = "[DONE]"
 // start is when the call began; the usage event carries the provider and the
 // call's timing (llm.Usage.SetTiming) measured from it.
 func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, start time.Time) {
-	var endFinishReason string
-	defer func() {
-		emit(ctx, out, llm.Event{Kind: llm.EventEnd, FinishReason: endFinishReason})
-	}()
-
-	asm := newToolCallAssembler()
-	scanner := bufio.NewScanner(body)
-	// Allow lines up to 1 MiB — provider tool-call payloads can be large.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
-	var (
-		sawError    bool
-		usageSent   bool
-		firstOutput time.Time
-	)
-	// emitUsage emits the first usage block seen, once. A priced turn is worth
-	// exactly as much after an error as before one, so scanning continues past
-	// an error envelope until [DONE] or EOF to pick up a trailing usage chunk.
-	emitUsage := func(c *streamChunk) {
-		if usageSent || c.Usage == nil {
-			return
-		}
-		u := chunkUsage(c)
-		if u == nil {
-			return
-		}
-		u.SetTiming(start, firstOutput, time.Now())
-		emit(ctx, out, llm.Event{Kind: llm.EventUsage, Usage: u})
-		usageSent = true
+	decoder := &streamDecoder{
+		send:      func(event llm.Event) { emit(ctx, out, event) },
+		assembler: newToolCallAssembler(),
+		start:     start,
 	}
+	defer decoder.end()
 
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, initialLineBufferSize), maximumLineSize)
 	for scanner.Scan() {
-		// Cooperative cancellation check: bail before doing more work.
 		if ctx.Err() != nil {
 			return
 		}
-
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
+		payload, ok := ssePayload(scanner.Text())
+		if !ok {
 			continue
 		}
-		// Comment lines (single colon prefix). OpenRouter sends
-		// `: OPENROUTER PROCESSING` as a TCP-keepalive substitute.
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			// Unknown line shape — be permissive, ignore.
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == sseDoneToken {
 			break
 		}
-		if payload == "" {
-			continue
-		}
-
-		var chunk streamChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			// Permissive: skip malformed JSON rather than abort the whole
-			// stream. The spec says decoders ignore unknown fields; treat
-			// invalid lines the same way.
-			continue
-		}
-
-		// After an error only the price is still interesting: the provider
-		// bills a filtered or failed turn, and it reports that on a later
-		// chunk. Everything else after the error is dropped.
-		if sawError {
-			emitUsage(&chunk)
-			continue
-		}
-
-		// Top-level error envelope = mid-stream error. Emit and stop reading
-		// content.
-		if chunk.Error != nil {
-			// Flush any buffered tool calls (defensive — usually empty).
-			emitAssembledCalls(ctx, out, asm.flush())
-			// Price first: an error envelope that carries usage was billed.
-			emitUsage(&chunk)
-			msg := chunk.Error.Message
-			if msg == "" {
-				msg = "provider error"
-			}
-			cause := llm.ErrServerError
-			if isContentFilterErrorEnvelope(chunk.Error) {
-				cause = llm.ErrContentFiltered
-				endFinishReason = "content_filter"
-			} else {
-				endFinishReason = "error"
-			}
-			emit(ctx, out, llm.Event{
-				Kind: llm.EventError,
-				Err:  fmt.Errorf("openrouter mid-stream: %s: %w", msg, cause),
-			})
-			sawError = true
-			continue
-		}
-
-		// Per-choice processing. Single-choice in practice, but be tolerant.
-		for _, ch := range chunk.Choices {
-			if firstOutput.IsZero() && (ch.Delta.hasOutput() || (ch.Message != nil && ch.Message.hasOutput())) {
-				firstOutput = time.Now()
-			}
-			emitPayload(ctx, out, asm, ch.Delta)
-			// Some image-capable models deliver the generated image as a
-			// non-streaming `choices[0].message` payload instead of a `delta`.
-			// Process both shapes; harmless when only one is populated.
-			if ch.Message != nil {
-				emitPayload(ctx, out, asm, *ch.Message)
-			}
-			// finish_reason — assemble and emit any pending tool calls.
-			if ch.FinishReason != nil {
-				reason := *ch.FinishReason
-				endFinishReason = reason
-				switch reason {
-				case "error":
-					// finish_reason "error" should have come with a top-level
-					// error envelope already handled above. If not, surface
-					// a generic server error.
-					if !sawError {
-						emitAssembledCalls(ctx, out, asm.flush())
-						emit(ctx, out, llm.Event{
-							Kind: llm.EventError,
-							Err:  fmt.Errorf("openrouter mid-stream: finish_reason=error: %w", llm.ErrServerError),
-						})
-						sawError = true
-					}
-				case "content_filter":
-					// Provider's safety policy aborted the generation. Surface
-					// distinctly so callers can skip retry and show a
-					// user-actionable error.
-					emitAssembledCalls(ctx, out, asm.flush())
-					emit(ctx, out, llm.Event{
-						Kind: llm.EventError,
-						Err:  fmt.Errorf("openrouter finish_reason=content_filter: %w", llm.ErrContentFiltered),
-					})
-					sawError = true
-				default:
-					// stop, tool_calls, length — flush calls.
-					emitAssembledCalls(ctx, out, asm.flush())
-				}
-			}
-		}
-
-		// Usage may arrive on any chunk (typically the final content chunk
-		// or a dedicated trailing chunk with empty `choices`). Emit once seen.
-		emitUsage(&chunk)
+		decoder.handlePayload(payload)
 	}
-
-	// Loop fell out of scanner (EOF or [DONE] or error). Handle scanner.Err()
-	// as a mid-stream drop if we never saw a clean termination.
-	if err := scanner.Err(); err != nil && !sawError && !errors.Is(err, io.EOF) {
-		// Defensive flush.
-		emitAssembledCalls(ctx, out, asm.flush())
-		emit(ctx, out, llm.Event{
-			Kind: llm.EventError,
-			Err:  fmt.Errorf("openrouter mid-stream read: %w", llm.ErrServerError),
-		})
-	}
+	decoder.handleReadError(scanner.Err())
 }
 
-// emit sends ev unless ctx is done. It does NOT close out.
-func emit(ctx context.Context, out chan<- llm.Event, ev llm.Event) {
+// ssePayload returns the payload of a `data:` line. Blank lines, comment
+// lines (OpenRouter sends `: OPENROUTER PROCESSING` as a keepalive), other
+// SSE fields and empty payloads are not payloads.
+func ssePayload(line string) (string, bool) {
+	data, isData := strings.CutPrefix(strings.TrimRight(line, "\r"), "data:")
+	if !isData {
+		return "", false
+	}
+	payload := strings.TrimSpace(data)
+	return payload, payload != ""
+}
+
+// emit sends event unless ctx is done. It does NOT close out.
+func emit(ctx context.Context, out chan<- llm.Event, event llm.Event) {
 	select {
 	case <-ctx.Done():
-	case out <- ev:
+	case out <- event:
 	}
 }
 
-// emitAssembledCalls emits one EventToolCall per assembled tool call, in
-// ascending index order. Empty input is a no-op.
-func emitAssembledCalls(ctx context.Context, out chan<- llm.Event, calls []llm.ToolCall) {
-	for i := range calls {
-		c := calls[i]
-		emit(ctx, out, llm.Event{Kind: llm.EventToolCall, Tool: &c})
+// streamDecoder turns decoded SSE chunks into llm.Events. It is used by one
+// goroutine only.
+type streamDecoder struct {
+	send      func(llm.Event)
+	assembler *toolCallAssembler
+	start     time.Time
+
+	firstOutput time.Time
+	usageSent   bool
+	// failed is set once an EventError went out; afterwards only a trailing
+	// usage block is still emitted.
+	failed       bool
+	finishReason string
+}
+
+func (d *streamDecoder) handlePayload(payload string) {
+	var chunk streamChunk
+	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		// Permissive: a malformed line is skipped, not fatal for the stream.
+		return
+	}
+	switch {
+	case d.failed:
+		// A priced turn is worth exactly as much after an error as before
+		// one: the provider bills a filtered or failed turn and reports that
+		// on a later chunk.
+		d.emitUsage(&chunk)
+	case chunk.Error != nil:
+		d.handleErrorEnvelope(&chunk)
+	default:
+		for _, choice := range chunk.Choices {
+			d.handleChoice(choice)
+		}
+		// Usage may arrive on any chunk (typically the final content chunk
+		// or a dedicated trailing chunk with empty `choices`).
+		d.emitUsage(&chunk)
+	}
+}
+
+// handleErrorEnvelope handles a top-level error envelope, a mid-stream error.
+func (d *streamDecoder) handleErrorEnvelope(chunk *streamChunk) {
+	d.emitToolCalls()
+	// Price first: an error envelope that carries usage was billed.
+	d.emitUsage(chunk)
+	cause := chunk.Error.cause()
+	d.finishReason = finishReasonError
+	if errors.Is(cause, llm.ErrContentFiltered) {
+		d.finishReason = finishReasonContentFilter
+	}
+	d.fail(fmt.Errorf("openrouter mid-stream: %s: %w", chunk.Error.message(), cause))
+}
+
+func (d *streamDecoder) handleChoice(choice streamChoice) {
+	if d.firstOutput.IsZero() && choice.hasOutput() {
+		d.firstOutput = time.Now()
+	}
+	d.emitPayload(choice.Delta)
+	// Some image-capable models deliver the generated image as a
+	// non-streaming `choices[0].message` payload instead of a `delta`.
+	if choice.Message != nil {
+		d.emitPayload(*choice.Message)
+	}
+	if choice.FinishReason != nil {
+		d.handleFinishReason(*choice.FinishReason)
+	}
+}
+
+func (d *streamDecoder) handleFinishReason(reason string) {
+	d.finishReason = reason
+	switch reason {
+	case finishReasonError:
+		// Usually an error envelope came first and failed the stream already;
+		// without one, surface a generic server error.
+		if !d.failed {
+			d.fail(fmt.Errorf("openrouter mid-stream: finish_reason=error: %w", llm.ErrServerError))
+		}
+	case finishReasonContentFilter:
+		// The provider's safety policy aborted the generation. Surfaced
+		// distinctly so callers can skip retry and show a user-actionable error.
+		d.fail(fmt.Errorf("openrouter finish_reason=content_filter: %w", llm.ErrContentFiltered))
+	default:
+		// stop, tool_calls, length.
+		d.emitToolCalls()
 	}
 }
 
 // emitPayload emits text / image / thinking events from one delta-or-message
-// payload and feeds tool-call fragments into the assembler. Used for both
-// streaming `delta` and non-streaming `message` shapes.
-func emitPayload(ctx context.Context, out chan<- llm.Event, asm *toolCallAssembler, p streamDelta) {
-	// Text content fragment. `content` is RawMessage so we can also detect
-	// inline image-data URIs and typed content arrays that some image-capable
-	// models emit in place of (or alongside) `images`.
-	if text, imgs := decodeDeltaContent(p.Content); text != "" || len(imgs) > 0 {
-		if text != "" {
-			emit(ctx, out, llm.Event{Kind: llm.EventTextDelta, Text: text})
-		}
-		for i := range imgs {
-			img := imgs[i]
-			emit(ctx, out, llm.Event{Kind: llm.EventImage, Image: &img})
-		}
+// payload and feeds tool-call fragments into the assembler.
+func (d *streamDecoder) emitPayload(payload streamDelta) {
+	text, images := decodeDeltaContent(payload.Content)
+	if text != "" {
+		d.send(llm.Event{Kind: llm.EventTextDelta, Text: text})
 	}
-	if p.Reasoning != "" {
-		emit(ctx, out, llm.Event{Kind: llm.EventThinking, Text: p.Reasoning})
+	for _, image := range images {
+		d.send(llm.Event{Kind: llm.EventImage, Image: &image})
 	}
-	for _, ip := range p.Images {
-		if img, ok := decodeAPIImagePart(ip); ok {
-			emit(ctx, out, llm.Event{Kind: llm.EventImage, Image: &img})
+	if payload.Reasoning != "" {
+		d.send(llm.Event{Kind: llm.EventThinking, Text: payload.Reasoning})
+	}
+	for _, part := range payload.Images {
+		if image, ok := decodeAPIImagePart(part); ok {
+			d.send(llm.Event{Kind: llm.EventImage, Image: &image})
 		}
 	}
-	for _, frag := range p.ToolCalls {
-		asm.feed(frag)
+	for _, fragment := range payload.ToolCalls {
+		d.assembler.feed(fragment)
 	}
+}
+
+// emitUsage emits the first usage block seen, once.
+func (d *streamDecoder) emitUsage(chunk *streamChunk) {
+	if d.usageSent {
+		return
+	}
+	usage := chunkUsage(chunk)
+	if usage == nil {
+		return
+	}
+	usage.SetTiming(d.start, d.firstOutput, time.Now())
+	d.send(llm.Event{Kind: llm.EventUsage, Usage: usage})
+	d.usageSent = true
+}
+
+// emitToolCalls emits one EventToolCall per assembled tool call, in ascending
+// index order.
+func (d *streamDecoder) emitToolCalls() {
+	for _, call := range d.assembler.flush() {
+		d.send(llm.Event{Kind: llm.EventToolCall, Tool: &call})
+	}
+}
+
+// fail flushes pending tool calls and emits err as the stream's EventError.
+func (d *streamDecoder) fail(err error) {
+	d.emitToolCalls()
+	d.send(llm.Event{Kind: llm.EventError, Err: err})
+	d.failed = true
+}
+
+// handleReadError treats a read error (connection drop, a line above
+// maximumLineSize) without a prior EventError as a mid-stream drop.
+func (d *streamDecoder) handleReadError(err error) {
+	if err == nil || d.failed || errors.Is(err, io.EOF) {
+		return
+	}
+	d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
+}
+
+// end emits the closing EventEnd.
+func (d *streamDecoder) end() {
+	d.send(llm.Event{Kind: llm.EventEnd, FinishReason: d.finishReason})
 }
 
 // toolCallAssembler buffers incoming fragments by index and produces complete
@@ -260,31 +261,59 @@ type toolCallAssembler struct {
 }
 
 type partialToolCall struct {
-	id   string
-	name string
-	args bytes.Buffer
+	id        string
+	name      string
+	arguments bytes.Buffer
 }
 
 func newToolCallAssembler() *toolCallAssembler {
 	return &toolCallAssembler{parts: make(map[int]*partialToolCall)}
 }
 
-// feed merges a single fragment into the buffer.
-func (a *toolCallAssembler) feed(frag toolCallFragment) {
-	p, ok := a.parts[frag.Index]
+// feed merges a single fragment into the buffer. The first non-empty id and
+// name win; argument fragments concatenate.
+func (a *toolCallAssembler) feed(fragment toolCallFragment) {
+	part, ok := a.parts[fragment.Index]
 	if !ok {
-		p = &partialToolCall{}
-		a.parts[frag.Index] = p
+		part = &partialToolCall{}
+		a.parts[fragment.Index] = part
 	}
-	if p.id == "" && frag.ID != "" {
-		p.id = frag.ID
+	if part.id == "" && fragment.ID != "" {
+		part.id = fragment.ID
 	}
-	if p.name == "" && frag.Function.Name != "" {
-		p.name = frag.Function.Name
+	if part.name == "" && fragment.Function.Name != "" {
+		part.name = fragment.Function.Name
 	}
-	if frag.Function.Arguments != "" {
-		p.args.WriteString(frag.Function.Arguments)
+	part.arguments.WriteString(fragment.Function.Arguments)
+}
+
+// flush returns the assembled tool calls in ascending index order and resets
+// the buffer. Empty arguments become "{}", a missing id "call_<index>"
+// (OPENROUTER-DETAILS edge cases).
+func (a *toolCallAssembler) flush() []llm.ToolCall {
+	if len(a.parts) == 0 {
+		return nil
 	}
+	indexes := make([]int, 0, len(a.parts))
+	for index := range a.parts {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	calls := make([]llm.ToolCall, 0, len(indexes))
+	for _, index := range indexes {
+		part := a.parts[index]
+		arguments := part.arguments.String()
+		if arguments == "" {
+			arguments = "{}"
+		}
+		id := part.id
+		if id == "" {
+			id = fmt.Sprintf("call_%d", index)
+		}
+		calls = append(calls, llm.ToolCall{ID: id, Name: part.name, Arguments: arguments})
+	}
+	a.parts = make(map[int]*partialToolCall)
+	return calls
 }
 
 // decodeDeltaContent extracts plain text and any inline images from a
@@ -293,62 +322,72 @@ func (a *toolCallAssembler) feed(frag toolCallFragment) {
 // OpenRouter's image-capable models surface generated images in three
 // observed shapes:
 //
-//  1. A plain JSON string — usually descriptive text, but occasionally a raw
+//  1. A plain JSON string, usually descriptive text, but occasionally a raw
 //     `data:image/...;base64,...` URI for tiny single-image responses.
-//  2. A typed-parts array — `[{type:"text",text:"..."}, {type:"image_url",
+//  2. A typed-parts array: `[{type:"text",text:"..."}, {type:"image_url",
 //     image_url:{url:"data:..."}}]`.
 //  3. The dedicated `images` field on the message/delta envelope (handled
 //     separately by the caller).
 //
 // Empty input or a JSON null returns ("", nil). Unknown shapes return ("", nil)
-// rather than erroring — be permissive on the wire.
+// rather than erroring: be permissive on the wire.
 func decodeDeltaContent(raw json.RawMessage) (string, []llm.ImagePart) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return "", nil
 	}
-	// Plain string — most common.
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		if strings.HasPrefix(s, "data:image/") {
-			if img, ok := decodeDataURI(s); ok {
-				return "", []llm.ImagePart{img}
-			}
-		}
-		return s, nil
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return decodeStringContent(text)
 	}
-	// Typed-parts array.
 	var parts []apiContentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
-		var (
-			sb     strings.Builder
-			images []llm.ImagePart
-		)
-		for _, p := range parts {
-			switch p.Type {
-			case "text":
-				sb.WriteString(p.Text)
-			case "image_url":
-				if p.ImageURL == nil {
-					continue
-				}
-				if img, ok := decodeImageURL(p.ImageURL.URL); ok {
-					images = append(images, img)
-				}
-			}
-		}
-		return sb.String(), images
+		return decodeContentParts(parts)
 	}
 	return "", nil
+}
+
+// decodeStringContent reads a decodable `data:image/` URI as an image and
+// anything else as text.
+func decodeStringContent(text string) (string, []llm.ImagePart) {
+	if strings.HasPrefix(text, "data:image/") {
+		if image, ok := decodeDataURI(text); ok {
+			return "", []llm.ImagePart{image}
+		}
+	}
+	return text, nil
+}
+
+// decodeContentParts concatenates the text parts and decodes the image_url
+// parts; other part types are ignored.
+func decodeContentParts(parts []apiContentPart) (string, []llm.ImagePart) {
+	var (
+		text   strings.Builder
+		images []llm.ImagePart
+	)
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			text.WriteString(part.Text)
+		case "image_url":
+			if part.ImageURL == nil {
+				continue
+			}
+			if image, ok := decodeImageURL(part.ImageURL.URL); ok {
+				images = append(images, image)
+			}
+		}
+	}
+	return text.String(), images
 }
 
 // decodeAPIImagePart maps one apiImagePart onto an llm.ImagePart, decoding
 // data: URIs into bytes and leaving HTTP URLs as-is. Returns false on missing
 // or unrecognized shapes.
-func decodeAPIImagePart(p apiImagePart) (llm.ImagePart, bool) {
-	if p.ImageURL == nil {
+func decodeAPIImagePart(part apiImagePart) (llm.ImagePart, bool) {
+	if part.ImageURL == nil {
 		return llm.ImagePart{}, false
 	}
-	return decodeImageURL(p.ImageURL.URL)
+	return decodeImageURL(part.ImageURL.URL)
 }
 
 // decodeImageURL converts a URL string into an llm.ImagePart. data: URIs are
@@ -365,62 +404,28 @@ func decodeImageURL(url string) (llm.ImagePart, bool) {
 }
 
 // decodeDataURI parses a `data:<mime>;base64,<payload>` URI into an ImagePart.
-// Non-base64 data URIs and malformed inputs return false.
+// A non-base64 data URI keeps its URL; malformed inputs return false.
 func decodeDataURI(uri string) (llm.ImagePart, bool) {
-	if !strings.HasPrefix(uri, "data:") {
+	rest, isDataURI := strings.CutPrefix(uri, "data:")
+	if !isDataURI {
 		return llm.ImagePart{}, false
 	}
-	rest := uri[len("data:"):]
-	comma := strings.IndexByte(rest, ',')
-	if comma < 0 {
+	meta, payload, found := strings.Cut(rest, ",")
+	if !found {
 		return llm.ImagePart{}, false
 	}
-	meta := rest[:comma]
-	payload := rest[comma+1:]
-	if !strings.HasSuffix(meta, ";base64") {
-		// non-base64 data URIs are valid HTTP-spec but unused by the providers
-		// we target; surface only the URL so callers can still see them.
+	contentType, isBase64 := strings.CutSuffix(meta, ";base64")
+	if !isBase64 {
+		// Non-base64 data URIs are valid per the HTTP spec but unused by the
+		// providers we target; surface only the URL so callers can still see
+		// them.
 		return llm.ImagePart{URL: uri, ContentType: meta}, true
 	}
-	contentType := strings.TrimSuffix(meta, ";base64")
 	data, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return llm.ImagePart{}, false
 	}
 	return llm.ImagePart{ContentType: contentType, Data: data}, true
-}
-
-// flush returns the assembled tool calls in ascending index order and resets
-// the buffer.
-func (a *toolCallAssembler) flush() []llm.ToolCall {
-	if len(a.parts) == 0 {
-		return nil
-	}
-	indexes := make([]int, 0, len(a.parts))
-	for idx := range a.parts {
-		indexes = append(indexes, idx)
-	}
-	sort.Ints(indexes)
-	out := make([]llm.ToolCall, 0, len(indexes))
-	for _, idx := range indexes {
-		p := a.parts[idx]
-		args := p.args.String()
-		if args == "" {
-			args = "{}"
-		}
-		id := p.id
-		if id == "" {
-			// Defensive fallback per OPENROUTER-DETAILS edge cases.
-			id = fmt.Sprintf("call_%d", idx)
-		}
-		out = append(out, llm.ToolCall{
-			ID:        id,
-			Name:      p.name,
-			Arguments: args,
-		})
-	}
-	a.parts = make(map[int]*partialToolCall)
-	return out
 }
 
 // isContentFilterErrorEnvelope checks whether a structured error envelope
@@ -429,27 +434,25 @@ func (a *toolCallAssembler) flush() []llm.ToolCall {
 // human message in `error.message`. We match the most common signals:
 //
 //   - code == "content_filter" or "content_policy_violation" or "safety" (string forms)
-//   - message contains "content filter", "safety", or "policy" (case-insensitive)
+//   - message contains "content filter", "content policy", "safety policy" or
+//     "safety filter" (case-insensitive)
 //
 // False positives lead to the caller showing "try a different prompt" copy
-// instead of "try again later" — which is the correct user action either way
+// instead of "try again later", which is the correct user action either way
 // for any policy-related rejection. Conservative match preferred.
-func isContentFilterErrorEnvelope(e *apiError) bool {
-	if e == nil {
+func isContentFilterErrorEnvelope(envelope *apiError) bool {
+	if envelope == nil {
 		return false
 	}
-	if codeStr := decodeErrorCodeAsString(e.Code); codeStr != "" {
-		switch strings.ToLower(codeStr) {
-		case "content_filter", "content_policy_violation", "safety":
+	switch strings.ToLower(decodeErrorCodeAsString(envelope.Code)) {
+	case "content_filter", "content_policy_violation", "safety":
+		return true
+	}
+	message := strings.ToLower(envelope.Message)
+	for _, marker := range []string{"content filter", "content policy", "safety policy", "safety filter"} {
+		if strings.Contains(message, marker) {
 			return true
 		}
-	}
-	msg := strings.ToLower(e.Message)
-	if strings.Contains(msg, "content filter") ||
-		strings.Contains(msg, "content policy") ||
-		strings.Contains(msg, "safety policy") ||
-		strings.Contains(msg, "safety filter") {
-		return true
 	}
 	return false
 }
@@ -460,9 +463,9 @@ func decodeErrorCodeAsString(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+	var code string
+	if err := json.Unmarshal(raw, &code); err == nil {
+		return code
 	}
 	return ""
 }
