@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,47 +41,100 @@ func pipeReader(content []byte) (*os.File, error) {
 	return reader, nil
 }
 
-// bufferedFile is a redirect target: writes collect in memory and Close
-// stores them with one WriteFile. The interpreter ignores Close errors, so a
-// failed store is reported on stderr here. Safe for concurrent writes (a
-// background job and the script may share a redirect).
+// bufferedFile is a redirect target: writes collect in memory, counted
+// against the Shell's memory budget, and are stored with one WriteFile. The
+// store happens when the redirect closes, or earlier, when the command that
+// owns the redirect ends (flush), so a failed store can still fail that
+// command before && or || decide. The interpreter ignores Close errors, so a
+// failed store is reported on stderr here, once. Safe for concurrent writes
+// (a background job and the script may share a redirect).
 type bufferedFile struct {
 	mutex sync.Mutex
 	// label starts a message about the file: "bash: line N: name".
-	label   string
+	label string
+	// owner is the offset+1 of the simple command whose statement opened
+	// the redirect (cmd >file), 0 for a compound statement; see flushOwned.
+	owner   uint
 	content []byte
-	commit  func(content []byte) error
+	// reserved is the part of content charged to budget: what is not
+	// stored yet.
+	reserved int
+	budget   *memoryBudget
+	// commit stores content; storeContext bounds it.
+	commit       func(ctx context.Context, content []byte) error
+	storeContext func() (context.Context, context.CancelFunc)
+	// onClose runs once when the file closes, to forget it.
+	onClose func(*bufferedFile)
 	stderr  io.Writer
-	closed  bool
+
+	dirty    bool  // content changed since the last store
+	failure  error // the last store's error, reported once
+	reported bool
+	closed   bool
 }
 
 func (f *bufferedFile) Read([]byte) (int, error) { return 0, errWrongDirection }
 
+// Write appends data, or fails like a full disk when the memory budget is
+// spent and with "File too large" beyond the per-file cap; the writer
+// reports those itself.
 func (f *bufferedFile) Write(data []byte) (int, error) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
-	if f.closed {
+	switch {
+	case f.closed:
 		return 0, os.ErrClosed
-	}
-	if len(f.content)+len(data) > maximumBufferedFileBytes {
+	case len(f.content)+len(data) > maximumBufferedFileBytes:
 		return 0, errTooLarge
+	case !f.budget.reserve(len(data)):
+		return 0, errNoSpace
 	}
+	f.reserved += len(data)
 	f.content = append(f.content, data...)
+	f.dirty = true
 	return len(data), nil
 }
 
+func (f *bufferedFile) storeLocked(ctx context.Context) error {
+	if f.dirty {
+		// The stored bytes are charged where they are stored (/tmp) or
+		// are the workspace's: the buffer no longer counts them.
+		f.budget.release(f.reserved)
+		f.reserved, f.dirty = 0, false
+		f.failure = f.commit(ctx, f.content)
+		f.reported = false
+	}
+	if f.failure != nil && !f.reported {
+		f.reported = true
+		fmt.Fprintf(f.stderr, "%s: %v\n", f.label, describe(f.failure))
+	}
+	return f.failure
+}
+
+// Close stores the content with the file's own deadline.
 func (f *bufferedFile) Close() error {
+	ctx, cancel := f.storeContext()
+	defer cancel()
+	return f.closeWith(ctx)
+}
+
+// closeWith stores what is left within ctx and releases the buffer;
+// closing a closed file does nothing.
+func (f *bufferedFile) closeWith(ctx context.Context) error {
 	f.mutex.Lock()
-	defer f.mutex.Unlock()
 	if f.closed {
+		f.mutex.Unlock()
 		return nil
 	}
 	f.closed = true
-	if err := f.commit(f.content); err != nil {
-		fmt.Fprintf(f.stderr, "%s: %v\n", f.label, describe(err))
-		return err
+	err := f.storeLocked(ctx)
+	f.budget.release(f.reserved)
+	f.reserved, f.content = 0, nil
+	f.mutex.Unlock()
+	if f.onClose != nil {
+		f.onClose(f)
 	}
-	return nil
+	return err
 }
 
 // streamFile is /dev/stdin, /dev/stdout or /dev/stderr: it passes through to

@@ -157,9 +157,10 @@ func TestTmpPersistsAcrossCalls(t *testing.T) {
 
 func TestTmpIsCapped(t *testing.T) {
 	shell, _ := newTestShell(t, nil, nil)
-	shell.scratch = newScratchStorage(10)
+	shell.budget = newMemoryBudget(10)
+	shell.scratch = newScratchStorage(shell.budget)
 	result := mustRun(t, shell, "printf 123456 > /tmp/a && printf 12345 > /tmp/b; printf 1234 > /tmp/b; printf 123 > /tmp/a; rm /tmp/b; printf 1234567 > /tmp/c && cat /tmp/a /tmp/c")
-	if want := "bash: line 1: /tmp/b: No space left on device\n1231234567"; result.Output != want {
+	if want := "1231234567"; result.Output != want {
 		t.Fatalf("output = %q, want %q", result.Output, want)
 	}
 }

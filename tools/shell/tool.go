@@ -73,7 +73,7 @@ func (s *Shell) description() string {
 	}
 	text.WriteString("Runs bash over the project workspace " + location + ". Pipes, &&, ||, loops, " +
 		"functions, variables, $(...), <(...), here-docs, redirects and globs work as in bash; the working directory " +
-		"persists between calls, variables do not. /tmp is in-memory scratch space (64 MiB) that persists between calls. " +
+		"persists between calls, variables do not. /tmp is in-memory scratch space (128 MiB, shared with buffered output) that persists between calls. " +
 		"Shell builtins: cd, pwd, echo, printf, test/[, read, export, set, exit. Available commands: ")
 	for index, name := range s.commandNames() {
 		if index > 0 {

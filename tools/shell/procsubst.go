@@ -4,29 +4,92 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"strconv"
 	"strings"
 
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/govengers/aikido/vfs"
-	"github.com/govengers/aikido/vfs/memory"
 )
 
 // firstProcessFile is the number of the first /dev/fd/N path <(list)
 // substitutes, as in bash.
 const firstProcessFile = 63
 
-// processFileStorage holds the files of <(list) for one Run. They are read
-// by path only: listings leave them out, so "grep -r x ." and "find ." from
-// the root do not find them.
+// processFileMarker is the name of the redirect a rewritten <(list) stores
+// its output with: open hands out a fresh /dev/fd path for it on every
+// evaluation. It starts with a byte that is never valid UTF-8, so no
+// ordinary path collides with it. The word spells it as $'\xff...'
+// (processFileMarkerSource), which survives the printing and reparsing of
+// eval and trap scripts; a script that spells it too only gets a fresh
+// process file, like a <(list) of its own.
+const (
+	processFileMarker       = "\xffprocess-file"
+	processFileMarkerSource = `\xffprocess-file`
+)
+
+// errPermission is a write to /dev/fd by a script.
+const errPermission fileError = "Permission denied"
+
+// processFileStorage is /dev/fd for one Run: the files of <(list) and of a
+// rewritten source, counted against the Shell's memory budget. Only the
+// shell itself stores them (store); a script's write or delete there fails
+// with "Permission denied". They are read by path only: listings leave them
+// out, so "grep -r x ." and "find ." from the root do not find them.
 type processFileStorage struct {
-	*memory.Storage
+	files *scratchStorage
 }
 
 func (processFileStorage) ListFiles(context.Context) ([]vfs.FileMetadata, error) {
 	return nil, nil
+}
+
+func (p processFileStorage) ReadFile(ctx context.Context, name string) ([]byte, vfs.FileMetadata, error) {
+	return p.files.ReadFile(ctx, name)
+}
+
+func (processFileStorage) WriteFile(context.Context, string, []byte, string) error {
+	return errPermission
+}
+
+func (processFileStorage) DeleteFile(context.Context, string) error {
+	return errPermission
+}
+
+// store writes a file of the shell's own; name is relative to /dev/fd.
+func (p processFileStorage) store(ctx context.Context, name string, content []byte, contentType string) error {
+	return p.files.WriteFile(ctx, name, content, contentType)
+}
+
+// consume drops a process file a redirect has read (cmd < <(list)): like
+// the pipe bash substitutes, it is read once, and a loop over many
+// substitutions does not hold them all. resolved is a session path.
+func (p processFileStorage) consume(ctx context.Context, resolved string) {
+	if name, ok := strings.CutPrefix(resolved, processFileDirectory+"/"); ok {
+		_ = p.files.DeleteFile(ctx, name)
+	}
+}
+
+// openProcessFile opens a fresh /dev/fd/N for the output of a <(list): it
+// writes the path to the substitution's output, which becomes the word, and
+// returns the file list writes to. Allocating at run time, not at parse
+// time, gives two runs of one function (f A & f B) their own files.
+func (s *session) openProcessFile(ctx context.Context, prefix string, handler interp.HandlerContext, targets *redirectTargets) (*bufferedFile, error) {
+	number := strconv.FormatInt(firstProcessFile+s.processFileCount.Add(1)-1, 10)
+	path := "/" + processFileDirectory + "/" + number
+	if _, err := io.WriteString(handler.Stdout, path); err != nil {
+		return nil, pathError(prefix, path, err)
+	}
+	file := s.newBufferedFile(ctx, prefix+path, handler.Stderr)
+	file.dirty = true // a list that prints nothing still leaves an empty file
+	file.commit = func(ctx context.Context, content []byte) error {
+		return s.processFiles.store(ctx, number, content, "text/plain")
+	}
+	targets.add(file)
+	return file, nil
 }
 
 // parse parses bash source, refuses what the virtual shell cannot run and
@@ -67,11 +130,12 @@ func refuseUnsupported(file *syntax.File) error {
 }
 
 // substituteProcesses rewrites every <(list) in file into
-// "$( (list) > /dev/fd/N )/dev/fd/N": list runs to completion with its
-// output stored in the session's /dev/fd, then the word is the path. The
-// consumer starts after the producer has ended, so nothing streams and the
-// output is bounded like any file a script writes. Nested substitutions are
-// rewritten too, as the walk descends into the new command substitution.
+// "$( (list) > processFileMarker )": list runs to completion with its output
+// stored in a fresh file of the session's /dev/fd, whose path open writes as
+// the substitution's output, so the word is the path. The consumer starts
+// after the producer has ended, so nothing streams and the output is
+// bounded like any file a script writes. Nested substitutions are rewritten
+// too, as the walk descends into the new command substitution.
 func (s *session) substituteProcesses(file *syntax.File) {
 	syntax.Walk(file, func(node syntax.Node) bool {
 		word, ok := node.(*syntax.Word)
@@ -97,19 +161,15 @@ func (s *session) processFileParts(substitution *syntax.ProcSubst) []syntax.Word
 	if len(substitution.Stmts) == 0 {
 		return []syntax.WordPart{&syntax.Lit{ValuePos: start, ValueEnd: end, Value: "/dev/null"}}
 	}
-	name := fmt.Sprintf("/%s/%d", processFileDirectory, firstProcessFile+s.processFiles.Add(1)-1)
 	produce := &syntax.Stmt{
 		Position: start,
 		Cmd:      &syntax.Subshell{Lparen: start, Rparen: end, Stmts: substitution.Stmts, Last: substitution.Last},
 		Redirs: []*syntax.Redirect{{
 			OpPos: end, Op: syntax.RdrOut,
-			Word: &syntax.Word{Parts: []syntax.WordPart{&syntax.Lit{ValuePos: end, ValueEnd: end, Value: name}}},
+			Word: &syntax.Word{Parts: []syntax.WordPart{&syntax.SglQuoted{Left: end, Right: end, Dollar: true, Value: processFileMarkerSource}}},
 		}},
 	}
-	return []syntax.WordPart{
-		&syntax.CmdSubst{Left: start, Right: end, Stmts: []*syntax.Stmt{produce}},
-		&syntax.Lit{ValuePos: end, ValueEnd: end, Value: name},
-	}
+	return []syntax.WordPart{&syntax.CmdSubst{Left: start, Right: end, Stmts: []*syntax.Stmt{produce}}}
 }
 
 // rewriteScriptArgument parses the script an eval or trap argument holds and,
@@ -199,9 +259,9 @@ func (s *session) rewriteSource(ctx context.Context, handler interp.HandlerConte
 	case rewritten == string(content):
 		return arguments
 	}
-	name := fmt.Sprintf("%s/source-%d", processFileDirectory, s.processFiles.Add(1))
-	if err := s.storage.WriteFile(ctx, name, []byte(rewritten), "text/x-shellscript"); err != nil {
+	name := fmt.Sprintf("source-%d", s.processFileCount.Add(1))
+	if err := s.processFiles.store(ctx, name, []byte(rewritten), "text/x-shellscript"); err != nil {
 		return []string{internalFailure, "bash: source: " + describe(err).Error(), "1"}
 	}
-	return append([]string{arguments[0], "/" + name}, arguments[2:]...)
+	return append([]string{arguments[0], "/" + processFileDirectory + "/" + name}, arguments[2:]...)
 }

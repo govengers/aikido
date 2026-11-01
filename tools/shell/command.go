@@ -14,7 +14,7 @@
 // absolute paths below it are workspace paths, other paths and
 // climbing above it are "No such file or directory". /tmp is a memory
 // scratch area of the Shell (never the Storage) that keeps its files from
-// one Run to the next, at most 64 MiB together; /dev/null, /dev/stdin, /dev/stdout
+// one Run to the next, within the Shell's 128 MiB memory budget; /dev/null, /dev/stdin, /dev/stdout
 // and /dev/stderr work. A Storage holds only files, so a directory exists
 // while a file lies below it or after mkdir created it in this Shell.
 // Redirects collect what is written and store it with one WriteFile when

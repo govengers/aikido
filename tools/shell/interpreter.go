@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,8 +55,13 @@ type session struct {
 	root        string
 	directories *directorySet
 	commands    map[string]Command
-	// processFiles counts the /dev/fd paths <(list) has used in this Run.
-	processFiles atomic.Int64
+	// budget is the Shell's memory budget, which buffered redirects count
+	// against.
+	budget *memoryBudget
+	// processFiles is /dev/fd for this Run; processFileCount counts the
+	// names it has handed out.
+	processFiles     processFileStorage
+	processFileCount atomic.Int64
 	// functions holds the names of the functions the session's scripts
 	// define, for command -v and type.
 	functions sync.Map
@@ -127,10 +133,28 @@ func stdinFile(stdin io.Reader) io.Reader {
 	return stdin
 }
 
-// redirectStoreTimeout bounds the store of a redirect target when it
-// closes. The store runs without the script's context, so a timed-out
-// script still keeps what it wrote; a variable for tests.
+// redirectStoreTimeout bounds the stores of redirect targets: each runs
+// without the script's context, so a timed-out script still keeps what it
+// wrote, but ends this long after the script's deadline at the latest, and
+// the stores at the end of a script share one such period. A variable for
+// tests.
 var redirectStoreTimeout = 30 * time.Second
+
+// storeContext returns the context a redirect store runs with: detached
+// from ctx, ending redirectStoreTimeout from now or after ctx's deadline,
+// whichever comes first.
+func storeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), redirectStoreTimeout)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return detached, cancel
+	}
+	bounded, cancelBounded := context.WithDeadline(detached, deadline.Add(redirectStoreTimeout))
+	return bounded, func() {
+		cancelBounded()
+		cancel()
+	}
+}
 
 // jobCleanupTimeout bounds the wait for background jobs after a script:
 // they are cancelled first, so only a job stuck in something that ignores
@@ -147,7 +171,7 @@ func runFile(ctx context.Context, runner *scriptRunner, file *syntax.File) (stri
 	stopJobs()
 	directory := runner.Dir
 	awaitJobs(ctx, runner.Runner)
-	runner.targets.closeAll()
+	runner.targets.closeAll(ctx)
 	return directory, err
 }
 
@@ -535,40 +559,55 @@ func pathError(prefix, name string, err error) error {
 	return &os.PathError{Op: strings.TrimSuffix(prefix, " "), Path: name, Err: describe(err)}
 }
 
-// redirectLineMarker separates a redirect's word from the line number
+// redirectLineMarker separates a redirect's word from what
 // markRedirectLines appends. The interpreter cuts words at a NUL byte, so
 // the marker starts with a byte that is never valid UTF-8 instead; a script
-// that spells it only changes a message.
+// that spells it only changes a message or skips an early store.
 const redirectLineMarker = "\xffline="
 
-// markRedirectLines appends the line of every file redirect to its word:
-// the interpreter gives the open handler no position, and bash's message
-// for a failed redirect starts with "bash: line N: ". The marker goes at the
-// end so a leading ~ still expands; open takes it off again.
+// markRedirectLines appends to the word of every file redirect its line and
+// the offset+1 of the simple command its statement runs (0 for a compound
+// statement): the interpreter gives the open handler no position, bash's
+// message for a failed redirect starts with "bash: line N: ", and
+// flushOwned stores the targets of a simple command when it ends. The
+// marker goes at the end so a leading ~ still expands; open takes it off.
 func markRedirectLines(file *syntax.File) {
 	syntax.Walk(file, func(node syntax.Node) bool {
-		redirect, ok := node.(*syntax.Redirect)
-		if !ok || redirect.Word == nil {
+		statement, ok := node.(*syntax.Stmt)
+		if !ok {
 			return true
 		}
-		switch redirect.Op {
-		case syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrAll, syntax.AppAll, syntax.ClbOut, syntax.RdrInOut:
-			end := redirect.Word.End()
-			line := strconv.FormatUint(uint64(redirect.OpPos.Line()), 10)
-			redirect.Word.Parts = append(redirect.Word.Parts, &syntax.Lit{ValuePos: end, ValueEnd: end, Value: redirectLineMarker + line})
+		owner := uint(0)
+		if call, ok := statement.Cmd.(*syntax.CallExpr); ok && len(call.Args) > 0 {
+			owner = call.Args[0].Pos().Offset() + 1
+		}
+		for _, redirect := range statement.Redirs {
+			if slices.Contains(fileRedirects, redirect.Op) {
+				end := redirect.Word.End()
+				marker := fmt.Sprintf("%s%d,%d", redirectLineMarker, redirect.OpPos.Line(), owner)
+				redirect.Word.Parts = append(redirect.Word.Parts, &syntax.Lit{ValuePos: end, ValueEnd: end, Value: marker})
+			}
 		}
 		return true
 	})
 }
 
+// fileRedirects are the redirect operators the interpreter opens a file for.
+var fileRedirects = []syntax.RedirOperator{syntax.RdrOut, syntax.AppOut, syntax.RdrIn, syntax.RdrAll, syntax.AppAll}
+
 // redirectName splits a redirect name marked by markRedirectLines into
-// bash's message prefix and the name itself.
-func redirectName(marked string) (prefix, name string) {
+// bash's message prefix, the name itself and the owning command's offset+1.
+func redirectName(marked string) (prefix, name string, owner uint) {
 	index := strings.LastIndex(marked, redirectLineMarker)
 	if index < 0 {
-		return "bash: ", marked
+		return "bash: ", marked, 0
 	}
-	return "bash: line " + marked[index+len(redirectLineMarker):] + ": ", marked[:index]
+	line, offset, _ := strings.Cut(marked[index+len(redirectLineMarker):], ",")
+	parsed, err := strconv.ParseUint(offset, 10, 0)
+	if err != nil {
+		parsed = 0
+	}
+	return "bash: line " + line + ": ", marked[:index], uint(parsed)
 }
 
 // open is the interpreter's open handler for redirects and source. Reads get
@@ -577,7 +616,10 @@ func redirectName(marked string) (prefix, name string) {
 func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode, targets *redirectTargets) (_ io.ReadWriteCloser, err error) {
 	defer recoverHandler(&err)
 	handler := interp.HandlerCtx(ctx)
-	prefix, name := redirectName(name)
+	prefix, name, owner := redirectName(name)
+	if name == processFileMarker && flag&os.O_WRONLY != 0 {
+		return s.openProcessFile(ctx, prefix, handler, targets)
+	}
 	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
 	if err != nil {
 		return nil, pathError(prefix, name, errNotFound)
@@ -591,12 +633,14 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 		if err != nil {
 			return nil, pathError(prefix, name, err)
 		}
+		s.processFiles.consume(ctx, resolved)
 		return pipeReader(content)
 	case os.O_WRONLY:
-		file, err := s.openForWriting(ctx, prefix, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+		file, err := s.openForWriting(ctx, prefix, name, resolved, flag&os.O_APPEND != 0)
 		if err != nil {
 			return nil, err
 		}
+		file.owner = owner
 		targets.add(file)
 		return file, nil
 	}
@@ -608,7 +652,7 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 // read-only mount) fails the redirect before the command runs and before
 // && or || decide. The returned file collects what is written and stores
 // it on Close.
-func (s *session) openForWriting(ctx context.Context, prefix, name, resolved string, appending bool, stderr io.Writer) (*bufferedFile, error) {
+func (s *session) openForWriting(ctx context.Context, prefix, name, resolved string, appending bool) (*bufferedFile, error) {
 	files := s.files()
 	if err := files.checkWritable(ctx, resolved); err != nil {
 		return nil, pathError(prefix, name, err)
@@ -620,30 +664,37 @@ func (s *session) openForWriting(ctx context.Context, prefix, name, resolved str
 		}
 		return nil, pathError(prefix, name, errIsDirectory)
 	}
-	file := &bufferedFile{label: prefix + name, stderr: stderr}
+	file := s.newBufferedFile(ctx, prefix+name, interp.HandlerCtx(ctx).Stderr)
 	if appending {
 		content, _, err := files.storage.ReadFile(ctx, resolved)
 		switch {
-		case err == nil:
-			file.content = content
-		case !errors.Is(err, vfs.ErrFileNotFound):
+		case errors.Is(err, vfs.ErrFileNotFound):
+		case err != nil:
 			return nil, pathError(prefix, name, err)
+		case !s.budget.reserve(len(content)):
+			return nil, pathError(prefix, name, errNoSpace)
+		default:
+			file.content, file.reserved = content, len(content)
 		}
 	}
 	contentType := contentTypeFor(resolved)
 	if err := files.storage.WriteFile(ctx, resolved, file.content, contentType); err != nil {
+		s.budget.release(file.reserved)
 		return nil, pathError(prefix, name, err)
 	}
-	// A script that timed out still stores what it wrote, as bash would
-	// have, but a Storage that hangs cannot hold the shell past
-	// redirectStoreTimeout.
-	detached := context.WithoutCancel(ctx)
-	file.commit = func(content []byte) error {
-		storeContext, cancel := context.WithTimeout(detached, redirectStoreTimeout)
-		defer cancel()
-		return files.storage.WriteFile(storeContext, resolved, content, contentType)
+	file.commit = func(ctx context.Context, content []byte) error {
+		return files.storage.WriteFile(ctx, resolved, content, contentType)
 	}
 	return file, nil
+}
+
+// newBufferedFile returns an empty redirect target that counts against the
+// session's budget and stores with storeContext(ctx).
+func (s *session) newBufferedFile(ctx context.Context, label string, stderr io.Writer) *bufferedFile {
+	return &bufferedFile{
+		label: label, stderr: stderr, budget: s.budget,
+		storeContext: func() (context.Context, context.CancelFunc) { return storeContext(ctx) },
+	}
 }
 
 // redirectTargets are the redirect files one interpreter (with its
@@ -655,21 +706,33 @@ type redirectTargets struct {
 	files []*bufferedFile
 }
 
+// add tracks file until it closes, so a closed file and its content are
+// released at once.
 func (r *redirectTargets) add(file *bufferedFile) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.files = append(r.files, file)
+	file.onClose = r.remove
 }
 
-// closeAll stores every file still open; Close is a no-op for closed ones,
-// and reports a failed store on stderr itself.
-func (r *redirectTargets) closeAll() {
+func (r *redirectTargets) remove(file *bufferedFile) {
 	r.mutex.Lock()
-	files := r.files
-	r.files = nil
+	defer r.mutex.Unlock()
+	if index := slices.Index(r.files, file); index >= 0 {
+		r.files = slices.Delete(r.files, index, index+1)
+	}
+}
+
+// closeAll stores every file still open, all within one store period
+// (storeContext of ctx); each reports a failed store on stderr itself.
+func (r *redirectTargets) closeAll(ctx context.Context) {
+	r.mutex.Lock()
+	files := slices.Clone(r.files)
 	r.mutex.Unlock()
+	shared, cancel := storeContext(ctx)
+	defer cancel()
 	for _, file := range files {
-		_ = file.Close()
+		_ = file.closeWith(shared)
 	}
 }
 

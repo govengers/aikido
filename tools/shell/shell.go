@@ -13,7 +13,6 @@ import (
 	"mvdan.cc/sh/v3/interp"
 
 	"github.com/govengers/aikido/vfs"
-	"github.com/govengers/aikido/vfs/memory"
 	"github.com/govengers/aikido/vfs/mount"
 )
 
@@ -77,14 +76,15 @@ type Result struct {
 }
 
 // Shell runs bash scripts over a vfs.Storage. The working directory, the
-// directories mkdir created and the files in /tmp (memory, at most 64 MiB
-// together) persist from one Run to the next; variables and functions do
-// not. Run calls are serialized, so a Shell is safe
-// for concurrent use.
+// directories mkdir created and the files in /tmp persist from one Run to
+// the next; variables and functions do not. /tmp, the files of <(list) and
+// redirect output not stored yet share one memory budget of 128 MiB. Run
+// calls are serialized, so a Shell is safe for concurrent use.
 type Shell struct {
 	options     Options
 	commands    map[string]Command
 	directories *directorySet
+	budget      *memoryBudget   // /tmp, /dev/fd and buffered redirects
 	scratch     *scratchStorage // /tmp
 	// root is the MountPoint as a path of the session Storage: "" for "/".
 	root string
@@ -130,9 +130,10 @@ func New(options *Options) (*Shell, error) {
 		configured.ToolName = DefaultToolName
 	}
 	root := strings.TrimPrefix(mountPoint, "/")
+	budget := newMemoryBudget(maximumSessionBytes)
 	return &Shell{
 		options: configured, commands: commands, root: root, directory: root,
-		directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes), turn: make(chan struct{}, 1),
+		directories: newDirectorySet(), budget: budget, scratch: newScratchStorage(budget), turn: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -228,6 +229,7 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
+	defer call.processFiles.files.clear(context.WithoutCancel(ctx))
 	file, err := call.parse(script, "")
 	if err != nil {
 		fmt.Fprintf(stderr, "bash: %v\n", err)
@@ -266,15 +268,19 @@ func (s *Shell) newSession() (*session, error) {
 	if s.options.HideHiddenPaths {
 		workspace = hiddenFilter{workspace}
 	}
+	processFiles := processFileStorage{newScratchStorage(s.budget)}
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
 		{Prefix: s.root, Storage: workspace},
 		{Prefix: scratchDirectory, Storage: s.scratch},
-		{Prefix: processFileDirectory, Storage: processFileStorage{memory.New()}},
+		{Prefix: processFileDirectory, Storage: processFiles},
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp and /dev/fd: %w", err)
 	}
-	return &session{storage: storage, root: s.root, directories: s.directories, commands: s.commands}, nil
+	return &session{
+		storage: storage, root: s.root, directories: s.directories, commands: s.commands,
+		budget: s.budget, processFiles: processFiles,
+	}, nil
 }
 
 // recoverDirectory moves back to the mount point when the working directory
