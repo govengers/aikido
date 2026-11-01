@@ -1,0 +1,8 @@
+# auth service configuration
+service: auth
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/auth
+  timeoutSeconds: 14
+links:
+  help: https://api.acme-legacy.io/auth
+  health: https://api.acme-legacy.io/health

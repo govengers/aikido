@@ -1,0 +1,8 @@
+# search service configuration
+service: search
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/search
+  timeoutSeconds: 12
+links:
+  help: https://docs.acme-legacy.io/search
+  health: https://api.acme-legacy.io/health

@@ -1,0 +1,8 @@
+# billing service configuration
+service: billing
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/billing
+  timeoutSeconds: 16
+links:
+  help: https://api.acme-legacy.io/billing
+  health: https://api.acme-legacy.io/health

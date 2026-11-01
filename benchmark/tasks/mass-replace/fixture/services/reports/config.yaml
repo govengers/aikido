@@ -1,0 +1,8 @@
+# reports service configuration
+service: reports
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/reports
+  timeoutSeconds: 12
+links:
+  help: https://api.acme-legacy.io/reports
+  health: https://api.acme-legacy.io/health

@@ -1,0 +1,8 @@
+# users service configuration
+service: users
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/users
+  timeoutSeconds: 17
+links:
+  help: https://api.acme-legacy.io/users
+  health: https://api.acme-legacy.io/health

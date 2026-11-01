@@ -1,0 +1,8 @@
+# catalog service configuration
+service: catalog
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/catalog
+  timeoutSeconds: 5
+links:
+  help: https://api.acme-legacy.io/catalog
+  health: https://api.acme-legacy.io/health

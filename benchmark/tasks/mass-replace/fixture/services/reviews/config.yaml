@@ -1,0 +1,8 @@
+# reviews service configuration
+service: reviews
+upstream:
+  baseURL: https://status.acme-legacy.io/v2/reviews
+  timeoutSeconds: 15
+links:
+  help: https://api.acme-legacy.io/reviews
+  health: https://api.acme-legacy.io/health

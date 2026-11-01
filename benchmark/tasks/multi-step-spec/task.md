@@ -1,0 +1,1 @@
+Implement the feature described in `SPEC.md`: the library function, the new subcommand and the README update. `go vet ./...` and `go test ./...` must pass. Do not modify `SPEC.md` or the existing tests.

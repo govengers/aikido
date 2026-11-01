@@ -1,0 +1,2 @@
+rate(cpu[5m])
+sum(mem)
