@@ -32,6 +32,8 @@ func TestApplyEdits(t *testing.T) {
 		{"replace all", "b b", []textEdit{{OldString: "b", NewString: "x", ReplaceAll: true}}, "x x", 2, ""},
 		{"edits chain", "a b", []textEdit{{OldString: "a", NewString: "c"}, {OldString: "c b", NewString: "done"}}, "done", 2, ""},
 		{"ambiguous", "b b", []textEdit{{OldString: "b", NewString: "x"}}, "", 0, "old_string matches 2 times in f.md"},
+		{"ambiguous by overlap", "aaa", []textEdit{{OldString: "aa", NewString: "x"}}, "", 0, "old_string matches at overlapping positions in f.md"},
+		{"overlap with replace_all", "aaa", []textEdit{{OldString: "aa", NewString: "x", ReplaceAll: true}}, "xa", 1, ""},
 		{"missing", "a", []textEdit{{OldString: "b", NewString: "x"}}, "", 0, "old_string not found in f.md"},
 		{"empty old_string", "a", []textEdit{{NewString: "x"}}, "", 0, "old_string is empty"},
 		{"identical", "a", []textEdit{{OldString: "a", NewString: "a"}}, "", 0, "identical"},

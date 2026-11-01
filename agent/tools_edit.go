@@ -202,6 +202,8 @@ func checkGrowth(textBytes, matches int, edit textEdit, maximumBytes int64) erro
 }
 
 // countMatches returns how often edit replaces in text, or why it cannot.
+// Without ReplaceAll, old_string must start at exactly one position, so
+// overlapping matches are ambiguous too.
 func countMatches(filePath, text string, edit textEdit) (int, error) {
 	if edit.OldString == "" {
 		return 0, errors.New("old_string is empty; use write_file to create a file")
@@ -215,6 +217,9 @@ func countMatches(filePath, text string, edit textEdit) (int, error) {
 		return 0, fmt.Errorf("old_string not found in %s", filePath)
 	case matches > 1 && !edit.ReplaceAll:
 		return 0, fmt.Errorf("old_string matches %d times in %s; add context to make it unique or set replace_all", matches, filePath)
+	case !edit.ReplaceAll && strings.Index(text, edit.OldString) != strings.LastIndex(text, edit.OldString):
+		// strings.Count skips overlaps: "aa" counts once in "aaa" but starts at two positions.
+		return 0, fmt.Errorf("old_string matches at overlapping positions in %s; add context to make it unique or set replace_all", filePath)
 	}
 	return matches, nil
 }
