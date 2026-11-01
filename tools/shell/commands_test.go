@@ -143,6 +143,9 @@ func TestProcessSubstitution(t *testing.T) {
 		{name: "stderr passes through", script: "cat <(echo err >&2) 2>/dev/null; cat <(nosuch)", want: "bash: line 1: nosuch: command not found\n"},
 		{name: "nested bash", script: `bash -c 'wc -l < <(printf "a\nb\n")'`, want: "2\n"},
 		{name: "eval", script: `eval 'cat <(echo from eval)'`, want: "from eval\n"},
+		// The review's S2 script: mvdan created a host FIFO for it and the
+		// unopened FIFO hung the cleanup.
+		{name: "eval without a reader", script: `eval 'echo <(true)'; source /dev/null`, want: "/dev/fd/63\n"},
 		{name: "source with arguments", files: map[string]string{"lib.sh": "cat <(echo \"sourced $1\")\n"}, script: "source lib.sh one; . ./lib.sh two", want: "sourced one\nsourced two\n"},
 		{name: "trap", script: `trap -- 'cat <(echo trapped)' ERR; false; trap - ERR; false`, want: "trapped\n", status: 1},
 		{name: "files stay out of listings and the workspace", script: "cat <(echo x) >/dev/null; ls /; ls /dev/fd; find . | wc -l", want: "1\n"},
