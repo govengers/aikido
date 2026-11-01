@@ -58,6 +58,10 @@ test-e2e: e2e-build
 vulncheck:
     {{govulncheck}} ./...
 
+# Mirror docs/wiki of a release tag (default: the newest) or of main to the GitHub wiki; CI does it for every release
+wiki ref="":
+    .github/scripts/publish-wiki.sh {{ref}}
+
 # Everything CI runs on a change
 check: lint test test-e2e vulncheck
 
