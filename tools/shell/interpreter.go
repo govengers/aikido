@@ -233,6 +233,7 @@ func workspaceDirectory(directory string) string {
 // not a function or a shell builtin.
 func (s *session) execute(ctx context.Context, arguments []string) (err error) {
 	defer recoverHandler(&err)
+	defer s.processFiles.releaseNamed(context.WithoutCancel(ctx), arguments)
 	handler := interp.HandlerCtx(ctx)
 	invocation := &Invocation{
 		Arguments:   arguments[1:],
@@ -646,8 +647,7 @@ func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode
 		if err != nil {
 			return nil, pathError(prefix, name, err)
 		}
-		s.processFiles.consume(ctx, resolved)
-		return pipeReader(content)
+		return pipeReader(content, s.processFiles.consume(ctx, resolved))
 	case os.O_WRONLY:
 		file, err := s.openForWriting(ctx, prefix, name, resolved, flag&os.O_APPEND != 0)
 		if err != nil {
@@ -775,7 +775,7 @@ func openDevice(name string, flag int, handler interp.HandlerContext) (io.ReadWr
 	case name == "dev/stderr" && !reading:
 		return &streamFile{writer: handler.Stderr}, nil
 	case reading:
-		return pipeReader(nil)
+		return pipeReader(nil, nil)
 	}
 	return &streamFile{writer: io.Discard}, nil
 }

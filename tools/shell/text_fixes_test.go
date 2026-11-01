@@ -218,6 +218,8 @@ func TestGrepBeforeContextBudget(t *testing.T) {
 	lines := map[string]string{"f": strings.Repeat(strings.Repeat("x", 999)+"\n", 1000)}
 	runScriptCases(t, []scriptCase{
 		{name: "huge -B", files: lines, script: `while cat f; do :; done | grep -B 1000000000 NEVER; echo $?`, want: "grep: input exceeds 67108864 bytes\n2\n"},
+		// Empty lines cost their entry: they held no bytes and grew until the timeout.
+		{name: "huge -B of empty lines", script: `seq 1 1000000000000 | tr -d '0-9' | grep -B 1000000000 NEVER; echo $?`, want: "grep: input exceeds 67108864 bytes\n2\n"},
 	}, &Options{Timeout: time.Minute})
 }
 

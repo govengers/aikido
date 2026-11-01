@@ -97,6 +97,20 @@ func (s *scratchStorage) DeleteFile(ctx context.Context, name string) error {
 	return nil
 }
 
+// detach deletes a file but leaves its bytes charged to the budget and
+// returns their count: the caller still holds a copy and releases them
+// itself. A missing file is 0.
+func (s *scratchStorage) detach(ctx context.Context, name string) int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.files.DeleteFile(ctx, name) != nil {
+		return 0
+	}
+	size := s.sizes[name]
+	delete(s.sizes, name)
+	return size
+}
+
 // clear deletes every file and returns its bytes to the budget.
 func (s *scratchStorage) clear(ctx context.Context) {
 	s.mutex.Lock()

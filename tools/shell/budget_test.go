@@ -50,17 +50,62 @@ func TestProcessFilesAreTheShells(t *testing.T) {
 // TestProcessFilesCountAgainstTheBudget replays the review's "for i in $(seq
 // 1 500); do eval 'cat <(seq 1 8000000) >/dev/null'; done": every eval
 // parse stored a new uncapped /dev/fd file for the whole Run. They now count
-// against the Shell's budget, a redirect that reads one drops it, and they
-// are gone after the Run.
+// against the Shell's budget, a redirect that reads one or the command that
+// got one drops it, and they are gone after the Run.
 func TestProcessFilesCountAgainstTheBudget(t *testing.T) {
 	shell, _ := newTestShell(t, map[string]string{"seed": strings.Repeat("0", 600)}, nil)
 	shell.budget = newMemoryBudget(1000)
 	shell.scratch = newScratchStorage(shell.budget)
 	result := mustRun(t, shell, "for i in 1 2 3 4 5; do while read -r l; do :; done < <(cat seed); done; "+
-		"for i in 1 2 3; do eval 'cat <(cat seed) >/dev/null'; done; echo done")
-	full := "cat: No space left on device\n"
-	if result.Output != full+full+"done\n" {
-		t.Fatalf("output = %q", result.Output)
+		"for i in 1 2 3; do eval 'cat <(cat seed) >/dev/null'; done; cat <(cat seed) <(cat seed) | wc -c")
+	if want := "cat: No space left on device\n600\n"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+	if used := budgetUsed(shell); used != 0 {
+		t.Fatalf("budget holds %d bytes after the Run", used)
+	}
+}
+
+// TestOperandProcessFilesEndWithTheCommand replays the review's "for f in
+// logs/*.log; do diff <(sort "$f") expected.txt; done": a process file
+// passed as a command operand stayed in /dev/fd until the Run ended, so
+// from the file that filled the budget on every substitution came out
+// empty and diff reported wrong differences. Within the command the path
+// still exists for existence checks and reads.
+func TestOperandProcessFilesEndWithTheCommand(t *testing.T) {
+	log := strings.Repeat("b\na\n", 150)
+	files := map[string]string{"expected.txt": strings.Repeat("a\n", 150) + strings.Repeat("b\n", 150)}
+	for _, name := range []string{"1", "2", "3", "4", "5"} {
+		files["logs/"+name+".log"] = log
+	}
+	shell, _ := newTestShell(t, files, nil)
+	shell.budget = newMemoryBudget(1000)
+	shell.scratch = newScratchStorage(shell.budget)
+	result := mustRun(t, shell, `for f in logs/*.log; do diff <(sort "$f") expected.txt && echo same; done; `+
+		`for f in logs/*.log; do cat <(cat "$f") | wc -l; done; `+
+		`for f in logs/*.log; do wc -l <(cat "$f") | awk '{print $1}'; done; `+
+		`[ -e <(true) ] && echo exists; f() { wc -c "$1"; }; f <(echo hi) | awk '{print $1}'`)
+	want := strings.Repeat("same\n", 5) + strings.Repeat("300\n", 10) + "exists\n3\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+	if used := budgetUsed(shell); used != 0 {
+		t.Fatalf("budget holds %d bytes after the Run", used)
+	}
+}
+
+// TestReadProcessFilesStayCharged replays the review's "for i in {1..32};
+// do sleep 30 < <(cat seed) & sleep .1; done; wait": reading a process file
+// released its charge while the pipe to the reader still held the copy, so
+// readers that do not read retained memory outside the budget.
+func TestReadProcessFilesStayCharged(t *testing.T) {
+	const seedBytes = 1 << 20 // beyond any pipe buffer, so the writer blocks
+	shell, _ := newTestShell(t, map[string]string{"seed": strings.Repeat("x", seedBytes)}, nil)
+	shell.budget = newMemoryBudget(seedBytes + seedBytes/2)
+	shell.scratch = newScratchStorage(shell.budget)
+	result := mustRun(t, shell, "for i in 1 2; do sleep .5 < <(cat seed) & sleep .1; done; wait; wc -c < <(cat seed)")
+	if want := "cat: No space left on device\n1048576\n"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
 	}
 	if used := budgetUsed(shell); used != 0 {
 		t.Fatalf("budget holds %d bytes after the Run", used)

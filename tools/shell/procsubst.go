@@ -64,12 +64,44 @@ func (p processFileStorage) store(ctx context.Context, name string, content []by
 	return p.files.WriteFile(ctx, name, content, contentType)
 }
 
-// consume drops a process file a redirect has read (cmd < <(list)): like
-// the pipe bash substitutes, it is read once, and a loop over many
-// substitutions does not hold them all. resolved is a session path.
-func (p processFileStorage) consume(ctx context.Context, resolved string) {
-	if name, ok := strings.CutPrefix(resolved, processFileDirectory+"/"); ok {
-		_ = p.files.DeleteFile(ctx, name)
+// consume drops a process file a redirect reads (cmd < <(list)) from
+// /dev/fd: like the pipe bash substitutes, it is read once, and a loop over
+// many substitutions does not hold them all. Its bytes stay charged to the
+// budget until release runs, when the reader no longer holds the copy.
+// resolved is a session path; for any other file release does nothing.
+func (p processFileStorage) consume(ctx context.Context, resolved string) (release func()) {
+	name, ok := strings.CutPrefix(resolved, processFileDirectory+"/")
+	if !ok {
+		return func() {}
+	}
+	size := p.files.detach(ctx, name)
+	return func() { p.files.budget.release(size) }
+}
+
+// releaseNamed drops the process files arguments name (/dev/fd/63, also
+// inside a word like --file=/dev/fd/63) once the command that got them has
+// ended: bash closes the pipe of a <(list) after that command, so a loop
+// that hands a substitution to a command operand (diff <(sort f) want)
+// does not hold them all.
+func (p processFileStorage) releaseNamed(ctx context.Context, arguments []string) {
+	directory := "/" + processFileDirectory + "/"
+	for _, argument := range arguments {
+		rest := argument
+		for {
+			_, after, found := strings.Cut(rest, directory)
+			if !found {
+				break
+			}
+			end := strings.IndexFunc(after, func(character rune) bool { return character < '0' || character > '9' })
+			if end < 0 {
+				end = len(after)
+			}
+			if end > 0 {
+				// A name that is no process file (any more) leaves nothing to drop.
+				_ = p.files.DeleteFile(ctx, after[:end])
+			}
+			rest = after[end:]
+		}
 	}
 }
 
