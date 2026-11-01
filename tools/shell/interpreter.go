@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,8 +29,8 @@ const (
 	// internalFailure prints Arguments[0] to stderr and exits with the
 	// status in Arguments[1].
 	internalFailure = "\x00failure"
-	// internalLookup answers "command -v" (Arguments[0] == "command") or
-	// "type" for registered commands.
+	// internalLookup answers command -v/-V and type from the shell's own
+	// commands, builtins, keywords and functions (see lookup).
 	internalLookup = "\x00lookup"
 )
 
@@ -250,7 +249,7 @@ func (s *session) dispatch(ctx context.Context, name string, invocation *Invocat
 		status, _ := strconv.Atoi(invocation.Arguments[1])
 		return uint8(status) //nolint:gosec // G115: the shell itself writes statuses 1, 2 and 127 here
 	case internalLookup:
-		if len(invocation.Arguments) == 0 {
+		if len(invocation.Arguments) < 2 {
 			return statusInternalError
 		}
 		return s.lookup(invocation, position)
@@ -335,42 +334,117 @@ func runCommand(ctx context.Context, command Command, invocation *Invocation) (s
 // rewrite is the interpreter's call handler. It runs before every simple
 // command, builtins included, and changes the few builtins that would
 // otherwise consult the host: lookups in PATH, symlink resolution, and the
-// wording of cd's errors.
+// wording of cd's errors. A builtin reached through command, builtin or exec
+// is rewritten like a direct call: normalizeCall resolves those wrappers
+// first, in every form the interpreter accepts.
 func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, error) {
 	handler := interp.HandlerCtx(ctx)
-	if strings.ContainsRune(arguments[0], 0) {
+	call, failure := normalizeCall(arguments)
+	switch {
+	case failure != "":
+		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + failure, strconv.Itoa(statusUnsupported)}, nil
+	case len(call.arguments) > 0 && strings.ContainsRune(call.arguments[0], 0):
 		// Only these rewrites may name an internal command. A script can
 		// still spell a NUL byte (read puts one in $REPLY); bash cuts the
 		// name there.
-		name, _, _ := strings.Cut(arguments[0], "\x00")
+		name, _, _ := strings.Cut(call.arguments[0], "\x00")
 		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + name + ": command not found", strconv.Itoa(statusNotFound)}, nil
+	case call.show != "":
+		return append(call.prefix(), append([]string{internalLookup, "command " + call.show, ""}, call.arguments...)...), nil
+	case len(call.arguments) == 0:
+		return append(call.prefix(), call.arguments...), nil
+	case call.builtinOnly && !interp.IsBuiltin(call.arguments[0]):
+		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + "builtin: " + call.arguments[0] + ": not a shell builtin", "1"}, nil
 	}
-	wrappers := builtinWrappers(arguments)
-	if wrappers == len(arguments) {
-		return arguments, nil
-	}
-	rewritten := s.rewriteCall(ctx, handler, arguments[wrappers:])
-	if rewritten[0] == internalFailure || rewritten[0] == internalLookup {
-		return rewritten, nil
-	}
-	return append(slices.Clone(arguments[:wrappers]), rewritten...), nil
+	return append(call.prefix(), s.rewriteCall(ctx, handler, call.arguments)...), nil
 }
 
-// builtinWrappers counts the leading "builtin" and "command" words (command
-// without an option) that run the builtin after them, so "builtin pwd -P"
-// is rewritten like "pwd -P".
-func builtinWrappers(arguments []string) int {
-	index := 0
-	for index < len(arguments) {
-		switch {
-		case arguments[index] == "builtin":
-		case arguments[index] == "command" && index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "-"):
-		default:
-			return index
-		}
-		index++
+// wrappedCall is a simple command with its leading command, builtin and
+// exec words resolved.
+type wrappedCall struct {
+	// arguments are the command that runs and its arguments; with show, the
+	// names to look up.
+	arguments []string
+	// exec and command record the wrappers that were present: the rewritten
+	// call keeps their meaning (exec ends the shell, command and builtin skip
+	// functions) in the one form the interpreter parses without options.
+	exec, command bool
+	// builtinOnly is set when the last wrapper was builtin: the command must
+	// be a shell builtin.
+	builtinOnly bool
+	// show is "-v" or "-V" when command looks the names up instead.
+	show string
+}
+
+// prefix returns the wrapper words the rewritten call starts with.
+func (c wrappedCall) prefix() []string {
+	switch {
+	case c.exec:
+		return []string{"exec"}
+	case c.command:
+		return []string{"command"}
 	}
-	return index
+	return nil
+}
+
+// normalizeCall resolves the wrappers in front of a command like bash does:
+// any sequence of "command [-pvV]... [--]", "builtin [--]" and "exec [--]",
+// with combined flags (-pv) and repetitions. It returns the message for an
+// invalid option of command, without the "bash: " prefix.
+func normalizeCall(arguments []string) (wrappedCall, string) {
+	var call wrappedCall
+	for len(arguments) > 1 {
+		switch arguments[0] {
+		case "builtin":
+			call.command, call.builtinOnly = true, true
+			arguments = skipDoubleDash(arguments[1:])
+		case "exec":
+			call.exec, call.builtinOnly = true, false
+			arguments = skipDoubleDash(arguments[1:])
+		case "command":
+			call.command, call.builtinOnly = true, false
+			var failure string
+			arguments, failure = commandOptions(&call, arguments[1:])
+			if failure != "" || call.show != "" {
+				call.arguments = arguments
+				return call, failure
+			}
+		default:
+			call.arguments = arguments
+			return call, ""
+		}
+	}
+	call.arguments = arguments
+	return call, ""
+}
+
+// commandOptions consumes the options of command: -p (the default PATH,
+// which changes nothing here), -v and -V (the last one counts), up to "--".
+func commandOptions(call *wrappedCall, arguments []string) ([]string, string) {
+	for len(arguments) > 0 && len(arguments[0]) > 1 && arguments[0][0] == '-' {
+		option := arguments[0]
+		arguments = arguments[1:]
+		if option == "--" {
+			break
+		}
+		for _, letter := range option[1:] {
+			switch letter {
+			case 'p':
+			case 'v', 'V':
+				call.show = "-" + string(letter)
+			default:
+				return arguments, "command: -" + string(letter) + ": invalid option\ncommand: usage: command [-pVv] command [arg ...]"
+			}
+		}
+	}
+	return arguments, ""
+}
+
+func skipDoubleDash(arguments []string) []string {
+	if len(arguments) > 0 && arguments[0] == "--" {
+		return arguments[1:]
+	}
+	return arguments
 }
 
 // rewriteCall rewrites one builtin call without its wrappers.
@@ -390,8 +464,8 @@ func (s *session) rewriteCall(ctx context.Context, handler interp.HandlerContext
 	case "pwd":
 		// -P resolves symlinks on the host; workspace paths have none.
 		return []string{"pwd"}
-	case "command", "type":
-		return s.rewriteLookup(arguments)
+	case "type":
+		return s.rewriteType(handler, arguments)
 	case "shift":
 		// The interpreter slices the parameters with a negative count and
 		// panics, in a goroutine for "shift -1 &".
