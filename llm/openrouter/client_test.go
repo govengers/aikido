@@ -967,3 +967,24 @@ func TestStream_CancelledMidStreamEmitsNoError(t *testing.T) {
 		}
 	}
 }
+
+// TestNewClient_DefaultClientBoundsResponseHeaders pins RES-001: without an
+// HTTPClient a hung provider fails after the header timeout instead of
+// blocking forever, while the overall Timeout stays off for long streams.
+func TestNewClient_DefaultClientBoundsResponseHeaders(t *testing.T) {
+	t.Parallel()
+	client, err := NewClient(&Options{APIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if client.httpClient.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (streams outlive any fixed cap)", client.httpClient.Timeout)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if transport.ResponseHeaderTimeout != defaultResponseHeaderTimeout {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, defaultResponseHeaderTimeout)
+	}
+}

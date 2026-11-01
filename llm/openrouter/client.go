@@ -23,6 +23,12 @@ const DefaultBaseURL = "https://openrouter.ai/api/v1"
 const (
 	defaultVideoPollInterval = 3 * time.Second
 
+	// defaultResponseHeaderTimeout bounds how long the default HTTP client
+	// waits for a response's headers (RES-001). It is far above any
+	// legitimate wait, a non-streaming reasoning turn included, and only
+	// turns a hung connection into an error instead of a goroutine stuck forever.
+	defaultResponseHeaderTimeout = 10 * time.Minute
+
 	// eventBufferSize lets the stream producer run a few events ahead of a
 	// slow consumer.
 	eventBufferSize = 16
@@ -36,9 +42,10 @@ type Options struct {
 	// BaseURL overrides DefaultBaseURL. Useful for tests via httptest.Server.
 	BaseURL string
 
-	// HTTPClient overrides the default. Default: &http.Client{Timeout: 0}.
-	// Streams may be long-lived; callers wanting a wall-clock cap pass a
-	// context with deadline rather than configuring a client-level timeout.
+	// HTTPClient overrides the default client, which waits at most 10 minutes
+	// for response headers but sets no overall Timeout: streams may be
+	// long-lived, so callers wanting a wall-clock cap pass a context with a
+	// deadline rather than configuring a client-level timeout.
 	HTTPClient *http.Client
 
 	// HTTPReferer is the optional OpenRouter ranking-attribution header.
@@ -107,12 +114,25 @@ func NewClient(options *Options) (*Client, error) {
 		client.baseURL = DefaultBaseURL
 	}
 	if client.httpClient == nil {
-		client.httpClient = &http.Client{Timeout: 0}
+		client.httpClient = defaultHTTPClient()
 	}
 	if client.videoPollInterval <= 0 {
 		client.videoPollInterval = defaultVideoPollInterval
 	}
 	return client, nil
+}
+
+// defaultHTTPClient clones http.DefaultTransport (dial and TLS timeouts) and
+// adds the response-header timeout. An application that replaced
+// http.DefaultTransport with its own RoundTripper keeps it, unchanged.
+func defaultHTTPClient() *http.Client {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Transport: http.DefaultTransport}
+	}
+	withHeaderTimeout := transport.Clone()
+	withHeaderTimeout.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	return &http.Client{Transport: withHeaderTimeout}
 }
 
 // Stream sends one chat-completions request and returns a channel of events.
