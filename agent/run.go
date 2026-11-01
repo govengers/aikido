@@ -225,7 +225,9 @@ func (s *Session) callModel(runContext context.Context, sink eventSink, state *r
 }
 
 // receiveReply consumes the provider's stream until it closes or ctx ends.
-// The first EventError of the stream becomes the returned error.
+// The first EventError of the stream becomes the returned error. A stream
+// that closes once ctx is done is a failure too: a provider that ends its
+// stream on cancellation must not turn a cut reply into a complete one.
 func receiveReply(ctx context.Context, providerEvents <-chan llm.Event, sink eventSink) (*replyBuilder, error) {
 	builder := &replyBuilder{}
 	for {
@@ -234,6 +236,9 @@ func receiveReply(ctx context.Context, providerEvents <-chan llm.Event, sink eve
 			return builder, ctx.Err()
 		case event, open := <-providerEvents:
 			if !open {
+				if err := ctx.Err(); err != nil {
+					return builder, err
+				}
 				return builder, builder.streamError
 			}
 			builder.add(event, sink)

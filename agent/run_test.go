@@ -773,3 +773,19 @@ func TestEventSink_DropsOnlyWhenAbandonedAndFull(t *testing.T) {
 		t.Error("the second event should have been dropped")
 	}
 }
+
+// Regression: with ctx done and the provider's channel closed at once, the
+// select could take the close and accept a cut reply after LLMCallTimeout.
+func TestReceiveReply_StreamClosedAfterContextEndIsAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink := eventSink{events: make(chan Event, 2*eventBufferSize), abandoned: ctx.Done()}
+	for range 100 {
+		providerEvents := make(chan llm.Event, 1)
+		providerEvents <- llm.Event{Kind: llm.EventTextDelta, Text: "cut"}
+		close(providerEvents)
+		if _, err := receiveReply(ctx, providerEvents, sink); !errors.Is(err, context.Canceled) {
+			t.Fatalf("receiveReply = %v; want context.Canceled", err)
+		}
+	}
+}
