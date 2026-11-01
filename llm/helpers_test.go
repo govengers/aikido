@@ -163,6 +163,21 @@ func TestCollect_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestCollect_CloseAfterCancelIsNotSuccess pins that a stream closing while
+// ctx is done is reported as the context error: the producer stopped early,
+// so the partial answer must not pass for a complete one. Both select cases
+// are ready, so the race is run often enough to hit the close branch.
+func TestCollect_CloseAfterCancelIsNotSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	client := &scriptedClient{events: []Event{{Kind: EventTextDelta, Text: "parti"}}}
+	for range 64 {
+		if _, err := Collect(ctx, client, Request{}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	}
+}
+
 type silentClient struct{ events chan Event }
 
 func (c *silentClient) Stream(context.Context, Request) (<-chan Event, error) {

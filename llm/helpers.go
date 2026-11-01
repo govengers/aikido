@@ -123,8 +123,8 @@ func CompleteWithRetry(ctx context.Context, client Client, request Request, poli
 // usage a provider reports after the error (the failed call was billed) and
 // the FinishReason still land in the Response; it returns the first error.
 // On a cancelled ctx it returns what it gathered so far with that first
-// error, else with the context error; it does not wait for the producer
-// after ctx ends.
+// error, else with the context error, also when the channel closed at the
+// same time; it does not wait for the producer after ctx ends.
 func Collect(ctx context.Context, client Client, request Request) (Response, error) {
 	events, err := client.Stream(ctx, request)
 	if err != nil {
@@ -146,6 +146,11 @@ func Collect(ctx context.Context, client Client, request Request) (Response, err
 		case event, open := <-events:
 			if !open {
 				response.Text = text.String()
+				if streamError == nil {
+					// A producer stops early when ctx ends: a close after
+					// that is a cut-off answer, not a success.
+					streamError = ctx.Err()
+				}
 				return response, streamError
 			}
 			if event.Kind == EventError && streamError == nil {
