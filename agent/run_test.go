@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -434,6 +435,33 @@ func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
 	}
 }
 
+// Regression: a caller that cancelled and stopped reading used to leave the
+// run goroutine blocked on a full channel forever, holding the session lock
+// (CON-005).
+func TestRun_AbandonedRunReleasesTheLock(t *testing.T) {
+	floodEvents := make([]llm.Event, 0, 2*eventBufferSize)
+	for range 2 * eventBufferSize {
+		floodEvents = append(floodEvents, llm.Event{Kind: llm.EventTextDelta, Text: "x"})
+	}
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: floodEvents}, textTurn("second"))
+	session := newTestSession(t, stub, nil, nil)
+
+	abandonedContext, cancel := context.WithCancel(context.Background())
+	abandoned, _ := session.Run(abandonedContext, "flood")
+	for len(abandoned) < cap(abandoned) {
+		runtime.Gosched() // wait until the run is blocked on the full channel
+	}
+	cancel()
+
+	ctx, cancelSecond := context.WithTimeout(context.Background(), testTimeout)
+	defer cancelSecond()
+	second, _ := session.Run(ctx, "next")
+	if reason := endReasonOf(t, collectEvents(t, second)); reason != EndReasonStop {
+		t.Errorf("run after an abandoned run ended with %q; want stop", reason)
+	}
+	collectEvents(t, abandoned)
+}
+
 func TestRun_LocalLockerSerializesSameIDAcrossSessions(t *testing.T) {
 	locker := NewLocalLocker()
 	history := memory.NewHistory()
@@ -703,5 +731,22 @@ func TestToolResultJSON(t *testing.T) {
 				t.Errorf("toolResultJSON = %s; want %s", got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestEventSink_DropsOnlyWhenAbandonedAndFull(t *testing.T) {
+	events := make(chan Event, 1)
+	abandoned := make(chan struct{})
+	sink := eventSink{events: events, abandoned: abandoned}
+	close(abandoned)
+
+	sink.send(Event{Kind: EventText, Text: "fits the buffer"})
+	sink.send(Event{Kind: EventText, Text: "dropped"})
+
+	if got := (<-events).Text; got != "fits the buffer" {
+		t.Errorf("first event = %q; want the buffered one", got)
+	}
+	if len(events) != 0 {
+		t.Error("the second event should have been dropped")
 	}
 }

@@ -38,6 +38,11 @@ type RunOptions struct {
 // On EndReasonError (including History I/O failure, Lock-acquire timeout or a
 // panic inside the run) the History is NOT updated for this turn: the caller
 // knows to retry, and the durable transcript stays consistent.
+//
+// The caller should read the channel until it closes. A caller that cancels
+// ctx may stop reading: events that no longer fit the channel's buffer are
+// then dropped, and the run still releases the session lock and closes the
+// channel.
 func (s *Session) Run(ctx context.Context, userText string) (<-chan Event, error) {
 	return s.RunWithOptions(ctx, userText, nil)
 }
@@ -94,7 +99,7 @@ func (state *runState) record(message llm.Message) {
 // turns a panic into EventError plus EventEnd (CON-001).
 func (s *Session) runLoop(userContext context.Context, events chan<- Event, plan runPlan) {
 	defer close(events)
-	sink := eventSink{events: events}
+	sink := eventSink{events: events, abandoned: userContext.Done()}
 	defer recoverRun(sink)
 
 	runContext, cancelRun := context.WithTimeout(userContext, s.options.RunTimeout)
@@ -386,11 +391,23 @@ func errorJSON(message string) string {
 	return string(encoded)
 }
 
-// eventSink delivers a run's events to the caller's channel.
+// eventSink delivers a run's events to the caller's channel. Once the
+// caller's context is done, a send that would block is dropped instead, so a
+// caller that cancelled and stopped reading does not leak the run goroutine
+// or the session lock (CON-005).
 type eventSink struct {
-	events chan<- Event
+	events    chan<- Event
+	abandoned <-chan struct{}
 }
 
 func (sink eventSink) send(event Event) {
-	sink.events <- event
+	select {
+	case sink.events <- event:
+		return
+	default:
+	}
+	select {
+	case sink.events <- event:
+	case <-sink.abandoned:
+	}
 }
