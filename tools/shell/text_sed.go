@@ -712,55 +712,71 @@ func (e *sedEditor) substitute(ctx context.Context, substitution *sedSubstitutio
 // expandReplacement builds one replacement with & \N and the case
 // conversions \U \L \E (until \E) and \u \l (next character).
 func expandReplacement(text string, match []int, parts []replacementPart) string {
-	var output strings.Builder
-	var mode, once byte
-	emit := func(piece string) {
-		if mode == 0 && once == 0 {
-			output.WriteString(piece)
-			return
-		}
-		for len(piece) > 0 {
-			character, size := utf8.DecodeRuneInString(piece)
-			if character == utf8.RuneError && size == 1 {
-				// A byte that is not UTF-8 passes through unchanged.
-				output.WriteByte(piece[0])
-				piece = piece[1:]
-				continue
-			}
-			piece = piece[size:]
-			switch mode {
-			case 'U':
-				character = unicode.ToUpper(character)
-			case 'L':
-				character = unicode.ToLower(character)
-			}
-			switch once {
-			case 'u':
-				character, once = unicode.ToUpper(character), 0
-			case 'l':
-				character, once = unicode.ToLower(character), 0
-			}
-			output.WriteRune(character)
-		}
-	}
+	var converter caseConverter
 	for _, part := range parts {
 		switch part.kind {
 		case replaceLiteral:
-			emit(part.literal)
+			converter.emit(part.literal)
 		case replaceGroup:
 			if start, end := match[2*part.group], match[2*part.group+1]; start >= 0 {
-				emit(text[start:end])
+				converter.emit(text[start:end])
 			}
 		case replaceCase:
-			switch part.caseOperation {
-			case 'u', 'l':
-				once = part.caseOperation
-			case 'E':
-				mode, once = 0, 0
-			default:
-				mode = part.caseOperation
-			}
+			converter.switchCase(part.caseOperation)
 		}
 	}
-	return output.String()
+	return converter.output.String()
+}
+
+// caseConverter writes replacement pieces under sed's case conversion:
+// mode is 'U' or 'L' until \E, once is 'u' or 'l' for the next character.
+type caseConverter struct {
+	output     strings.Builder
+	mode, once byte
+}
+
+func (c *caseConverter) switchCase(operation byte) {
+	switch operation {
+	case 'u', 'l':
+		c.once = operation
+	case 'E':
+		c.mode, c.once = 0, 0
+	default:
+		c.mode = operation
+	}
+}
+
+// emit writes piece converted; a byte that is not UTF-8 passes through
+// unchanged.
+func (c *caseConverter) emit(piece string) {
+	if c.mode == 0 && c.once == 0 {
+		c.output.WriteString(piece)
+		return
+	}
+	for len(piece) > 0 {
+		character, size := utf8.DecodeRuneInString(piece)
+		if character == utf8.RuneError && size == 1 {
+			c.output.WriteByte(piece[0])
+			piece = piece[1:]
+			continue
+		}
+		piece = piece[size:]
+		c.output.WriteRune(c.convert(character))
+	}
+}
+
+func (c *caseConverter) convert(character rune) rune {
+	switch c.mode {
+	case 'U':
+		character = unicode.ToUpper(character)
+	case 'L':
+		character = unicode.ToLower(character)
+	}
+	switch c.once {
+	case 'u':
+		character, c.once = unicode.ToUpper(character), 0
+	case 'l':
+		character, c.once = unicode.ToLower(character), 0
+	}
+	return character
 }
