@@ -184,6 +184,44 @@ func TestToolCallAssembler_Flush(t *testing.T) {
 	}
 }
 
+// TestStream_End pins how a stream may end: [DONE] or a finish_reason
+// completes it and flushes pending tool calls; a clean EOF with neither is a
+// cut-off stream and an ErrServerError.
+func TestStream_End(t *testing.T) {
+	t.Parallel()
+	const toolFragment = "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\n"
+	const text = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+	const stop = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+	testCases := []struct {
+		name          string
+		body          string
+		wantToolCalls int
+		wantErr       error
+	}{
+		{name: "done without finish reason flushes tool calls", body: toolFragment + "data: [DONE]\n\n", wantToolCalls: 1},
+		{name: "finish reason without done", body: text + stop},
+		{name: "eof without either", body: text, wantErr: llm.ErrServerError},
+		{name: "eof with pending tool call", body: toolFragment, wantToolCalls: 1, wantErr: llm.ErrServerError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			events := streamBody(t, []byte(testCase.body))
+			assertEventOrder(t, events)
+			summary := summarize(t, events)
+			if len(summary.toolCalls) != testCase.wantToolCalls {
+				t.Errorf("tool calls = %d, want %d", len(summary.toolCalls), testCase.wantToolCalls)
+			}
+			switch {
+			case testCase.wantErr == nil && len(summary.errors) != 0:
+				t.Errorf("errors = %v, want none", summary.errors)
+			case testCase.wantErr != nil && (len(summary.errors) != 1 || !errors.Is(summary.errors[0], testCase.wantErr)):
+				t.Errorf("errors = %v, want one %v", summary.errors, testCase.wantErr)
+			}
+		})
+	}
+}
+
 // TestToolCallAssembler_Caps pins the per-stream bounds on what tool calls
 // accumulate, across flushes: the line cap alone bounds one fragment only.
 func TestToolCallAssembler_Caps(t *testing.T) {

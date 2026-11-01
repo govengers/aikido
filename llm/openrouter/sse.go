@@ -55,7 +55,9 @@ const (
 //
 // Mid-stream errors (provider drops the connection mid-SSE, or the chunk
 // includes a top-level `error` envelope) are emitted as EventError followed
-// by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005).
+// by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005). A body
+// that ends cleanly before both [DONE] and any finish_reason was cut off and
+// fails the same way.
 //
 // Content-filter signals come in two forms (per ADR-028):
 //  1. finish_reason="content_filter" on a regular chunk, emitted as
@@ -90,6 +92,7 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 			continue
 		}
 		if payload == sseDoneToken {
+			decoder.sawDone = true
 			break
 		}
 		decoder.handlePayload(payload)
@@ -97,7 +100,7 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 	if ctx.Err() != nil {
 		return
 	}
-	decoder.handleReadError(scanner.Err())
+	decoder.handleStreamEnd(scanner.Err())
 }
 
 // ssePayload returns the payload of a `data:` line. Blank lines, comment
@@ -133,6 +136,8 @@ type streamDecoder struct {
 	// usage block is still emitted.
 	failed       bool
 	finishReason string
+	// sawDone is set by the [DONE] terminator.
+	sawDone bool
 }
 
 func (d *streamDecoder) handlePayload(payload string) {
@@ -265,13 +270,21 @@ func (d *streamDecoder) fail(err error) {
 	d.failed = true
 }
 
-// handleReadError treats a read error (connection drop, a line above
-// maximumLineSize) without a prior EventError as a mid-stream drop.
-func (d *streamDecoder) handleReadError(err error) {
-	if err == nil || d.failed || errors.Is(err, io.EOF) {
-		return
+// handleStreamEnd judges how a body without a prior EventError ended. A read
+// error (connection drop, a line above maximumLineSize) and a clean EOF
+// before both [DONE] and any finish_reason are a broken stream
+// (ErrServerError); a complete stream flushes the tool calls still pending,
+// which a stream without finish_reason would otherwise lose.
+func (d *streamDecoder) handleStreamEnd(err error) {
+	switch {
+	case d.failed:
+	case err != nil:
+		d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
+	case !d.sawDone && d.finishReason == "":
+		d.fail(fmt.Errorf("openrouter mid-stream: stream ended before [DONE] or a finish_reason: %w", llm.ErrServerError))
+	default:
+		d.emitToolCalls()
 	}
-	d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
 }
 
 // recoverPanic must be deferred directly: recover only works there.
