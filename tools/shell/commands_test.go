@@ -64,6 +64,8 @@ func TestFileCommandCases(t *testing.T) {
 				"a.txt\ndir\n",
 		},
 		{name: "mv onto a file with a trailing slash", files: files, script: "mv dir/b.txt a.txt/; cat a.txt", want: "mv: cannot stat 'a.txt/': Not a directory\nalpha\n"},
+		// Regression of 87b5636: a trailing slash refused even a directory source.
+		{name: "cp -r and mv a directory onto a missing 'out/'", files: files, script: "cp -r dir copy/; mv dir moved/; cp dir/ x/; ls; ls copy moved", want: "cp: cannot stat 'dir/': No such file or directory\na.txt\ncopy\nmoved\ncopy:\nb.txt\ndeep\n\nmoved:\nb.txt\ndeep\n"},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
 		{
 			name: "cp -rn checks every destination (review S13)",

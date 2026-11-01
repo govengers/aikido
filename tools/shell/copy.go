@@ -71,7 +71,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 		return usage(invocation, mode.command, fmt.Errorf("missing destination file operand after '%s'", operands[0]), errFailed)
 	}
 	files := workspaceOf(invocation)
-	transfers, err := planTransfers(ctx, invocation, files, operands, mode.move)
+	transfers, err := planTransfers(ctx, invocation, files, operands)
 	if err != nil {
 		complain(invocation, mode.command, "%v", err)
 		return errFailed
@@ -98,7 +98,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 
 // planTransfers pairs every source with its target: into the last operand
 // when it is a directory, else the one source onto it.
-func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string, move bool) ([]transfer, error) {
+func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string) ([]transfer, error) {
 	sources, last := operands[:len(operands)-1], operands[len(operands)-1]
 	lastName, err := resolve(invocation, last)
 	if err != nil {
@@ -117,16 +117,6 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 			reason = errNotFound
 		}
 		return nil, fmt.Errorf("target '%s': %w", last, reason)
-	case strings.HasSuffix(last, "/") && !intoDirectory:
-		// "out/" names a directory; GNU never creates a file for it.
-		switch {
-		case lastEntry.kind != entryMissing:
-			// GNU stats "x/", which fails on a non-directory.
-			return nil, fmt.Errorf("cannot stat '%s': %w", last, errNotDirectory)
-		case move:
-			return nil, fmt.Errorf("cannot move '%s' to '%s': %w", sources[0], last, errNotDirectory)
-		}
-		return nil, fmt.Errorf("cannot create regular file '%s': %w", last, errNotDirectory)
 	}
 	transfers := make([]transfer, 0, len(sources))
 	for _, source := range sources {
@@ -154,13 +144,20 @@ func (m transferMode) run(ctx context.Context, files workspace, directory string
 	if planned.sourceEntry, err = files.stat(ctx, planned.source); err != nil {
 		return err
 	}
+	// "out/" names a directory: a missing one is created only for a
+	// directory source, a non-directory fails GNU's stat of the target.
+	slashedTarget := strings.HasSuffix(planned.targetOperand, "/") && planned.targetEntry.kind != entryDirectory
 	switch {
 	case planned.sourceEntry.kind == entryMissing:
 		return fmt.Errorf("cannot stat '%s': %w", planned.sourceOperand, errNotFound)
+	case slashedTarget && planned.targetEntry.kind != entryMissing:
+		return fmt.Errorf("cannot stat '%s': %w", planned.targetOperand, errNotDirectory)
 	case planned.source == planned.target:
 		return fmt.Errorf("'%s' and '%s' are the same file", planned.sourceOperand, planned.targetOperand)
 	case planned.sourceEntry.kind == entryDirectory:
 		return m.transferDirectory(ctx, files, planned)
+	case slashedTarget:
+		return m.targetError(planned, errNotDirectory)
 	case planned.targetEntry.kind == entryDirectory:
 		return fmt.Errorf("cannot overwrite directory '%s' with non-directory", planned.targetOperand)
 	case m.noClobber && planned.targetEntry.kind != entryMissing:
