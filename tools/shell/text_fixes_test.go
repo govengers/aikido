@@ -120,6 +120,17 @@ func TestRunawayCommandsStop(t *testing.T) {
 	}, &Options{Timeout: time.Second})
 }
 
+// TestJqSummaryNamesSortedKeys: jq reorders object keys, which the model
+// must read before it rewrites a file with jq.
+func TestJqSummaryNamesSortedKeys(t *testing.T) {
+	if summary := jqCommand().Summary; !strings.Contains(summary, "object keys always sorted") {
+		t.Fatalf("jq summary = %q", summary)
+	}
+	runScriptCases(t, []scriptCase{
+		{name: "keys sorted", script: `echo '{"b":1,"a":2}' | jq -c .`, want: "{\"a\":2,\"b\":1}\n"},
+	}, nil)
+}
+
 // disjointFiles are two files without a common line, diff's worst case.
 func disjointFiles() map[string]string {
 	var left, right strings.Builder

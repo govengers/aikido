@@ -36,7 +36,7 @@ jq is a JSON processor (gojq inside; object keys print sorted).
 `
 
 func jqCommand() Command {
-	return Command{Name: "jq", Summary: "JSON processor (-r -j -c -n -s -e -R -S --tab --indent N --arg --argjson)", Run: runJq}
+	return Command{Name: "jq", Summary: "JSON processor (-r -j -c -n -s -e -R --tab --indent N --arg --argjson; object keys always sorted)", Run: runJq}
 }
 
 // jqSettings is a parsed jq command line.
