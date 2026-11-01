@@ -21,7 +21,9 @@ const (
 	EventToolResult EventKind = "tool_result"
 	// EventImage carries an image of the assistant reply in Image.
 	EventImage EventKind = "image"
-	// EventUsage carries the token usage of one model call in Usage.
+	// EventUsage carries the token usage of one model call in Usage. A call
+	// that fails after the provider reported usage still gets one, before
+	// its EventError.
 	EventUsage EventKind = "usage"
 	// EventError carries the error that ends the run in Err; EventEnd follows.
 	EventError EventKind = "error"

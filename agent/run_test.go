@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -787,5 +788,28 @@ func TestReceiveReply_StreamClosedAfterContextEndIsAFailure(t *testing.T) {
 		if _, err := receiveReply(ctx, providerEvents, sink); !errors.Is(err, context.Canceled) {
 			t.Fatalf("receiveReply = %v; want context.Canceled", err)
 		}
+	}
+}
+
+func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventTextDelta, Text: "partial"},
+		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 7}},
+		{Kind: llm.EventError, Err: errors.New("content filter")},
+		{Kind: llm.EventEnd},
+	}})
+	events := runToEnd(t, newTestSession(t, stub, nil, nil), "go")
+
+	var kinds []EventKind
+	for _, event := range events {
+		if event.Kind == EventUsage && event.Usage.PromptTokens != 7 {
+			t.Errorf("usage = %+v; want the provider's", event.Usage)
+		}
+		if event.Kind != EventText {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	if want := []EventKind{EventUsage, EventError, EventEnd}; !slices.Equal(kinds, want) {
+		t.Errorf("events = %v; want %v", kinds, want)
 	}
 }

@@ -215,11 +215,12 @@ func (s *Session) callModel(runContext context.Context, sink eventSink, state *r
 		return llm.Message{}, callContext.Err(), fmt.Errorf("aikido/agent: client.Stream: %w", err)
 	}
 	builder, err := receiveReply(callContext, providerEvents, sink)
-	if err != nil {
-		return llm.Message{}, callContext.Err(), err
-	}
+	// A failed call can still be billed, so its usage is reported before the error.
 	if builder.usage != nil {
 		sink.send(Event{Kind: EventUsage, Usage: builder.usage})
+	}
+	if err != nil {
+		return llm.Message{}, callContext.Err(), err
 	}
 	return builder.message(), nil, nil
 }

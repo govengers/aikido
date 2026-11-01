@@ -78,7 +78,7 @@ The returned error is always nil; everything arrives on the channel, which ends 
 | `EventToolCall` | `ToolCall` | a call of the model, sent after the tool ran, right before its result |
 | `EventToolResult` | `ToolResult` | `CallID`, `Name`, `OK`, `Content` (full result) or `Error`, and `ModelContent` (the JSON the model received, capped) |
 | `EventImage` | `Image` | an image of the reply |
-| `EventUsage` | `Usage` | one per model call: tokens, `CostUSD`, `Provider`, `Latency`, `Duration`, `TokensPerSecond` |
+| `EventUsage` | `Usage` | one per model call the provider reported usage for, a failed call included (before its `EventError`): tokens, `CostUSD`, `Provider`, `Latency`, `Duration`, `TokensPerSecond` |
 | `EventError` | `Err` | the error that ends the run; `EventEnd` follows |
 | `EventEnd` | `EndReason` | last event, exactly once |
 
