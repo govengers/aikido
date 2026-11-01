@@ -406,6 +406,34 @@ func TestRun_StreamDialError(t *testing.T) {
 	}
 }
 
+// Regression: a panicking tool handler used to crash the caller's process,
+// because the run goroutine did not recover (CON-001).
+func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "explode", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		panic("tool bug")
+	})
+	stub := llmtest.NewStubClient(toolCallTurn("c1", "explode", "{}"), textTurn("after the panic"))
+	history := memory.NewHistory()
+	session := newTestSession(t, stub, registry, history)
+
+	events := runToEnd(t, session, "go")
+
+	if err := errorOf(events); err == nil || !strings.Contains(err.Error(), "tool bug") {
+		t.Errorf("EventError = %v; want the recovered panic", err)
+	}
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
+	}
+	if stored := storedMessages(t, history, "s-test"); len(stored) != 0 {
+		t.Errorf("History must not be updated after a panic; stored=%+v", stored)
+	}
+	// The panic released the session lock: the next run proceeds.
+	if reason := endReasonOf(t, runToEnd(t, session, "again")); reason != EndReasonStop {
+		t.Errorf("next run end reason = %q; want stop", reason)
+	}
+}
+
 func TestRun_LocalLockerSerializesSameIDAcrossSessions(t *testing.T) {
 	locker := NewLocalLocker()
 	history := memory.NewHistory()

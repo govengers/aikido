@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	"github.com/google/uuid"
@@ -34,9 +35,9 @@ type RunOptions struct {
 // History.Append at end of turn. The returned channel always ends with
 // EventEnd and is then closed; the returned error is always nil.
 //
-// On EndReasonError (including History I/O failure or Lock-acquire timeout)
-// the History is NOT updated for this turn: the caller knows to retry, and
-// the durable transcript stays consistent.
+// On EndReasonError (including History I/O failure, Lock-acquire timeout or a
+// panic inside the run) the History is NOT updated for this turn: the caller
+// knows to retry, and the durable transcript stays consistent.
 func (s *Session) Run(ctx context.Context, userText string) (<-chan Event, error) {
 	return s.RunWithOptions(ctx, userText, nil)
 }
@@ -89,10 +90,12 @@ func (state *runState) record(message llm.Message) {
 	state.produced = append(state.produced, message)
 }
 
-// runLoop owns the run goroutine: it closes events when the run is over.
+// runLoop owns the run goroutine: it closes events when the run is over and
+// turns a panic into EventError plus EventEnd (CON-001).
 func (s *Session) runLoop(userContext context.Context, events chan<- Event, plan runPlan) {
 	defer close(events)
 	sink := eventSink{events: events}
+	defer recoverRun(sink)
 
 	runContext, cancelRun := context.WithTimeout(userContext, s.options.RunTimeout)
 	defer cancelRun()
@@ -102,6 +105,15 @@ func (s *Session) runLoop(userContext context.Context, events chan<- Event, plan
 		sink.send(Event{Kind: EventError, Err: err})
 	}
 	sink.send(Event{Kind: EventEnd, EndReason: endReason})
+}
+
+func recoverRun(sink eventSink) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	sink.send(Event{Kind: EventError, Err: fmt.Errorf("aikido/agent: run panicked: %v\n%s", recovered, debug.Stack())})
+	sink.send(Event{Kind: EventEnd, EndReason: EndReasonError})
 }
 
 // execute holds the session lock for the whole run and alternates model
