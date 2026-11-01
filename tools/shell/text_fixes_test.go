@@ -197,3 +197,16 @@ func TestInputBudget(t *testing.T) {
 		{name: "uniq streams", files: big, script: `cat big | uniq -c | cut -c1-12`, want: "  70000 xxxx\n      1 end\n"},
 	}, nil)
 }
+
+// TestGrepBeforeContextBudget: -B holds its context within the input
+// budget instead of growing with an endless producer (the review used
+// seq 1 1000000000000; long lines reach the budget sooner).
+func TestGrepBeforeContextBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("pipes 64 MiB")
+	}
+	lines := map[string]string{"f": strings.Repeat(strings.Repeat("x", 999)+"\n", 1000)}
+	runScriptCases(t, []scriptCase{
+		{name: "huge -B", files: lines, script: `while cat f; do :; done | grep -B 1000000000 NEVER; echo $?`, want: "grep: input exceeds 67108864 bytes\n2\n"},
+	}, &Options{Timeout: time.Minute})
+}

@@ -643,8 +643,10 @@ type grepScan struct {
 	selected                int
 	lastPrinted             int
 	afterRemaining          int
-	// recent are the last lines not selected, for -B.
-	recent []grepLine
+	// recent are the last lines not selected, for -B; recentBytes is
+	// their size, held within the input budget.
+	recent      []grepLine
+	recentBytes int
 	// stop ends the search of the file (-q, -l, -m, a binary match).
 	stop bool
 }
@@ -676,27 +678,35 @@ func (g *grepSearcher) searchLines(ctx context.Context, name string, lines *line
 			// A NUL after the first buffer makes the rest binary, as in GNU.
 			scan.binary, scan.printLines = true, false
 		}
-		g.scanLine(ctx, scan, grepLine{index: index, text: text})
+		if err := g.scanLine(ctx, scan, grepLine{index: index, text: text}); err != nil {
+			return false, err
+		}
 	}
 	g.printSummary(name, scan.selected)
 	return scan.selected > 0, nil
 }
 
-// scanLine decides one line: selected, context or nothing.
-func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) {
+// scanLine decides one line: selected, context or nothing. The -B
+// context beyond the input budget is errInputTooLarge.
+func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLine) error {
 	settings := g.settings
 	if settings.maximum >= 0 && scan.selected >= settings.maximum {
 		scan.stop = !g.trailingContext(scan, line.index, line.text)
-		return
+		return nil
 	}
 	if g.matcher.matches(ctx, line.text) == settings.invert {
 		if !g.trailingContext(scan, line.index, line.text) && settings.before > 0 {
 			scan.recent = append(scan.recent, line)
+			scan.recentBytes += len(line.text)
 			if len(scan.recent) > settings.before {
+				scan.recentBytes -= len(scan.recent[0].text)
 				scan.recent = scan.recent[1:]
 			}
+			if scan.recentBytes > maximumInputBytes {
+				return errInputTooLarge
+			}
 		}
-		return
+		return nil
 	}
 	scan.selected++
 	switch {
@@ -710,6 +720,7 @@ func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLi
 		g.printSelected(ctx, scan, line.index, line.text)
 		scan.afterRemaining = settings.after
 	}
+	return nil
 }
 
 // trailingContext prints a line of -A context if one is due.
@@ -737,7 +748,7 @@ func (g *grepSearcher) printBefore(scan *grepScan) {
 			g.printLine(scan, line.index, line.text, '-')
 		}
 	}
-	scan.recent = scan.recent[:0]
+	scan.recent, scan.recentBytes = scan.recent[:0], 0
 }
 
 // printSelected prints a selected line, or its matches with -o.
