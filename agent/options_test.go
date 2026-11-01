@@ -116,11 +116,31 @@ func TestSessionOptions_MaximumToolResultBytes(t *testing.T) {
 			if truncated := strings.Contains(content, `"truncated":true`); truncated != testCase.wantTruncated {
 				t.Errorf("truncated = %v; want %v", truncated, testCase.wantTruncated)
 			}
-			if result := toolResultEvent(t, events); result.Content != large {
+			result := toolResultEvent(t, events)
+			if result.Content != large {
 				t.Error("EventToolResult must carry the full content")
+			}
+			if result.ModelContent != content {
+				t.Error("EventToolResult.ModelContent must equal the tool message the model received")
+			}
+			drained, err := Drain(replay(events))
+			if err != nil {
+				t.Fatalf("Drain: %v", err)
+			}
+			if drainedContent := toolMessageContent(drained); drainedContent != content {
+				t.Errorf("Drain rebuilt a %d-byte tool message; want the model's %d-byte copy", len(drainedContent), len(content))
 			}
 		})
 	}
+}
+
+func replay(events []Event) <-chan Event {
+	channel := make(chan Event, len(events))
+	for _, event := range events {
+		channel <- event
+	}
+	close(channel)
+	return channel
 }
 
 func TestBoundedJSON(t *testing.T) {
@@ -267,4 +287,13 @@ func TestWithCacheBreakpoints(t *testing.T) {
 			}
 		})
 	}
+}
+
+func toolMessageContent(messages []llm.Message) string {
+	for _, message := range messages {
+		if message.Role == llm.RoleTool {
+			return message.Content
+		}
+	}
+	return ""
 }

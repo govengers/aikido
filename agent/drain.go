@@ -54,7 +54,7 @@ func (d *drainTranscript) add(event Event) {
 			d.toolResults = append(d.toolResults, llm.Message{
 				Role:       llm.RoleTool,
 				ToolCallID: event.ToolResult.CallID,
-				Content:    toolResultJSON(*event.ToolResult),
+				Content:    modelContent(*event.ToolResult),
 			})
 		}
 	case EventError:
@@ -90,4 +90,13 @@ func (d *drainTranscript) flush() {
 	d.toolCalls = nil
 	d.images = nil
 	d.toolResults = nil
+}
+
+// modelContent is the tool message the model received; events built by hand
+// without ModelContent fall back to the full result's JSON.
+func modelContent(toolResult ToolResult) string {
+	if toolResult.ModelContent != "" {
+		return toolResult.ModelContent
+	}
+	return toolResultJSON(toolResult)
 }

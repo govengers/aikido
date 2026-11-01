@@ -62,6 +62,11 @@ type ToolResult struct {
 	Content any
 	// Error is the failure message when not OK.
 	Error string
+	// ModelContent is the tool message content the model received: the JSON
+	// of Content or Error, cut at SessionOptions.MaximumToolResultBytes. Drain
+	// stores this copy, so a history rebuilt from events matches what the
+	// model saw.
+	ModelContent string
 }
 
 // Event is one streaming event from a session run. Kind says which of the
