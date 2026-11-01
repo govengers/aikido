@@ -25,7 +25,12 @@ type regexError struct{ message string }
 
 func (e *regexError) Error() string { return e.message }
 
-var errBackReference = &regexError{"Invalid back reference"}
+// errBackReference is GNU's error for a reference to a group that is not
+// closed yet; errBackReferenceUnsupported is a valid one RE2 cannot match.
+var (
+	errBackReference            = &regexError{"Invalid back reference"}
+	errBackReferenceUnsupported = &regexError{"back-references are not supported by this grep/sed"}
+)
 
 // compileGo compiles Go regexp syntax; "." matches a newline like in POSIX.
 func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error) {
@@ -45,7 +50,8 @@ func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error)
 
 // posixTranslator rewrites one POSIX pattern (BRE or ERE with GNU
 // extensions) into Go syntax for compileGo. Go's RE2 has no
-// back-references; a pattern that uses one fails with errBackReference.
+// back-references; a pattern that uses one fails with
+// errBackReferenceUnsupported.
 type posixTranslator struct {
 	options regexOptions
 	pattern string
@@ -54,6 +60,9 @@ type posixTranslator struct {
 	position int
 	// groups holds the output offsets of the open groups.
 	groups []int
+	// closedGroups counts the groups closed so far, the ones a
+	// back-reference may name.
+	closedGroups int
 	// atStart is true where a repetition operator has nothing to repeat:
 	// at the start, after a group opens, after an alternation.
 	atStart bool
@@ -181,7 +190,10 @@ func (t *posixTranslator) escape() error {
 		t.atom(`\n`)
 	default:
 		if character >= '1' && character <= '9' {
-			return errBackReference
+			if int(character-'0') > t.closedGroups {
+				return errBackReference
+			}
+			return errBackReferenceUnsupported
 		}
 		t.atom(t.escapedLiteral(character))
 	}
@@ -235,6 +247,7 @@ func (t *posixTranslator) closeGroup() {
 	// The whole group is the atom a following repetition applies to.
 	t.atomStart = t.groups[len(t.groups)-1]
 	t.groups = t.groups[:len(t.groups)-1]
+	t.closedGroups++
 	t.quantified = false
 }
 
