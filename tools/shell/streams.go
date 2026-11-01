@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
@@ -169,4 +170,22 @@ func trimIncompleteRune(data []byte) []byte {
 		}
 	}
 	return data
+}
+
+// maximumSubstitutionBytes caps the output of $(...): the interpreter
+// collects it in memory. A variable for tests.
+var maximumSubstitutionBytes = maximumBufferedFileBytes
+
+// substitutionWriter is a command's stdout inside $(...): the interpreter's
+// buffer for the whole substitution, refused with "File too large" once it
+// would hold more than maximumSubstitutionBytes.
+type substitutionWriter struct {
+	buffer *strings.Builder
+}
+
+func (w substitutionWriter) Write(data []byte) (int, error) {
+	if w.buffer.Len()+len(data) > maximumSubstitutionBytes {
+		return 0, errTooLarge
+	}
+	return w.buffer.Write(data)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -396,6 +397,26 @@ func TestQueuedRunHonoursContextAndTimeout(t *testing.T) {
 	result := mustRun(t, shell, "echo late")
 	if result.ExitCode != statusTimedOut || !strings.Contains(result.Output, "waiting for the previous call") || time.Since(waiting) > time.Second {
 		t.Fatalf("queued Run past its timeout: %+v after %v", result, time.Since(waiting))
+	}
+}
+
+// TestCommandSubstitutionIsBounded covers the review's S16: $(...) output
+// grew without limit in the interpreter's memory.
+func TestCommandSubstitutionIsBounded(t *testing.T) {
+	previous := maximumSubstitutionBytes
+	maximumSubstitutionBytes = 1000
+	t.Cleanup(func() { maximumSubstitutionBytes = previous })
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, `x=$(seq 1 100000); echo "${#x} $?"; y=$(seq 1 10; seq 1 300); echo "${#y}"`)
+	if !strings.HasPrefix(result.Output, "seq: ") || !strings.Contains(result.Output, "File too large\n") {
+		t.Fatalf("output = %q", result.Output)
+	}
+	for line := range strings.SplitSeq(strings.TrimSpace(result.Output), "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] != "seq:" {
+			if size, err := strconv.Atoi(fields[0]); err != nil || size > 1000 {
+				t.Fatalf("a substitution held %q bytes: %q", fields[0], result.Output)
+			}
+		}
 	}
 }
 

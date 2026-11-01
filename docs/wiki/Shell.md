@@ -142,6 +142,7 @@ Known limits:
 - The variables `UID`, `EUID`, `GID` and `$$` are the host process's.
 - Directories created by `mkdir` live in memory per Shell.
 - The whole Storage is listed for `ls`, `find`, globs and directory checks; a very large store makes those calls slow.
+- Memory: files, `/tmp`, process substitution and what commands write into `$(...)` are capped (64 MiB each; a command writing more into `$(...)` fails with `File too large`). What the interpreter itself holds is not: shell builtins (`echo`, `printf`) writing into `$(...)` and variables grown in a loop (`x=$x$x`) are bounded only by `Timeout`. Run scripts from untrusted input in a process with a memory limit.
 
 ## Gotchas
 

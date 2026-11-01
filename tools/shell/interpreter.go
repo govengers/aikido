@@ -213,6 +213,10 @@ func (s *session) execute(ctx context.Context, arguments []string) error {
 	if invocation.Stdin == nil {
 		invocation.Stdin = emptyInput()
 	}
+	if buffer, ok := handler.Stdout.(*strings.Builder); ok {
+		// The interpreter collects $(...) in this buffer.
+		invocation.Stdout = substitutionWriter{buffer: buffer}
+	}
 	status := s.dispatch(ctx, arguments[0], invocation, handler.Pos)
 	if err := ctx.Err(); err != nil {
 		return err
