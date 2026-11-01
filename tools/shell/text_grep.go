@@ -133,8 +133,11 @@ type grepSettings struct {
 	listing       grepListing
 	maximum       int
 	before, after int
-	recursive     bool
-	excludeDir    []string
+	// context says -A, -B or -C was given, even with 0: groups are then
+	// separated by "--".
+	context    bool
+	recursive  bool
+	excludeDir []string
 	// fileRules are --include and --exclude in command-line order.
 	fileRules        []grepFileRule
 	text, skipBinary bool
@@ -163,6 +166,10 @@ func runGrep(ctx context.Context, invocation *Invocation) error {
 		}
 		settings.patterns = strings.Split(operands[0], "\n")
 		operands = operands[1:]
+	}
+	if settings.maximum == 0 {
+		// GNU stops before reading anything: no output, status 1.
+		return ExitError(1)
 	}
 	if err := settings.readPatternFiles(ctx, invocation); err != nil {
 		return err
@@ -212,6 +219,7 @@ func parseGrepSettings(invocation *Invocation, options []parsedOption) (grepSett
 			if err != nil || value < 0 {
 				return settings, grepTool.fatal(invocation, 2, "%s: invalid context length argument", option.value)
 			}
+			settings.context = true
 			switch option.key {
 			case "before-context":
 				settings.before = value
@@ -690,19 +698,31 @@ func (g *grepSearcher) printSelected(ctx context.Context, scan *grepScan, index 
 	if g.settings.invert {
 		return
 	}
+	g.startLine(scan, index)
 	for _, location := range g.matcher.find(ctx, text) {
 		g.printLine(scan, index, text[location[0]:location[1]], ':')
 	}
 }
 
-// printLine writes one output line with its prefixes, preceded by "--" when
-// it does not continue the previous group. Write errors surface at Flush.
-func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
-	var line strings.Builder
-	contextual := g.settings.before > 0 || g.settings.after > 0
-	if contextual && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) && !g.settings.onlyMatches {
-		line.WriteString("--\n")
+// startLine records line index as output, preceded by "--" when a context
+// option was given and the line does not continue the previous group. -o
+// suppresses the text of context lines, not their place in a group.
+func (g *grepSearcher) startLine(scan *grepScan, index int) {
+	if g.settings.context && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) {
+		fmt.Fprint(g.output, "--\n")
 	}
+	scan.lastPrinted = index
+	g.printedLines = true
+}
+
+// printLine writes one output line with its prefixes. Write errors surface
+// at Flush.
+func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
+	g.startLine(scan, index)
+	if g.settings.onlyMatches && separator == '-' {
+		return
+	}
+	var line strings.Builder
 	if g.withFilename {
 		line.WriteString(scan.name)
 		line.WriteByte(separator)
@@ -714,8 +734,6 @@ func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separat
 	line.WriteString(text)
 	line.WriteByte('\n')
 	fmt.Fprint(g.output, line.String())
-	scan.lastPrinted = index
-	g.printedLines = true
 }
 
 // printSummary prints the -c count and the -l / -L name of one file.

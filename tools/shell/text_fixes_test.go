@@ -44,6 +44,10 @@ var reviewCases = []scriptCase{
 	{name: "grep include after exclude wins", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -r --exclude='*' --include='*.go' x .`, want: "./a.go:x\n"},
 	{name: "grep exclude after include wins", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -rl --include='*.go' --exclude='a*' x .; echo $?`, want: "1\n"},
 	{name: "grep unmatched file with leading exclude", files: map[string]string{"a.go": "x\n", "b.txt": "x\n"}, script: `grep -rl --exclude='*.go' --include='*.md' x .`, want: "./b.txt\n"},
+	{name: "grep -o keeps the group separator", files: map[string]string{"c.txt": "1\n2\nm\n4\n5\n6\n7\nm\n9\n"}, script: `grep -o -A1 m c.txt`, want: "m\n--\nm\n"},
+	{name: "grep -o adjacent context needs no separator", files: map[string]string{"c.txt": "m\nx\nm\n"}, script: `grep -o -A1 m c.txt`, want: "m\nm\n"},
+	{name: "grep -C0 separates groups", files: map[string]string{"c.txt": "1\n2\nm\n4\n5\n6\n7\nm\n9\n"}, script: `grep -C0 m c.txt`, want: "m\n--\nm\n"},
+	{name: "grep -m0 exits before reading", files: map[string]string{"a.txt": "x\n"}, script: `grep -c -m0 x a.txt; echo $?; grep -L -m0 x a.txt nope; echo $?`, want: "1\n1\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
