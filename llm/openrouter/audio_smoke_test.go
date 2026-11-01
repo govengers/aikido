@@ -28,14 +28,14 @@ func TestSmoke_Transcribe(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("OPENROUTER_API_KEY is not set")
 	}
-	c, err := NewClient(&Options{APIKey: apiKey, XTitle: "aikido-smoke"})
+	client, err := NewClient(&Options{APIKey: apiKey, XTitle: "aikido-smoke"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	text, usage, err := llm.Transcribe(ctx, c, llm.TranscribeRequest{Audio: noiseWAV(2 * 16000), Format: "wav"})
+	text, usage, err := llm.Transcribe(ctx, client, llm.TranscribeRequest{Audio: noiseWAV(2 * 16000), Format: "wav"})
 	if err != nil || text != "" {
 		t.Errorf("noise: %q, %v", text, err)
 	}
@@ -46,14 +46,14 @@ func TestSmoke_Transcribe(t *testing.T) {
 		return
 	}
 	path := filepath.Join(t.TempDir(), "speech.wav")
-	if out, err := exec.Command("say", "-o", path, "--data-format=LEI16@16000", "The quick brown fox jumps over the lazy dog.").CombinedOutput(); err != nil {
-		t.Fatalf("say: %v: %s", err, out)
+	if output, err := exec.CommandContext(ctx, "say", "-o", path, "--data-format=LEI16@16000", "The quick brown fox jumps over the lazy dog.").CombinedOutput(); err != nil {
+		t.Fatalf("say: %v: %s", err, output)
 	}
 	clip, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text, _, err = llm.Transcribe(ctx, c, llm.TranscribeRequest{Audio: clip, Format: "wav"})
+	text, _, err = llm.Transcribe(ctx, client, llm.TranscribeRequest{Audio: clip, Format: "wav"})
 	if err != nil || !strings.Contains(strings.ToLower(text), "brown fox") {
 		t.Errorf("speech: %q, %v", text, err)
 	}
@@ -71,14 +71,14 @@ func TestSmoke_Speak(t *testing.T) {
 	if apiKey == "" {
 		t.Skip("OPENROUTER_API_KEY is not set")
 	}
-	c, err := NewClient(&Options{APIKey: apiKey, XTitle: "aikido-smoke"})
+	client, err := NewClient(&Options{APIKey: apiKey, XTitle: "aikido-smoke"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	resp, err := c.Speak(ctx, llm.SpeechRequest{
+	response, err := client.Speak(ctx, llm.SpeechRequest{
 		Model:  "elevenlabs/eleven-v4-turbo",
 		Input:  "Die Dusche kommt an die Fensterwand.",
 		Voice:  "sarah",
@@ -87,35 +87,35 @@ func TestSmoke_Speak(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Speak: %v", err)
 	}
-	if resp.ContentType != "audio/mpeg" || len(resp.Audio) < 1000 || resp.GenerationID == "" {
-		t.Fatalf("resp: %q, %d bytes, id %q", resp.ContentType, len(resp.Audio), resp.GenerationID)
+	if response.ContentType != "audio/mpeg" || len(response.Audio) < 1000 || response.GenerationID == "" {
+		t.Fatalf("response: %q, %d bytes, id %q", response.ContentType, len(response.Audio), response.GenerationID)
 	}
-	text, _, err := llm.Transcribe(ctx, c, llm.TranscribeRequest{Audio: resp.Audio, Format: "mp3", Hint: "The speaker speaks German."})
+	text, _, err := llm.Transcribe(ctx, client, llm.TranscribeRequest{Audio: response.Audio, Format: "mp3", Hint: "The speaker speaks German."})
 	if err != nil || !strings.Contains(strings.ToLower(text), "dusche") {
 		t.Errorf("round trip: %q, %v", text, err)
 	}
-	t.Logf("speak: %d bytes, %s, transcript %q", len(resp.Audio), resp.GenerationID, text)
+	t.Logf("speak: %d bytes, %s, transcript %q", len(response.Audio), response.GenerationID, text)
 }
 
-// noiseWAV returns n samples of faint 16 kHz mono PCM noise as a WAV file.
-func noiseWAV(n int) []byte {
-	var b bytes.Buffer
-	w := func(v any) { _ = binary.Write(&b, binary.LittleEndian, v) }
-	b.WriteString("RIFF")
-	w(uint32(36 + 2*n))
-	b.WriteString("WAVEfmt ")
-	w(uint32(16))
-	w(uint16(1))     // PCM
-	w(uint16(1))     // mono
-	w(uint32(16000)) // sample rate
-	w(uint32(32000)) // byte rate
-	w(uint16(2))     // block align
-	w(uint16(16))    // bits per sample
-	b.WriteString("data")
-	w(uint32(2 * n))
-	r := rand.New(rand.NewPCG(1, 2))
-	for range n {
-		w(int16(r.IntN(200) - 100))
+// noiseWAV returns that many samples of faint 16 kHz mono PCM noise as a WAV file.
+func noiseWAV(samples int) []byte {
+	var wav bytes.Buffer
+	write := func(value any) { _ = binary.Write(&wav, binary.LittleEndian, value) }
+	wav.WriteString("RIFF")
+	write(uint32(36 + 2*samples))
+	wav.WriteString("WAVEfmt ")
+	write(uint32(16))
+	write(uint16(1))     // PCM
+	write(uint16(1))     // mono
+	write(uint32(16000)) // sample rate
+	write(uint32(32000)) // byte rate
+	write(uint16(2))     // block align
+	write(uint16(16))    // bits per sample
+	wav.WriteString("data")
+	write(uint32(2 * samples))
+	noise := rand.New(rand.NewPCG(1, 2))
+	for range samples {
+		write(int16(noise.IntN(200) - 100))
 	}
-	return b.Bytes()
+	return wav.Bytes()
 }
