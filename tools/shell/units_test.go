@@ -193,15 +193,21 @@ func TestParseBashArguments(t *testing.T) {
 	}
 }
 
-func TestWrapText(t *testing.T) {
-	if got := wrapText("abcdefg", 3); got != "abc\ndef\ng\n" {
-		t.Errorf("wrapText = %q", got)
-	}
-	if got := wrapText("abc", 0); got != "abc\n" {
-		t.Errorf("wrapText without wrap = %q", got)
-	}
-	if got := wrapText("", 76); got != "" {
-		t.Errorf("wrapText of nothing = %q", got)
+func TestEncodeBase64Wraps(t *testing.T) {
+	for _, testCase := range []struct {
+		input string
+		wrap  int
+		want  string
+	}{
+		{input: "abcde", wrap: 3, want: "YWJ\njZG\nU=\n"},
+		{input: "abcdef", wrap: 4, want: "YWJj\nZGVm\n"},
+		{input: "abcde", wrap: 0, want: "YWJjZGU=\n"},
+		{input: "", wrap: 76, want: ""},
+	} {
+		var output strings.Builder
+		if err := encodeBase64(&output, strings.NewReader(testCase.input), testCase.wrap); err != nil || output.String() != testCase.want {
+			t.Errorf("encodeBase64(%q, %d) = %q, %v, want %q", testCase.input, testCase.wrap, output.String(), err, testCase.want)
+		}
 	}
 }
 

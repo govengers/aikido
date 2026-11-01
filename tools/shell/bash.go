@@ -46,6 +46,10 @@ func runBash(ctx context.Context, name string, invocation *Invocation) error {
 			source, scriptName = parsed.file, parsed.file
 		}
 		content, err := readInput(ctx, invocation, source)
+		if errors.Is(err, errInputTooLarge) {
+			complain(invocation, name, "%v", err)
+			return ExitError(2)
+		}
 		if err != nil {
 			complain(invocation, name, "%s: %v", source, err)
 			return ExitError(statusNotFound)

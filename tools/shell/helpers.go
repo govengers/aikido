@@ -87,13 +87,14 @@ func openInput(ctx context.Context, invocation *Invocation, operand string) (io.
 	return bytes.NewReader(content), nil
 }
 
-// readInput is openInput read to the end.
+// readInput is openInput read to the end, or errInputTooLarge after
+// maximumInputBytes.
 func readInput(ctx context.Context, invocation *Invocation, operand string) ([]byte, error) {
 	reader, err := openInput(ctx, invocation, operand)
 	if err != nil {
 		return nil, err
 	}
-	return io.ReadAll(reader)
+	return readBounded(reader)
 }
 
 // readFile reads a workspace file; a directory is errIsDirectory, other

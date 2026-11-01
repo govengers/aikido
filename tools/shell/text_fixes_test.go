@@ -221,3 +221,25 @@ func TestGrepStopsOnWriteError(t *testing.T) {
 		{name: "closed pipe", script: `seq 1 1000000000000 | grep . | head -1`, want: "1\n"},
 	}, &Options{Timeout: 20 * time.Second})
 }
+
+// TestWholeInputCommandsStream: base64 and sha256sum stream an endless
+// input instead of reading it whole; bash reads a script from a pipe
+// within the input budget.
+func TestWholeInputCommandsStream(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "base64 encodes as it reads", script: `seq 1 1000000000000 | base64 | head -c 8`, want: "MQoyCjMK"},
+		{name: "base64 decodes as it reads", script: `seq 1 1000000000000 | base64 | base64 -d | head -n 2`, want: "1\n2\n"},
+		{name: "base64 of nothing prints no line", script: `printf '' | base64 | cat -n; printf '' | base64 -w0 | wc -c`, want: "0\n"},
+		{name: "sha256sum of several inputs", files: map[string]string{"a": "abc"}, script: `printf abc | sha256sum - a`, want: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  -\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a\n"},
+	}, &Options{Timeout: 20 * time.Second})
+	runScriptCases(t, []scriptCase{
+		{name: "sha256sum of an endless pipe", script: `seq 1 1000000000000 | sha256sum`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
+	}, &Options{Timeout: time.Second})
+	if testing.Short() {
+		return
+	}
+	lines := map[string]string{"f": strings.Repeat(strings.Repeat("x", 999)+"\n", 1000)}
+	runScriptCases(t, []scriptCase{
+		{name: "bash script beyond the budget", files: lines, script: `while cat f; do :; done | bash; echo $?`, want: "bash: input exceeds 67108864 bytes\n2\n"},
+	}, &Options{Timeout: time.Minute})
+}
