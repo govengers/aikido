@@ -34,7 +34,7 @@ Schemas are explicit JSON Schema: `tools.Object(properties, required...)` with `
 
 ## What Dispatch checks
 
-Before the handler runs, `Dispatch` checks the arguments: empty arguments count as `{}`, anything else must be a JSON object holding every field the schema lists as `required` (a JSON `null` counts as missing). Only the top-level `required` list is enforced; types, enums and nested objects are not, so the handler still parses and validates. A `Parameters` value that is not an object schema enforces nothing.
+Before the handler runs, `Dispatch` checks the arguments: empty arguments count as `{}`, anything else must be a JSON object (a bare `null` is refused) holding every field the schema lists as `required` (a JSON `null` counts as missing). Only the top-level `required` list is enforced; types, enums and nested objects are not, so the handler still parses and validates. A `Parameters` value that is not an object schema enforces nothing.
 
 From `ExampleRegistry_Dispatch`:
 
@@ -65,10 +65,10 @@ In an agent run all three are tool errors: the model sees them and the run conti
 | `list_files` | none | `files`: `path`, `size`, `updated_at`, sorted by path |
 | `write_file` | **`path`**, **`content`**, `content_type` | creates or replaces; the content type defaults from the extension, `text/markdown` for unknown ones |
 | `delete_file` | **`path`** | fails for a missing file |
-| `grep` | **`pattern`** (Go RE2), `path_glob`, `case_insensitive`, `context` (0-5), `output_mode` (`content`, `files_with_matches`, `count`) | `path:line:text` matches, `path-line-text` context; at most 200 entries, lines cut at 500 characters, a scan stops after 32 MiB; `truncated` says so. Binary files are skipped |
+| `grep` | **`pattern`** (Go RE2), `path_glob`, `case_insensitive`, `context` (0-5), `output_mode` (`content`, `files_with_matches`, `count`) | `path:line:text` matches, `path-line-text` context; at most 200 entries, lines cut at 500 characters, a scan stops before a file that would pass 32 MiB read; `truncated` says so. Binary files are skipped, and so are files listed larger than `MaximumFileBytes` (unread, `truncated` is then true). `$` anchors at the end of each line |
 | `glob` | **`pattern`** (`*` in a segment, `**` across, `?`, `{a,b}`) | matching paths, sorted, at most 500 |
 | `edit_file` | **`path`**, **`old_string`**, **`new_string`**, `replace_all` | exact replacement; `old_string` must be unique unless `replace_all`, and differ from `new_string`. Without the line-number prefix of `read_file` |
-| `multi_edit` | **`path`**, **`edits`** (array of `old_string`, `new_string`, `replace_all`) | the edits apply in order, each on the previous result; all or nothing |
+| `multi_edit` | **`path`**, **`edits`** (array of `old_string`, `new_string`, `replace_all`) | the edits apply in order, each on the previous result; all or nothing. Every edit needs `old_string` and `new_string` (an explicit `""` deletes, a missing or null one is an argument error); an edit that would grow the file past `MaximumFileBytes` fails before it is applied |
 | `move_file` | **`source`**, **`destination`**, `overwrite` | writes the destination, then deletes the source (the Storage has no rename; a failed delete leaves both and says so). Fails on an existing destination unless `overwrite`. A rename that only changes case (`Readme.md` to `README.md`) goes through a hidden staging file in the same directory, so it is safe on case-insensitive disks (macOS, Windows) |
 | `search` | **`query`** | paths matching the backend's query syntax; the description embeds `SearchSyntax()` |
 
