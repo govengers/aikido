@@ -89,6 +89,7 @@ Additive; nothing to migrate, listed so you know it exists.
 - `agent.SessionOptions.ToolCallTimeout`, `MaximumToolResultBytes`, `DisablePromptCaching`; `agent.ToolResult.ModelContent`. [Agent](wiki/Agent.md)
 - `agent.RegisterPlanTool` (`todo_write`). [Tools](wiki/Tools.md#plan-tool)
 - `tools.ErrInvalidArguments`, `tools.ErrToolPanicked`. [Tools](wiki/Tools.md#what-dispatch-checks)
+- `codex.ErrRefreshInterrupted`. [Models](wiki/Models.md#codex-chatgpt-subscription)
 - `openrouter.APIError`. [Errors-and-Retry](wiki/Errors-and-Retry.md)
 - CLI: `aikido agent --dir`, `--apply`, `--mount`; `OPENROUTER_BASE_URL`. [CLI](wiki/CLI.md#agent)
 
@@ -112,6 +113,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | `vfs.ValidatePath` | allowed `.` segments and backslashes (`./a.md` and `a.md` were two keys in memory but one file in osfs) | both are `vfs.ErrPathInvalid` |
 | `vfs/embedfs` content type | unknown extensions were `text/plain` | `application/octet-stream`, like `osfs` |
 | `voice.Handler` | a broken multipart upload was taken as a text turn | 400 |
+| Codex token refresh | a failed refresh inside `Stream` was retried like a 429/5xx of the backend, replaying a refresh token the issuer may already have rotated (which revokes the login) | `Stream` never retries a failed refresh; a refresh without a complete answer fails with `codex.ErrRefreshInterrupted` (wrapping its cause, usually `llm.ErrServerError`), and a reuse failure right after it says so |
 | `voice.Handler` stream | a client that stopped reading blocked the handler (and its connection) until the client went away | each NDJSON line has a write deadline, `HandlerOptions.WriteTimeout` (default 30 s); after a failed or timed-out write the handler stops writing and drains the turn, so it still lands in History |
 
 ## Coming from v0.3.x (ASO Nexus Hub)

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -351,6 +352,53 @@ func TestTokenSource_PersistFailureKeepsTheNewLogin(t *testing.T) {
 	tokens, err := source.Token(context.Background())
 	if err != nil || tokens.RefreshToken != "rt.old" || calls.Load() != 1 {
 		t.Errorf("second Token = %+v, %v after %d refreshes; want the kept login without a refresh", tokens, err, calls.Load())
+	}
+}
+
+// A refresh whose answer is lost may have rotated the refresh token: the
+// client must not replay it inside one call, must say so, and a following
+// reuse failure must name the interruption.
+func TestTokenSource_InterruptedRefreshIsNotReplayed(t *testing.T) {
+	t.Parallel()
+	for name, interrupt := range map[string]func(writer http.ResponseWriter){
+		"cut response": func(writer http.ResponseWriter) {
+			writer.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(writer, `{"access_`) // the server closes the short body
+		},
+		"200 without tokens": func(writer http.ResponseWriter) {
+			_, _ = io.WriteString(writer, `{}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var refreshes atomic.Int32
+			tokenServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				if refreshes.Add(1) == 1 {
+					interrupt(writer)
+					return
+				}
+				writer.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(writer, `{"error":{"code":"refresh_token_reused"}}`)
+			}))
+			defer tokenServer.Close()
+			source := newTokenSource(t, &TokenSourceOptions{
+				Tokens: Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now()},
+				Login:  LoginOptions{Issuer: tokenServer.URL},
+			})
+			client, err := NewClient(&Options{Tokens: source, Originator: "casa-mapa", BaseURL: tokenServer.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = client.Stream(context.Background(), llm.Request{Model: "gpt-5"})
+			if !errors.Is(err, ErrRefreshInterrupted) || !errors.Is(err, llm.ErrServerError) || refreshes.Load() != 1 {
+				t.Fatalf("Stream: err = %v after %d refreshes; want ErrRefreshInterrupted after exactly one", err, refreshes.Load())
+			}
+			_, err = source.Token(context.Background())
+			if !errors.Is(err, ErrReauthenticationRequired) || !strings.Contains(err.Error(), "after an interrupted one") {
+				t.Fatalf("next Token: err = %v; want ErrReauthenticationRequired naming the interruption", err)
+			}
+		})
 	}
 }
 

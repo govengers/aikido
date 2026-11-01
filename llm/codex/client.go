@@ -90,9 +90,10 @@ func NewClient(options *Options) (*Client, error) {
 
 // Stream sends one request and returns its events; EventEnd comes last, then
 // the channel closes. The caller must drain the channel or cancel ctx.
-// 429 and 5xx at stream start are retried, mid-stream errors are not. Errors
-// wrap the llm sentinels (llm.ErrInvalidRequest for unsupported request
-// features).
+// 429 and 5xx at stream start are retried, mid-stream errors and a failed
+// token refresh are not (a replayed refresh token can revoke the login, see
+// TokenSource). Errors wrap the llm sentinels (llm.ErrInvalidRequest for
+// unsupported request features).
 func (c *Client) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
 	start := time.Now()
 	body, err := buildBody(request)
@@ -182,7 +183,7 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 func (c *Client) do(ctx context.Context, method, path string, body []byte, accept string) (*http.Response, error) {
 	tokens, err := c.options.Tokens.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("codex: access token: %w", err)
+		return nil, &tokenError{err: err}
 	}
 	var reader io.Reader
 	if body != nil {
@@ -243,9 +244,24 @@ func statusSentinel(status int) error {
 	}
 }
 
+// tokenError is a failed TokenSource.Token inside do. retryPolicy never
+// retries it: the refresh may have consumed the refresh token, and replaying
+// it would revoke the login.
+type tokenError struct {
+	err error
+}
+
+func (e *tokenError) Error() string { return "codex: access token: " + e.err.Error() }
+
+func (e *tokenError) Unwrap() error { return e.err }
+
 func retryPolicy() retry.Policy {
 	policy := retry.DefaultPolicy()
 	policy.ShouldRetry = func(err error) bool {
+		var failedToken *tokenError
+		if errors.As(err, &failedToken) {
+			return false
+		}
 		return errors.Is(err, llm.ErrRateLimited) || errors.Is(err, llm.ErrServerError)
 	}
 	return policy
