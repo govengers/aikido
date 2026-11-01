@@ -22,6 +22,10 @@ var reviewCases = []scriptCase{
 	{name: "sed decimal octal control escapes", script: `echo abc | sed 's/a/\d066/; s/b/\o103/; s/c/[\cI]/' | tr '\t' T`, want: "BC[T]\n"},
 	{name: "sed escape yields a literal", script: `echo 'a*b aab' | sed 's/a\x2a/X/'`, want: "Xb aab\n"},
 	{name: "sed y with hex escape", script: `echo abc | sed 'y/\x61b/xy/'`, want: "xyc\n"},
+	{name: "sed newline in a bracket", script: `printf 'line1\nline2\n' | sed 'N;s/[^\n]*\n//'`, want: "line2\n"},
+	{name: "sed tab in a bracket", script: `printf 'a\tb\n' | sed 's/[\t]/T/'`, want: "aTb\n"},
+	{name: "sed other backslash in a bracket", script: `printf 'a\\b\n' | sed 's/[\\]/S/'`, want: "aSb\n"},
+	{name: "grep backslash n in a bracket", script: `printf 'n\n' | grep '[\n]'`, want: "n\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 

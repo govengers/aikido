@@ -456,12 +456,30 @@ func (t *posixTranslator) bracket() error {
 				return err
 			}
 			hasClass = true
+		case character == '\\' && t.options.sedEscapes:
+			t.bracketEscape(&class)
 		case strings.IndexByte(`\[]^`, character) >= 0:
 			class.WriteString(`\` + string(character))
 		default:
 			class.WriteByte(character)
 		}
 	}
+}
+
+// bracketEscape handles a backslash inside a sed bracket expression: GNU
+// sed decodes its escapes there too ([^\n] is "not a newline"); any other
+// backslash is an ordinary character. position is just past the backslash.
+func (t *posixTranslator) bracketEscape(class *strings.Builder) {
+	value, consumed, ok := sedEscape(t.pattern[t.position:])
+	if !ok {
+		class.WriteString(`\\`)
+		return
+	}
+	t.position += consumed
+	if strings.IndexByte(`\[]^-`, value) >= 0 {
+		class.WriteByte('\\')
+	}
+	class.WriteByte(value)
 }
 
 // bracketClass translates [:name:], [=c=] or [.c.] inside a bracket
