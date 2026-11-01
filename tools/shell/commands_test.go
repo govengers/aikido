@@ -68,6 +68,12 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "cp -r and mv a directory onto a missing 'out/'", files: files, script: "cp -r dir copy/; mv dir moved/; cp dir/ x/; ls; ls copy moved", want: "cp: cannot stat 'dir/': No such file or directory\na.txt\ncopy\nmoved\ncopy:\nb.txt\ndeep\n\nmoved:\nb.txt\ndeep\n"},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
 		{
+			name: "touch with a trailing slash or under a file", files: files,
+			script: "touch dir/ nodir/x/ a.txt/x; touch -c new/ nodir/x a.txt/x a.txt/; ls",
+			want: "touch: cannot touch 'nodir/x/': No such file or directory\ntouch: cannot touch 'a.txt/x': Not a directory\n" +
+				"touch: setting times of 'a.txt/x': Not a directory\ntouch: setting times of 'a.txt/': Not a directory\na.txt\ndir\n",
+		},
+		{
 			name: "cp -rn checks every destination (review S13)",
 			files: map[string]string{
 				"src/a.txt": "new\n", "src/c.txt": "c\n", "src/sub/b.txt": "b\n",
@@ -81,8 +87,8 @@ func TestFileCommandCases(t *testing.T) {
 			name: "a trailing slash names a directory (review S31)", files: files,
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
-				"cp: cannot stat 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
-				"touch: cannot touch 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Not a directory\n" +
+				"cp: cannot stat 'a.txt/': Not a directory\ntouch: setting times of 'b/': No such file or directory\n" +
+				"touch: setting times of 'a.txt/': Not a directory\nbash: line 1: c/: Is a directory\nbash: line 1: a.txt/: Not a directory\n" +
 				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
 		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},
