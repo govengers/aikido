@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -95,8 +96,8 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 			Offset int    `json:"offset"`
 			Limit  int    `json:"limit"`
 		}
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: read_file args: %w", err)
+		if err := decodeArguments("read_file", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		if err := validatePolicyPath(options, arguments.Path); err != nil {
 			return tools.Result{}, err
@@ -136,8 +137,8 @@ func writeFileHandler(options VFSToolOptions) tools.Handler {
 			Content     string `json:"content"`
 			ContentType string `json:"content_type"`
 		}
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: write_file args: %w", err)
+		if err := decodeArguments("write_file", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		if err := validatePolicyPath(options, arguments.Path); err != nil {
 			return tools.Result{}, err
@@ -186,8 +187,8 @@ func deleteFileHandler(options VFSToolOptions) tools.Handler {
 		var arguments struct {
 			Path string `json:"path"`
 		}
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: delete_file args: %w", err)
+		if err := decodeArguments("delete_file", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		if err := validatePolicyPath(options, arguments.Path); err != nil {
 			return tools.Result{}, err
@@ -211,8 +212,8 @@ type editFileArguments struct {
 func editFileHandler(options VFSToolOptions) tools.Handler {
 	return func(ctx context.Context, rawArguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
 		var arguments editFileArguments
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: edit_file args: %w", err)
+		if err := decodeArguments("edit_file", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		if err := validatePolicyPath(options, arguments.Path); err != nil {
 			return tools.Result{}, err
@@ -276,8 +277,8 @@ func searchHandler(options VFSToolOptions, searchable vfs.Searchable) tools.Hand
 		var arguments struct {
 			Query string `json:"query"`
 		}
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: search args: %w", err)
+		if err := decodeArguments("search", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		paths, err := searchable.Search(ctx, arguments.Query)
 		if err != nil {
@@ -292,6 +293,41 @@ func searchHandler(options VFSToolOptions, searchable vfs.Searchable) tools.Hand
 		return tools.Result{
 			Content: map[string]any{"paths": visiblePaths},
 		}, nil
+	}
+}
+
+// decodeArguments parses a tool's arguments into target. Its errors match
+// tools.ErrInvalidArguments and name the tool and, for a wrong type, the
+// argument, so the model can correct the call.
+func decodeArguments(tool string, rawArguments json.RawMessage, target any) error {
+	err := json.Unmarshal(rawArguments, target)
+	var typeError *json.UnmarshalTypeError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &typeError) && typeError.Field != "":
+		return fmt.Errorf("%w for %s: argument %q must be %s, got %s", tools.ErrInvalidArguments, tool, typeError.Field, jsonKind(typeError.Type.Kind()), typeError.Value)
+	default:
+		return fmt.Errorf("%w for %s: %w", tools.ErrInvalidArguments, tool, err)
+	}
+}
+
+// jsonKind names the JSON type a Go kind decodes from.
+func jsonKind(kind reflect.Kind) string {
+	switch kind {
+	case reflect.String:
+		return "a string"
+	case reflect.Bool:
+		return "a boolean"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "an integer"
+	case reflect.Float32, reflect.Float64:
+		return "a number"
+	case reflect.Slice, reflect.Array:
+		return "an array"
+	default:
+		return "an object"
 	}
 }
 

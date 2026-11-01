@@ -65,8 +65,8 @@ func globHandler(options VFSToolOptions) tools.Handler {
 		var arguments struct {
 			Pattern string `json:"pattern"`
 		}
-		if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-			return tools.Result{}, fmt.Errorf("aikido/agent: glob args: %w", err)
+		if err := decodeArguments("glob", rawArguments, &arguments); err != nil {
+			return tools.Result{}, err
 		}
 		pattern, err := globToRegexp(arguments.Pattern)
 		if err != nil {
@@ -128,8 +128,8 @@ func parseGrepQuery(rawArguments json.RawMessage) (grepQuery, error) {
 		Context         int    `json:"context"`
 		OutputMode      string `json:"output_mode"`
 	}
-	if err := json.Unmarshal(rawArguments, &arguments); err != nil {
-		return grepQuery{}, fmt.Errorf("aikido/agent: grep args: %w", err)
+	if err := decodeArguments("grep", rawArguments, &arguments); err != nil {
+		return grepQuery{}, err
 	}
 	expression := arguments.Pattern
 	if arguments.CaseInsensitive {
