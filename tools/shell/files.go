@@ -292,8 +292,15 @@ func touch(ctx context.Context, files workspace, directory, operand string, noCr
 		return errNotFound
 	}
 	found, err := files.stat(ctx, name)
-	if err != nil || found.kind != entryMissing || noCreate {
+	switch {
+	case err != nil:
 		return err
+	case strings.HasSuffix(operand, "/") && found.kind == entryMissing:
+		return errNotFound // "b/" names a directory; touch creates files only
+	case strings.HasSuffix(operand, "/") && found.kind == entryFile:
+		return errNotDirectory
+	case found.kind != entryMissing || noCreate:
+		return nil
 	}
 	return files.writeFile(ctx, name, nil)
 }

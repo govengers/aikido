@@ -489,6 +489,13 @@ func (s *session) openForWriting(ctx context.Context, name, resolved string, app
 	if err := files.checkWritable(ctx, resolved); err != nil {
 		return nil, pathError(name, err)
 	}
+	if strings.HasSuffix(name, "/") {
+		// "out/" names a directory: bash cannot open it as a file.
+		if found, err := files.stat(ctx, resolved); err == nil && found.kind == entryFile {
+			return nil, pathError(name, errNotDirectory)
+		}
+		return nil, pathError(name, errIsDirectory)
+	}
 	file := &bufferedFile{name: name, stderr: stderr}
 	if appending {
 		content, _, err := files.storage.ReadFile(ctx, resolved)

@@ -57,6 +57,14 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "cp -v, -n and into itself", files: files, script: "cp -v a.txt c.txt; cp -n dir/b.txt c.txt; cat c.txt; cp -r dir dir/deep", want: "'a.txt' -> 'c.txt'\nalpha\ncp: cannot copy a directory, 'dir', into itself, 'dir/deep/dir'\n", status: 1},
 		{name: "cp onto a directory name inside a directory", files: map[string]string{"a": "1", "d/a/x": "2"}, script: "cp a d", want: "cp: cannot overwrite directory 'd/a' with non-directory\n", status: 1},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
+		{
+			name: "a trailing slash names a directory (review S31)", files: files,
+			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
+			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
+				"cp: failed to access 'a.txt/': Not a directory\ntouch: cannot touch 'b/': No such file or directory\n" +
+				"touch: cannot touch 'a.txt/': Not a directory\nbash: c/: Is a directory\nbash: a.txt/: Not a directory\n" +
+				"a.txt\ndir\na.txt\nb.txt\ndeep\n",
+		},
 		{name: "tee to devices", files: files, script: "echo x | tee /dev/null /dev/stderr", want: "x\nx\n"},
 		{name: "cat /dev/stdin", files: files, script: "echo piped | cat /dev/stdin", want: "piped\n"},
 		{name: "redirect to /dev/stdout and /dev/stderr", files: files, script: "echo out > /dev/stdout; echo err > /dev/stderr", want: "out\nerr\n"},

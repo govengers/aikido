@@ -71,7 +71,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 		return usage(invocation, mode.command, fmt.Errorf("missing destination file operand after '%s'", operands[0]), errFailed)
 	}
 	files := workspaceOf(invocation)
-	transfers, err := planTransfers(ctx, invocation, files, operands)
+	transfers, err := planTransfers(ctx, invocation, files, operands, mode.move)
 	if err != nil {
 		complain(invocation, mode.command, "%v", err)
 		return errFailed
@@ -96,7 +96,7 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 
 // planTransfers pairs every source with its target: into the last operand
 // when it is a directory, else the one source onto it.
-func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string) ([]transfer, error) {
+func planTransfers(ctx context.Context, invocation *Invocation, files workspace, operands []string, move bool) ([]transfer, error) {
 	sources, last := operands[:len(operands)-1], operands[len(operands)-1]
 	lastName, err := resolve(invocation, last)
 	if err != nil {
@@ -107,8 +107,18 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 		return nil, err
 	}
 	intoDirectory := lastEntry.kind == entryDirectory
-	if len(sources) > 1 && !intoDirectory {
+	switch {
+	case len(sources) > 1 && !intoDirectory:
 		return nil, fmt.Errorf("target '%s' is not a directory", last)
+	case strings.HasSuffix(last, "/") && !intoDirectory:
+		// "out/" names a directory; GNU never creates a file for it.
+		switch {
+		case lastEntry.kind != entryMissing:
+			return nil, fmt.Errorf("failed to access '%s': %w", last, errNotDirectory)
+		case move:
+			return nil, fmt.Errorf("cannot move '%s' to '%s': %w", sources[0], last, errNotDirectory)
+		}
+		return nil, fmt.Errorf("cannot create regular file '%s': %w", last, errNotDirectory)
 	}
 	transfers := make([]transfer, 0, len(sources))
 	for _, source := range sources {
