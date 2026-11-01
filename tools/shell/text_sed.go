@@ -197,9 +197,11 @@ type sedEditor struct {
 	readStatus ExitError
 	// patternTerminated says the pattern space came from a line with a
 	// newline.
-	patternTerminated     bool
-	patternSpace, hold    string
-	appendQueue           []string
+	patternTerminated  bool
+	patternSpace, hold string
+	// appendQueue is the text queued by a, each line ended by "\n"; it
+	// counts against the input budget like the spaces.
+	appendQueue           strings.Builder
 	lastRegex             *posixRegexp
 	substituted, quitting bool
 	// failure is a run-time error found while matching or reading, which
@@ -400,10 +402,10 @@ func (e *sedEditor) run(ctx context.Context) error {
 
 // flushAppends writes the text queued by a.
 func (e *sedEditor) flushAppends() {
-	for _, text := range e.appendQueue {
-		e.output.write(strings.TrimSuffix(text, "\n"), true)
+	if e.appendQueue.Len() > 0 {
+		e.output.write(strings.TrimSuffix(e.appendQueue.String(), "\n"), true)
 	}
-	e.appendQueue = e.appendQueue[:0]
+	e.appendQueue.Reset()
 }
 
 // cycle runs the program once over the pattern space. print says whether
@@ -448,7 +450,8 @@ func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 
 // checkLimits ends a cycle on a run-time failure, on a cancelled ctx when a
 // branch jumps back (sed ':a;ba' loops without reading), and when the
-// pattern or hold space outgrows the input budget (':a;N;G;h;ba').
+// pattern space, hold space or append queue outgrows the input budget
+// (':a;N;G;h;ba', ':a;a x' -e 'ba').
 func (e *sedEditor) checkLimits(ctx context.Context, jumpedBack bool) error {
 	if e.failure != nil {
 		return e.failure
@@ -458,7 +461,7 @@ func (e *sedEditor) checkLimits(ctx context.Context, jumpedBack bool) error {
 			return err
 		}
 	}
-	if len(e.patternSpace) > maximumInputBytes || len(e.hold) > maximumInputBytes {
+	if len(e.patternSpace) > maximumInputBytes || len(e.hold) > maximumInputBytes || e.appendQueue.Len() > maximumInputBytes {
 		return errInputTooLarge
 	}
 	return nil
@@ -487,7 +490,7 @@ func (e *sedEditor) execute(ctx context.Context, counter int) (int, cycleOutcome
 	case '=':
 		e.output.write(strconv.Itoa(e.lineNumber), true)
 	case 'a':
-		e.appendQueue = append(e.appendQueue, command.text)
+		e.appendQueue.WriteString(strings.TrimSuffix(command.text, "\n") + "\n")
 	case 'i':
 		e.output.write(strings.TrimSuffix(command.text, "\n"), true)
 	case 'c':
@@ -512,7 +515,7 @@ func (e *sedEditor) execute(ctx context.Context, counter int) (int, cycleOutcome
 	case 'Q':
 		// Q prints nothing more, not even the text a queued.
 		e.quitting, e.exitCode = true, command.exitCode
-		e.appendQueue = e.appendQueue[:0]
+		e.appendQueue.Reset()
 		return 0, cycleQuitSilently, nil
 	case 'b', 't', 'T':
 		return e.branch(counter)
