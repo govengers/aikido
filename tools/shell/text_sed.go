@@ -89,9 +89,14 @@ func runSed(ctx context.Context, invocation *Invocation) error {
 	}
 	editor := &sedEditor{settings: settings, program: program, invocation: invocation}
 	if settings.inPlace {
-		return editor.editInPlace(ctx, operands)
+		err = editor.editInPlace(ctx, operands)
+	} else {
+		err = editor.stream(ctx, operands)
 	}
-	return editor.stream(ctx, operands)
+	if errors.As(err, &problem) {
+		return sedTool.fatal(invocation, 1, "%s", problem.message)
+	}
+	return err
 }
 
 // parseSedSettings reads the options and takes the script from the first
@@ -187,8 +192,11 @@ type sedEditor struct {
 	appendQueue           []string
 	lastRegex             *posixRegexp
 	substituted, quitting bool
-	exitCode              int
-	rangeStates           []sedRangeState
+	// failure is a run-time error found while matching, which ends the
+	// cycle (errNoPreviousRegex).
+	failure     error
+	exitCode    int
+	rangeStates []sedRangeState
 }
 
 // sedRangeState is the run-time state of a command's address range.
@@ -395,7 +403,11 @@ func (e *sedEditor) flushAppends() {
 func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 	for counter := 0; counter < len(e.program); {
 		command := &e.program[counter]
-		if !e.selects(ctx, counter) {
+		selected := e.selects(ctx, counter)
+		if e.failure != nil {
+			return false, false, e.failure
+		}
+		if !selected {
 			if command.name == '{' {
 				counter = command.target
 			}
@@ -403,6 +415,9 @@ func (e *sedEditor) cycle(ctx context.Context) (bool, bool, error) {
 			continue
 		}
 		next, outcome, err := e.execute(ctx, counter)
+		if err == nil {
+			err = e.failure
+		}
 		if err != nil {
 			return false, false, err
 		}
@@ -631,11 +646,17 @@ func (e *sedEditor) matchesAddress(ctx context.Context, address *sedAddress) boo
 	return false
 }
 
+// errNoPreviousRegex is "//" before any regex was used, in GNU's words.
+var errNoPreviousRegex = &sedScriptError{"-e expression #1, char 0: no previous regular expression"}
+
 // useRegex resolves "//" to the last regex used and remembers this one.
-// ponytail: "//" with no previous regex matches nothing; GNU fails with
-// "no previous regular expression".
+// Without a previous regex it records errNoPreviousRegex in failure, which
+// stops the cycle, and returns nil.
 func (e *sedEditor) useRegex(regex *sedRegex) *posixRegexp {
 	if regex.regex == nil {
+		if e.lastRegex == nil {
+			e.failure = errNoPreviousRegex
+		}
 		return e.lastRegex
 	}
 	e.lastRegex = regex.regex

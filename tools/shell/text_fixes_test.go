@@ -48,6 +48,9 @@ var reviewCases = []scriptCase{
 	{name: "grep -o adjacent context needs no separator", files: map[string]string{"c.txt": "m\nx\nm\n"}, script: `grep -o -A1 m c.txt`, want: "m\nm\n"},
 	{name: "grep -C0 separates groups", files: map[string]string{"c.txt": "1\n2\nm\n4\n5\n6\n7\nm\n9\n"}, script: `grep -C0 m c.txt`, want: "m\n--\nm\n"},
 	{name: "grep -m0 exits before reading", files: map[string]string{"a.txt": "x\n"}, script: `grep -c -m0 x a.txt; echo $?; grep -L -m0 x a.txt nope; echo $?`, want: "1\n1\n"},
+	{name: "sed empty regex without a previous one", script: `echo a | sed 's//b/'; echo $?`, want: "sed: -e expression #1, char 0: no previous regular expression\n1\n"},
+	{name: "sed empty address without a previous one", script: `echo a | sed -n '//p'; echo $?`, want: "sed: -e expression #1, char 0: no previous regular expression\n1\n"},
+	{name: "sed empty regex reuses the last one", script: `echo abc | sed '/b/s//X/'`, want: "aXc\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
