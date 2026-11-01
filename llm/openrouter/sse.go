@@ -57,7 +57,9 @@ const (
 // includes a top-level `error` envelope) are emitted as EventError followed
 // by EventEnd. They are NOT retried (per ADR-006 / ADR-022, RES-005). A body
 // that ends cleanly before both [DONE] and any finish_reason was cut off and
-// fails the same way.
+// fails the same way. A data payload that does not decode ends the stream
+// with EventError (llm.ErrInvalidResponse) and drops the pending tool calls;
+// a trailing usage block is still emitted.
 //
 // Content-filter signals come in two forms (per ADR-028):
 //  1. finish_reason="content_filter" on a regular chunk, emitted as
@@ -143,7 +145,7 @@ type streamDecoder struct {
 func (d *streamDecoder) handlePayload(payload string) {
 	var chunk streamChunk
 	if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-		// Permissive: a malformed line is skipped, not fatal for the stream.
+		d.failMalformed(err)
 		return
 	}
 	switch {
@@ -165,6 +167,18 @@ func (d *streamDecoder) handlePayload(payload string) {
 		// or a dedicated trailing chunk with empty `choices`).
 		d.emitUsage(&chunk)
 	}
+}
+
+// failMalformed fails the stream on a data payload that does not decode: it
+// may have carried text or a tool-call fragment, so what arrived is
+// incomplete and the pending tool calls are dropped. Later payloads are still
+// read for the trailing usage.
+func (d *streamDecoder) failMalformed(err error) {
+	if d.failed {
+		return
+	}
+	d.assembler.flush()
+	d.fail(decodeError("mid-stream: decode chunk", err))
 }
 
 // handleErrorEnvelope handles a top-level error envelope, a mid-stream error.

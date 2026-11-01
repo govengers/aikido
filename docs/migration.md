@@ -128,6 +128,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | `voice.Handler` stream | a client that stopped reading blocked the handler (and its connection) until the client went away | each NDJSON line has a write deadline, `HandlerOptions.WriteTimeout` (default 30 s); after a failed or timed-out write the handler stops writing and drains the turn, so it still lands in History |
 | OpenRouter answer cut after a 2xx | a non-streaming answer (`Complete`, images, speech, decisions, models, video poll and download) whose body broke off mid-read was sent again, billing the work twice | `llm.ErrServerError` after one request; only failures before a status arrived, 429 and 5xx are retried. `CompleteWithRetry` still retries it, as you asked |
 | OpenRouter `Complete` with `finish_reason: "error"` | without an error envelope it was a success with the partial output | `llm.ErrServerError` with the partial response and its usage, as on `Stream` |
+| OpenRouter malformed stream chunk | a `data:` payload that was not valid JSON was skipped, so a stream missing text or a tool-call fragment could end as a success | `EventError` (`llm.ErrInvalidResponse`), pending tool calls dropped; the trailing usage still arrives |
 
 ## Coming from v0.3.x (ASO Nexus Hub)
 

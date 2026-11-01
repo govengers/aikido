@@ -222,6 +222,31 @@ func TestStream_End(t *testing.T) {
 	}
 }
 
+// TestStream_MalformedPayloadFailsTheStream pins that a data payload that
+// does not decode is not skipped: it may have carried text or a tool-call
+// fragment, so the stream ends with ErrInvalidResponse, drops the pending
+// tool calls and still reports the trailing usage.
+func TestStream_MalformedPayloadFailsTheStream(t *testing.T) {
+	t.Parallel()
+	body := "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n\n" +
+		"data: [DONE]\n\n"
+	events := streamBody(t, []byte(body))
+	assertEventOrder(t, events)
+	summary := summarize(t, events)
+	if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrInvalidResponse) {
+		t.Errorf("errors = %v, want one ErrInvalidResponse", summary.errors)
+	}
+	if len(summary.toolCalls) != 0 {
+		t.Errorf("tool calls = %+v, want none (a fragment may be missing)", summary.toolCalls)
+	}
+	if len(summary.usages) != 1 || summary.usages[0].PromptTokens != 7 {
+		t.Errorf("usages = %+v, want the trailing usage", summary.usages)
+	}
+}
+
 // TestToolCallAssembler_Caps pins the per-stream bounds on what tool calls
 // accumulate, across flushes: the line cap alone bounds one fragment only.
 func TestToolCallAssembler_Caps(t *testing.T) {
