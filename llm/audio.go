@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"mime"
@@ -28,11 +29,11 @@ Output only the transcript, without quotes, comments or labels.`
 // ("audio/webm;codecs=opus", "audio/mp4"), onto the AudioPart.Format value.
 // Parameters are ignored. Unknown types return an error.
 func AudioFormat(contentType string) (string, error) {
-	mt, _, err := mime.ParseMediaType(contentType)
+	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return "", fmt.Errorf("aikido/llm: invalid audio content type %q: %w", contentType, err)
 	}
-	switch mt {
+	switch mediaType {
 	case "audio/webm":
 		return "webm", nil
 	case "audio/mp4", "audio/m4a", "audio/x-m4a", "audio/aac":
@@ -48,15 +49,17 @@ func AudioFormat(contentType string) (string, error) {
 	case "audio/aiff", "audio/x-aiff":
 		return "aiff", nil
 	}
-	return "", fmt.Errorf("aikido/llm: unsupported audio type %q", mt)
+	return "", fmt.Errorf("aikido/llm: unsupported audio type %q", mediaType)
 }
 
 // TranscribeRequest is one speech-to-text call made through Transcribe.
 type TranscribeRequest struct {
 	// Model defaults to DefaultTranscribeModel.
 	Model string
-	// Audio is the encoded clip; Format is its AudioPart.Format.
-	Audio  []byte
+	// Audio is the encoded clip. Required.
+	Audio []byte
+	// Format is the clip's AudioPart.Format; AudioFormat derives it from a
+	// MIME type. Required.
 	Format string
 	// Hint is appended to the built-in instruction: the likely language,
 	// domain vocabulary, how to write numbers. Keep example sentences and
@@ -77,53 +80,57 @@ type Transcription struct {
 	Usage *Usage
 }
 
-// Transcribe returns the speech in req.Audio as text, using a chat-completions
-// call on c.Complete, so it works with any Client whose provider accepts
-// audio input. Temperature is 0. A clip without intelligible speech returns
-// "", not an error. The text is the corrected one when req.Vocabulary is set;
-// TranscribeDetailed also returns the raw transcript.
+// Transcribe returns the speech in request.Audio as text, using a
+// chat-completions call on client.Complete, so it works with any Client whose
+// provider accepts audio input. Temperature is 0. A clip without intelligible
+// speech returns "", not an error. The text is the corrected one when
+// request.Vocabulary is set; TranscribeDetailed also returns the raw
+// transcript.
 //
 // Usage is returned alongside the text, also on error when the provider
-// reported one.
-func Transcribe(ctx context.Context, c Client, req TranscribeRequest) (string, *Usage, error) {
-	t, err := TranscribeDetailed(ctx, c, req)
-	return t.Text, t.Usage, err
+// reported one. A request without Audio or Format fails with ErrInvalidRequest
+// before the client is called.
+func Transcribe(ctx context.Context, client Client, request TranscribeRequest) (string, *Usage, error) {
+	transcription, err := TranscribeDetailed(ctx, client, request)
+	return transcription.Text, transcription.Usage, err
 }
 
 // TranscribeDetailed is Transcribe returning the raw and the corrected
 // transcript.
-func TranscribeDetailed(ctx context.Context, c Client, req TranscribeRequest) (Transcription, error) {
-	if len(req.Audio) == 0 || req.Format == "" {
+func TranscribeDetailed(ctx context.Context, client Client, request TranscribeRequest) (Transcription, error) {
+	if len(request.Audio) == 0 || request.Format == "" {
 		return Transcription{}, fmt.Errorf("aikido/llm: transcribe: audio and format are required: %w", ErrInvalidRequest)
 	}
-	model := req.Model
-	if model == "" {
-		model = DefaultTranscribeModel
-	}
-	prompt := transcribePrompt
-	if line := req.Vocabulary.promptLine(); line != "" {
-		prompt += "\n\n" + line
-	}
-	if req.Hint != "" {
-		prompt += "\n\n" + req.Hint
-	}
-	resp, err := c.Complete(ctx, Request{
-		Model: model,
+	response, err := client.Complete(ctx, Request{
+		Model: cmp.Or(request.Model, DefaultTranscribeModel),
 		Messages: []Message{{
 			Role:    RoleUser,
-			Content: prompt,
-			Audio:   []AudioPart{{Data: req.Audio, Format: req.Format}},
+			Content: transcriptionPrompt(request),
+			Audio:   []AudioPart{{Data: request.Audio, Format: request.Format}},
 		}},
 		Temperature: new(float32(0)),
 	})
 	if err != nil {
-		return Transcription{Usage: resp.Usage}, err
+		return Transcription{Usage: response.Usage}, err
 	}
-	raw := strings.TrimSpace(resp.Text)
+	raw := strings.TrimSpace(response.Text)
 	if isNoSpeech(raw) {
-		return Transcription{Usage: resp.Usage}, nil
+		return Transcription{Usage: response.Usage}, nil
 	}
-	return Transcription{Text: req.Vocabulary.Correct(raw), Raw: raw, Usage: resp.Usage}, nil
+	return Transcription{Text: request.Vocabulary.Correct(raw), Raw: raw, Usage: response.Usage}, nil
+}
+
+// transcriptionPrompt is the built-in instruction, then the vocabulary's
+// terms, then the caller's hint, which must come last.
+func transcriptionPrompt(request TranscribeRequest) string {
+	prompt := transcribePrompt
+	if line := request.Vocabulary.promptLine(); line != "" {
+		prompt += "\n\n" + line
+	}
+	if request.Hint != "" {
+		prompt += "\n\n" + request.Hint
+	}
+	return prompt
 }
 
 // isNoSpeech reports whether a reply is the no-speech marker. Models with a

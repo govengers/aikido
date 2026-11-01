@@ -12,19 +12,19 @@ import (
 // IsTransientServerError reports whether err is a transient upstream-provider
 // failure (typically a 5xx, mid-stream RST, or other server-side flake) that
 // is worth retrying. Authentication errors, invalid-request errors, and rate
-// limits are NOT classified as transient — auth and bad-request errors won't
-// fix themselves with a retry, and rate limits should be honored explicitly
-// (typically via a Retry-After-aware policy at the caller).
+// limits are NOT classified as transient: authentication and bad-request
+// errors won't fix themselves with a retry, and rate limits should be honored
+// explicitly (typically via a Retry-After-aware policy at the caller).
 //
 // Use as the ShouldRetry predicate when retrying llm.Collect:
 //
-//	llm.CollectWithRetry(ctx, c, req, retry.Policy{
-//	    MaxAttempts: 5,
-//	    BaseDelay:   2 * time.Second,
-//	    MaxDelay:    30 * time.Second,
-//	    Multiplier:  2.0,
-//	    Jitter:      0.2,
-//	    ShouldRetry: llm.IsTransientServerError,
+//	llm.CollectWithRetry(ctx, client, request, retry.Policy{
+//	    MaximumAttempts: 5,
+//	    BaseDelay:       2 * time.Second,
+//	    MaximumDelay:    30 * time.Second,
+//	    Multiplier:      2.0,
+//	    Jitter:          0.2,
+//	    ShouldRetry:     llm.IsTransientServerError,
 //	})
 func IsTransientServerError(err error) bool {
 	return errors.Is(err, ErrServerError)
@@ -33,8 +33,8 @@ func IsTransientServerError(err error) bool {
 // IsContentFilter reports whether err is a content-policy abort surfaced by the
 // provider (finish_reason="content_filter", an explicit error envelope with a
 // matching code/message, or any error wrapping ErrContentFiltered). Use this
-// to short-circuit retry — the same prompt will trip the classifier again on
-// the next attempt — and to render a "try different wording" message rather
+// to short-circuit retry, since the same prompt will trip the classifier again
+// on the next attempt, and to render a "try different wording" message rather
 // than a generic "try again later".
 //
 // Note: providers sometimes mid-stream RST without sending a structured
@@ -65,9 +65,9 @@ func DefaultStreamingRetryPolicy() retry.Policy {
 }
 
 // CollectWithRetry wraps Collect with retry.Do using the supplied policy.
-// On retry, the entire stream is restarted from scratch (no resume) — Collect's
-// accumulated state is discarded between attempts. The returned Response is
-// from the last attempt, also when that attempt failed.
+// On retry, the entire stream is restarted from scratch (no resume) and
+// Collect's accumulated state is discarded between attempts. The returned
+// Response is from the last attempt, also when that attempt failed.
 //
 // Provider-side cost is paid per attempt: a streaming model that aborts after
 // emitting partial tokens still bills for those tokens. Tune MaximumAttempts
@@ -80,7 +80,7 @@ func CollectWithRetry(ctx context.Context, client Client, request Request, polic
 		policy.ShouldRetry = IsTransientServerError
 	}
 	var response Response
-	err := retry.Do(ctx, policy, func(_ int) error {
+	err := retry.Do(ctx, policy, func(int) error {
 		var attemptError error
 		response, attemptError = Collect(ctx, client, request)
 		return attemptError
@@ -89,8 +89,8 @@ func CollectWithRetry(ctx context.Context, client Client, request Request, polic
 }
 
 // CompleteWithRetry wraps Client.Complete with retry.Do using the supplied
-// policy. Each attempt sends a fresh non-streaming request; the final Response
-// is from the last attempt.
+// policy. Each attempt sends a fresh non-streaming request; the returned
+// Response is from the last attempt, also when that attempt failed.
 //
 // Use this for image generation: a single oversized base64 payload exceeds the
 // SSE scanner cap and trips ErrServerError on every Stream attempt. Complete
@@ -98,20 +98,21 @@ func CollectWithRetry(ctx context.Context, client Client, request Request, polic
 // wrapper is here for the standard 429/5xx-at-request-start flake.
 //
 // If policy.ShouldRetry is nil, IsTransientServerError is used.
-func CompleteWithRetry(ctx context.Context, c Client, req Request, policy retry.Policy) (Response, error) {
+func CompleteWithRetry(ctx context.Context, client Client, request Request, policy retry.Policy) (Response, error) {
 	if policy.ShouldRetry == nil {
 		policy.ShouldRetry = IsTransientServerError
 	}
-	var resp Response
-	retryErr := retry.Do(ctx, policy, func(_ int) error {
-		var err error
-		resp, err = c.Complete(ctx, req)
-		return err
+	var response Response
+	err := retry.Do(ctx, policy, func(int) error {
+		var attemptError error
+		response, attemptError = client.Complete(ctx, request)
+		return attemptError
 	})
-	return resp, retryErr
+	return response, err
 }
 
-// Collect drains a stream into one Response. Useful for non-streaming callers.
+// Collect drains a stream into one Response, for callers that want the whole
+// answer but need Stream's behavior (or a client without a separate Complete).
 //
 // The Response holds the text accumulated from EventTextDelta, all complete
 // tool calls, all images surfaced by the provider, the final Usage if the
