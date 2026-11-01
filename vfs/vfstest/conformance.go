@@ -16,7 +16,10 @@ import (
 )
 
 // invalidPaths violate one structural rule of vfs.ValidatePath each.
-var invalidPaths = []string{"", "/abs", "../parent.md", "trailing/", "double//slash", "with\x00null"}
+var invalidPaths = []string{
+	"", "/abs", "../parent.md", "trailing/", "double//slash", "with\x00null",
+	"./current.md", "a/./b.md", "back\\slash.md",
+}
 
 // RunConformance executes the standard conformance suite against a vfs.Storage
 // factory. Each sub-test calls the factory to obtain a fresh, empty
@@ -160,17 +163,19 @@ func testWriteRejectsInvalidPath(t *testing.T, storage vfs.Storage) {
 
 func testDeleteRejectsInvalidPath(t *testing.T, storage vfs.Storage) {
 	t.Helper()
-	err := storage.DeleteFile(context.Background(), "../etc/passwd")
-	if !errors.Is(err, vfs.ErrPathInvalid) {
-		t.Errorf("DeleteFile invalid path err = %v; want vfs.ErrPathInvalid", err)
+	for _, path := range invalidPaths {
+		if err := storage.DeleteFile(context.Background(), path); !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("DeleteFile(%q) err = %v; want vfs.ErrPathInvalid", path, err)
+		}
 	}
 }
 
 func testReadRejectsInvalidPath(t *testing.T, storage vfs.Storage) {
 	t.Helper()
-	_, _, err := storage.ReadFile(context.Background(), "../etc/passwd")
-	if !errors.Is(err, vfs.ErrPathInvalid) {
-		t.Errorf("ReadFile invalid path err = %v; want vfs.ErrPathInvalid", err)
+	for _, path := range invalidPaths {
+		if _, _, err := storage.ReadFile(context.Background(), path); !errors.Is(err, vfs.ErrPathInvalid) {
+			t.Errorf("ReadFile(%q) err = %v; want vfs.ErrPathInvalid", path, err)
+		}
 	}
 }
 
