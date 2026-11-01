@@ -41,7 +41,10 @@ type ExternalOptions struct {
 	Environment []string
 	// Allow, if set, is asked before every run with the arguments (without
 	// the name). A non-nil error refuses the run: its text goes to stderr
-	// and the exit status is 1.
+	// and the exit status is 1. It is called concurrently when a script runs
+	// the program in a pipeline or a background job, and from every Shell
+	// the Command is registered with, so it must be safe for concurrent
+	// use. The slice is a copy it may keep or change.
 	Allow func(arguments []string) error
 	// Timeout bounds one run; zero means none beyond the shell's own
 	// timeout. A program that runs out of time is killed with its process

@@ -40,6 +40,14 @@ type Command struct {
 	// Run executes one invocation. It returns nil for exit status 0, an
 	// ExitError for another status, and any other error for a failure the
 	// shell reports on stderr with status 1. Run must honour ctx.
+	//
+	// Run is called concurrently: the commands of a pipeline and background
+	// jobs run at once, and one Command may be registered with several
+	// Shells, so it must be safe for concurrent use. The Invocation and its
+	// streams belong to that call only: the shell owns Stdin, Stdout and
+	// Stderr (Run must not close them) and they must not be used after Run
+	// returns; a goroutine Run starts must end before Run returns. A panic is
+	// reported as an internal error with status 2.
 	Run func(ctx context.Context, invocation *Invocation) error
 }
 
