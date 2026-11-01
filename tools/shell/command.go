@@ -7,7 +7,17 @@
 //
 // Nothing reaches the host unless the caller registered it: no host files, no
 // network, no host environment. A command the script calls that is not
-// registered fails like in bash: "bash: name: command not found", exit 127.
+// registered fails like in bash: "bash: line 1: name: command not found",
+// exit 127.
+//
+// The script sees the Storage as "/": absolute paths are workspace paths,
+// climbing above the root is "No such file or directory". /tmp is a memory
+// scratch area emptied after every Run, /dev/null, /dev/stdin, /dev/stdout
+// and /dev/stderr work. A Storage holds only files, so a directory exists
+// while a file lies below it or after mkdir created it in this Shell.
+// Redirects collect what is written and store it with one WriteFile when
+// they close. New builds a Shell, Register adds it to a tools.Registry as
+// the "bash" tool, External wraps a host program as a Command.
 package shell
 
 import (
@@ -49,6 +59,10 @@ type Invocation struct {
 	Storage vfs.Storage
 	// Environment holds the shell's exported variables as NAME=value.
 	Environment []string
+
+	// session gives the built-in commands the shell's created directories
+	// and command table; nil when a Command runs outside a Shell.
+	session *session
 }
 
 // ExitError is a non-zero exit status a Command returns, like grep's 1 for

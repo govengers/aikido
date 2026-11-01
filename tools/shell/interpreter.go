@@ -1,0 +1,505 @@
+package shell
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"mvdan.cc/sh/v3/expand"
+	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/govengers/aikido/vfs"
+)
+
+// The interpreter runs every simple command through the exec handler. A
+// call rewritten to one of these names (they contain a NUL byte, which no
+// script can pass) is answered by the shell itself.
+const (
+	// internalFailure prints Arguments[0] to stderr and exits with the
+	// status in Arguments[1].
+	internalFailure = "\x00failure"
+	// internalLookup answers "command -v" (Arguments[0] == "command") or
+	// "type" for registered commands.
+	internalLookup = "\x00lookup"
+)
+
+// Exit statuses the shell itself sets, as bash does.
+const (
+	statusCannotExecute  = 126
+	statusNotFound       = 127
+	statusBrokenPipe     = 141 // 128 + SIGPIPE
+	statusInternalError  = 2
+	statusUnsupported    = 2
+	statusTimedOut       = 124 // like timeout(1)
+	statusCommandFailure = 1
+)
+
+// session is the state one script runs with: the call's storage (the
+// workspace with the /tmp scratch mounted), the shell's created directories
+// and its command table. A nested bash shares it.
+type session struct {
+	storage     vfs.Storage
+	directories *directorySet
+	commands    map[string]Command
+}
+
+func (s *session) files() workspace {
+	return workspace{storage: s.storage, directories: s.directories}
+}
+
+// runnerStart is what a new interpreter starts with.
+type runnerStart struct {
+	directory   string // workspace path
+	environment []string
+	parameters  []string // shell options and positional parameters, as interp.Params takes them
+	stdin       io.Reader
+	stdout      io.Writer
+	stderr      io.Writer
+}
+
+// newRunner returns an interpreter whose every file access and command goes
+// through the session.
+func (s *session) newRunner(start runnerStart) (*interp.Runner, error) {
+	runnerOptions := []interp.RunnerOption{
+		interp.Env(expand.ListEnviron(start.environment...)),
+		interp.StdIO(stdinFile(start.stdin), start.stdout, start.stderr),
+		interp.ExecHandlers(func(interp.ExecHandlerFunc) interp.ExecHandlerFunc { return s.execute }),
+		interp.CallHandler(s.rewrite),
+		interp.OpenHandler(s.open),
+		interp.StatHandler(s.stat),
+		interp.ReadDirHandler2(s.readDirectory),
+		interp.AccessHandler(s.access),
+	}
+	if len(start.parameters) > 0 {
+		runnerOptions = append(runnerOptions, interp.Params(start.parameters...))
+	}
+	runner, err := interp.New(runnerOptions...)
+	if err != nil {
+		//nolint:errorlint // LIB-010: the interpreter's error is not part of this package's API
+		return nil, fmt.Errorf("aikido/tools/shell: start the interpreter: %v", err)
+	}
+	// The interpreter's directory is a virtual absolute path: "/" is the
+	// workspace root. interp.Dir would check it on the host, so it is set
+	// directly, before the first Run captures it.
+	runner.Dir = "/" + start.directory
+	return runner, nil
+}
+
+// stdinFile turns a command's stdin into what the interpreter accepts
+// without starting a copying goroutine: an *os.File, or nil for none.
+func stdinFile(stdin io.Reader) io.Reader {
+	switch typed := stdin.(type) {
+	case nil, noInput:
+		return nil
+	case *os.File:
+		return typed
+	}
+	return stdin
+}
+
+// runFile runs a parsed script to its end. Background jobs (&) end with the
+// script, as they do when bash -c returns: they are cancelled and awaited so
+// none writes after runFile returns.
+func runFile(ctx context.Context, runner *interp.Runner, file *syntax.File) error {
+	jobs, stopJobs := context.WithCancel(ctx)
+	err := runner.Run(jobs, file)
+	stopJobs()
+	wait, parseErr := syntax.NewParser().Parse(strings.NewReader("wait"), "")
+	if parseErr == nil {
+		// The status of the closing wait is not the script's, so it is
+		// dropped.
+		_ = runner.Run(context.WithoutCancel(ctx), wait)
+	}
+	return err
+}
+
+// parseScript parses bash source and refuses the constructs the virtual
+// shell cannot run without host files. Errors are the message for stderr.
+func parseScript(script, name string) (*syntax.File, error) {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), name)
+	if err != nil {
+		return nil, err
+	}
+	var unsupported error
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch typed := node.(type) {
+		case *syntax.ProcSubst:
+			unsupported = fmt.Errorf("%s: process substitution is not supported; use a pipe or a file in /tmp", typed.Pos())
+		case *syntax.CoprocClause:
+			unsupported = fmt.Errorf("%s: coproc is not supported", typed.Pos())
+		}
+		return unsupported == nil
+	})
+	if unsupported != nil {
+		return nil, unsupported
+	}
+	return file, nil
+}
+
+// exitStatusOf returns the exit status a Run error carries, and whether the
+// error is one (nil is status 0).
+func exitStatusOf(err error) (int, bool) {
+	if err == nil {
+		return 0, true
+	}
+	var status interp.ExitStatus
+	if errors.As(err, &status) {
+		return int(status), true
+	}
+	return 0, false
+}
+
+// workspaceDirectory turns the interpreter's directory into a workspace path.
+func workspaceDirectory(directory string) string {
+	return strings.TrimPrefix(path.Clean("/"+directory), "/")
+}
+
+// execute is the interpreter's exec handler: every simple command that is
+// not a function or a shell builtin.
+func (s *session) execute(ctx context.Context, arguments []string) error {
+	handler := interp.HandlerCtx(ctx)
+	invocation := &Invocation{
+		Arguments:   arguments[1:],
+		Stdin:       handler.Stdin,
+		Stdout:      handler.Stdout,
+		Stderr:      handler.Stderr,
+		Directory:   workspaceDirectory(handler.Dir),
+		Storage:     s.storage,
+		Environment: exported(handler.Env),
+		session:     s,
+	}
+	if invocation.Stdin == nil {
+		invocation.Stdin = emptyInput()
+	}
+	status := s.dispatch(ctx, arguments[0], invocation, handler.Pos)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if status == 0 {
+		return nil
+	}
+	return interp.ExitStatus(status)
+}
+
+// exported returns the exported string variables as NAME=value.
+func exported(environment expand.Environ) []string {
+	variables := []string{}
+	for name, variable := range environment.Each {
+		if variable.Exported && variable.Kind == expand.String {
+			variables = append(variables, name+"="+variable.Str)
+		}
+	}
+	return variables
+}
+
+// dispatch runs one command by name and returns its exit status; errors are
+// already on stderr.
+func (s *session) dispatch(ctx context.Context, name string, invocation *Invocation, position syntax.Pos) uint8 {
+	switch name {
+	case internalFailure:
+		fmt.Fprintln(invocation.Stderr, invocation.Arguments[0])
+		status, _ := strconv.Atoi(invocation.Arguments[1])
+		return uint8(status) //nolint:gosec // G115: the shell itself writes statuses 1 and 2 here
+	case internalLookup:
+		return s.lookup(invocation)
+	}
+	if command, ok := s.commands[name]; ok {
+		return runCommand(ctx, command, invocation)
+	}
+	if interp.IsBuiltin(name) {
+		return s.runBuiltin(ctx, name, invocation)
+	}
+	if strings.Contains(name, "/") {
+		return s.runPath(ctx, name, invocation, position)
+	}
+	fmt.Fprintf(invocation.Stderr, "bash: %s%s: command not found\n", linePrefix(position), name)
+	return statusNotFound
+}
+
+// known reports whether name runs as a command: registered or a shell
+// builtin.
+func (s *session) known(name string) bool {
+	_, ok := s.commands[name]
+	return ok || interp.IsBuiltin(name)
+}
+
+// linePrefix is bash's "line N: " in front of a message, empty when the
+// position is unknown.
+func linePrefix(position syntax.Pos) string {
+	if !position.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("line %d: ", position.Line())
+}
+
+// runPath answers a command given as a path (./build.sh): files carry no
+// execute bit in a Storage, so it fails like bash on a non-executable file.
+func (s *session) runPath(ctx context.Context, name string, invocation *Invocation, position syntax.Pos) uint8 {
+	reason, status := error(errNotFound), uint8(statusNotFound)
+	if resolved, err := Resolve(invocation.Directory, name); err == nil {
+		found, err := s.files().stat(ctx, resolved)
+		switch {
+		case err != nil:
+			reason = describe(err)
+		case found.kind == entryDirectory:
+			reason, status = errIsDirectory, statusCannotExecute
+		case found.kind == entryFile:
+			reason, status = fileError("Permission denied (no execute bit in the workspace; run it with: bash "+name+")"), statusCannotExecute
+		case found.kind == entryMissing, found.kind == entryDevice:
+		}
+	}
+	fmt.Fprintf(invocation.Stderr, "bash: %s%s: %v\n", linePrefix(position), name, reason)
+	return status
+}
+
+// runCommand runs a Command and turns its result into an exit status. A
+// panic is reported as an internal error, because a pipeline runs commands
+// on goroutines where a panic would end the process.
+func runCommand(ctx context.Context, command Command, invocation *Invocation) (status uint8) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			complain(invocation, command.Name, "internal error: %v", recovered)
+			status = statusInternalError
+		}
+	}()
+	err := command.Run(ctx, invocation)
+	var exit ExitError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &exit):
+		return uint8(exit)
+	case errors.Is(err, syscall.EPIPE):
+		// The reader of a pipe is gone (head -1): bash's SIGPIPE status,
+		// silently.
+		return statusBrokenPipe
+	case ctx.Err() != nil:
+		return statusCommandFailure
+	}
+	complain(invocation, command.Name, "%v", describe(err))
+	return statusCommandFailure
+}
+
+// lookup answers "command -v" and "type" for names that are all registered
+// commands: they behave like shell builtins.
+func (s *session) lookup(invocation *Invocation) uint8 {
+	kind, names := invocation.Arguments[0], invocation.Arguments[1:]
+	for _, name := range names {
+		switch kind {
+		case "command":
+			fmt.Fprintln(invocation.Stdout, name)
+		case "type -t":
+			fmt.Fprintln(invocation.Stdout, "builtin")
+		default:
+			fmt.Fprintf(invocation.Stdout, "%s is a shell builtin\n", name)
+		}
+	}
+	return 0
+}
+
+// rewrite is the interpreter's call handler. It runs before every simple
+// command, builtins included, and changes the few builtins that would
+// otherwise consult the host: lookups in PATH, symlink resolution, and the
+// wording of cd's errors.
+func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, error) {
+	handler := interp.HandlerCtx(ctx)
+	switch arguments[0] {
+	case "cd":
+		return s.rewriteChangeDirectory(ctx, handler, arguments), nil
+	case "source", ".":
+		if len(arguments) > 1 && !strings.Contains(arguments[1], "/") {
+			// Without a slash the builtin searches PATH on the host; the
+			// virtual shell sources from the working directory.
+			rewritten := append([]string{arguments[0], "./" + arguments[1]}, arguments[2:]...)
+			return rewritten, nil
+		}
+	case "pwd":
+		// -P resolves symlinks on the host; workspace paths have none.
+		return []string{"pwd"}, nil
+	case "command", "type":
+		return s.rewriteLookup(arguments), nil
+	}
+	return arguments, nil
+}
+
+// rewriteChangeDirectory checks cd's target first, so a failure reads like
+// bash's ("cd: x: No such file or directory").
+func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.HandlerContext, arguments []string) []string {
+	prefix := "bash: " + linePrefix(handler.Pos) + "cd: "
+	if len(arguments) > 2 {
+		return []string{internalFailure, prefix + "too many arguments", "1"}
+	}
+	if len(arguments) < 2 || arguments[1] == "-" || arguments[1] == "" {
+		return arguments
+	}
+	target := arguments[1]
+	if !strings.HasPrefix(target, "/") {
+		target = handler.Dir + "/" + target
+	}
+	found, err := s.files().stat(ctx, workspaceDirectory(target))
+	switch {
+	case err != nil:
+		return []string{internalFailure, prefix + arguments[1] + ": " + describe(err).Error(), "1"}
+	case found.kind == entryMissing:
+		return []string{internalFailure, prefix + arguments[1] + ": " + errNotFound.Error(), "1"}
+	case found.kind != entryDirectory:
+		return []string{internalFailure, prefix + arguments[1] + ": " + errNotDirectory.Error(), "1"}
+	}
+	return arguments
+}
+
+// rewriteLookup sends "command -v names" and "type [-t] names" to the shell
+// when every name is a registered command; the builtins would search PATH on
+// the host.
+func (s *session) rewriteLookup(arguments []string) []string {
+	kind, names := arguments[0], arguments[1:]
+	switch {
+	case kind == "command" && len(names) > 1 && names[0] == "-v":
+		names = names[1:]
+	case kind == "type" && len(names) > 1 && names[0] == "-t":
+		kind, names = "type -t", names[1:]
+	case kind == "type" && len(names) > 0:
+	default:
+		return arguments
+	}
+	for _, name := range names {
+		if _, ok := s.commands[name]; !ok {
+			return arguments
+		}
+	}
+	return append([]string{internalLookup, kind}, names...)
+}
+
+// pathError is how a handler reports a file error: the interpreter prints
+// it as "bash: name: reason".
+func pathError(name string, err error) error {
+	return &os.PathError{Op: "bash:", Path: name, Err: describe(err)}
+}
+
+// open is the interpreter's open handler for redirects and source. Reads get
+// a pipe filled from the file; writes are buffered and stored with one
+// WriteFile when the redirect closes.
+func (s *session) open(ctx context.Context, name string, flag int, _ os.FileMode) (io.ReadWriteCloser, error) {
+	handler := interp.HandlerCtx(ctx)
+	resolved, err := Resolve(workspaceDirectory(handler.Dir), name)
+	if err != nil {
+		return nil, pathError(name, errNotFound)
+	}
+	if isDevice(resolved) {
+		return openDevice(resolved, flag, handler)
+	}
+	switch flag & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR) {
+	case os.O_RDONLY:
+		content, err := readFile(ctx, s.files(), resolved)
+		if err != nil {
+			return nil, pathError(name, err)
+		}
+		return pipeReader(content)
+	case os.O_WRONLY:
+		return s.openForWriting(ctx, name, resolved, flag&os.O_APPEND != 0, handler.Stderr)
+	}
+	return nil, pathError(name, errUnsupported)
+}
+
+// openForWriting checks the target and returns a buffered file that writes
+// on Close, starting from the current content when appending.
+func (s *session) openForWriting(ctx context.Context, name, resolved string, appending bool, stderr io.Writer) (io.ReadWriteCloser, error) {
+	files := s.files()
+	if err := files.checkWritable(ctx, resolved); err != nil {
+		return nil, pathError(name, err)
+	}
+	file := &bufferedFile{name: name, stderr: stderr}
+	if appending {
+		content, _, err := files.storage.ReadFile(ctx, resolved)
+		switch {
+		case err == nil:
+			file.content = content
+		case !errors.Is(err, vfs.ErrFileNotFound):
+			return nil, pathError(name, err)
+		}
+	}
+	// A script that timed out still stores what it wrote, as bash would have.
+	storeContext := context.WithoutCancel(ctx)
+	file.commit = func(content []byte) error {
+		return files.storage.WriteFile(storeContext, resolved, content, contentTypeFor(resolved))
+	}
+	return file, nil
+}
+
+// openDevice opens /dev/null, /dev/stdin, /dev/stdout or /dev/stderr.
+func openDevice(name string, flag int, handler interp.HandlerContext) (io.ReadWriteCloser, error) {
+	reading := flag&(os.O_WRONLY|os.O_RDWR) == 0
+	switch {
+	case name == "dev/stdin" && reading && handler.Stdin != nil:
+		return &streamFile{reader: handler.Stdin}, nil
+	case name == "dev/stdout" && !reading:
+		return &streamFile{writer: handler.Stdout}, nil
+	case name == "dev/stderr" && !reading:
+		return &streamFile{writer: handler.Stderr}, nil
+	case reading:
+		return pipeReader(nil)
+	}
+	return &streamFile{writer: io.Discard}, nil
+}
+
+// stat is the interpreter's stat handler (test -e/-f/-d, cd); name is a
+// virtual absolute path.
+func (s *session) stat(ctx context.Context, name string, _ bool) (fs.FileInfo, error) {
+	resolved := workspaceDirectory(name)
+	found, err := s.files().stat(ctx, resolved)
+	if err != nil {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: describe(err)}
+	}
+	if found.kind == entryMissing {
+		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
+	}
+	return fileInfo{name: path.Base(name), entry: found}, nil
+}
+
+// readDirectory is the interpreter's glob handler; name is a virtual
+// absolute path.
+func (s *session) readDirectory(ctx context.Context, name string) ([]fs.DirEntry, error) {
+	resolved := workspaceDirectory(name)
+	files := s.files()
+	found, err := files.stat(ctx, resolved)
+	switch {
+	case err != nil:
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: err}
+	case found.kind == entryMissing:
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrNotExist}
+	case found.kind != entryDirectory:
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: syscall.ENOTDIR}
+	}
+	listed, err := files.children(ctx, resolved)
+	if err != nil {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: err}
+	}
+	entries := make([]fs.DirEntry, 0, len(listed))
+	for _, item := range listed {
+		entries = append(entries, fs.FileInfoToDirEntry(fileInfo(item)))
+	}
+	return entries, nil
+}
+
+// access is the interpreter's access handler (test -r/-w/-x, cd): every
+// existing path is readable and writable, only directories are executable.
+func (s *session) access(ctx context.Context, name string, mode interp.AccessMode) error {
+	found, err := s.files().stat(ctx, workspaceDirectory(name))
+	switch {
+	case err != nil:
+		return err
+	case found.kind == entryMissing:
+		return fs.ErrNotExist
+	case mode&interp.AccessExec != 0 && found.kind != entryDirectory:
+		return fs.ErrPermission
+	}
+	return nil
+}
