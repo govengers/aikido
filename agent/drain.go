@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/govengers/aikido/llm"
@@ -17,84 +16,78 @@ import (
 // who also need streaming (e.g., to a UI) fan out the channel themselves
 // before passing one branch to Drain.
 func Drain(events <-chan Event) ([]llm.Message, error) {
-	var (
-		msgs           []llm.Message
-		accText        strings.Builder
-		accCalls       []llm.ToolCall
-		accImages      []llm.ImagePart
-		accToolResults []llm.Message
-		firstErr       error
-	)
-
-	flush := func() {
-		if accText.Len() > 0 || len(accCalls) > 0 || len(accImages) > 0 {
-			msgs = append(msgs, llm.Message{
-				Role:      llm.RoleAssistant,
-				Content:   accText.String(),
-				Images:    append([]llm.ImagePart(nil), accImages...),
-				ToolCalls: append([]llm.ToolCall(nil), accCalls...),
-			})
-		}
-		msgs = append(msgs, accToolResults...)
-		accText.Reset()
-		accCalls = nil
-		accImages = nil
-		accToolResults = nil
+	var transcript drainTranscript
+	for event := range events {
+		transcript.add(event)
 	}
-
-	for ev := range events {
-		switch ev.Kind {
-		case EventText:
-			if len(accToolResults) > 0 {
-				flush()
-			}
-			accText.WriteString(ev.Text)
-		case EventThinking:
-			// not part of the persisted message log
-		case EventToolCall:
-			if ev.ToolCall != nil {
-				accCalls = append(accCalls, *ev.ToolCall)
-			}
-		case EventImage:
-			if ev.Image != nil {
-				if len(accToolResults) > 0 {
-					flush()
-				}
-				accImages = append(accImages, *ev.Image)
-			}
-		case EventToolResult:
-			if ev.ToolResult != nil {
-				accToolResults = append(accToolResults, llm.Message{
-					Role:       llm.RoleTool,
-					ToolCallID: ev.ToolResult.CallID,
-					Content:    drainToolResultJSON(ev.ToolResult),
-				})
-			}
-		case EventUsage:
-			// not part of the persisted message log
-		case EventError:
-			if firstErr == nil {
-				firstErr = ev.Err
-			}
-		case EventEnd:
-			flush()
-		}
-	}
-	return msgs, firstErr
+	return transcript.messages, transcript.firstError
 }
 
-func drainToolResultJSON(tr *ToolResult) string {
-	if !tr.OK {
-		b, _ := json.Marshal(map[string]any{"error": tr.Error})
-		return string(b)
+// drainTranscript rebuilds the message log from a run's events. The pending
+// assistant message and its tool results are flushed when the next model
+// reply starts or the run ends.
+type drainTranscript struct {
+	messages    []llm.Message
+	text        strings.Builder
+	toolCalls   []llm.ToolCall
+	images      []llm.ImagePart
+	toolResults []llm.Message
+	firstError  error
+}
+
+func (d *drainTranscript) add(event Event) {
+	switch event.Kind {
+	case EventText:
+		d.startReplyIfToolsAnswered()
+		d.text.WriteString(event.Text)
+	case EventToolCall:
+		if event.ToolCall != nil {
+			d.toolCalls = append(d.toolCalls, *event.ToolCall)
+		}
+	case EventImage:
+		if event.Image != nil {
+			d.startReplyIfToolsAnswered()
+			d.images = append(d.images, *event.Image)
+		}
+	case EventToolResult:
+		if event.ToolResult != nil {
+			d.toolResults = append(d.toolResults, llm.Message{
+				Role:       llm.RoleTool,
+				ToolCallID: event.ToolResult.CallID,
+				Content:    toolResultJSON(*event.ToolResult),
+			})
+		}
+	case EventError:
+		if d.firstError == nil {
+			d.firstError = event.Err
+		}
+	case EventEnd:
+		d.flush()
+	case EventThinking, EventUsage:
+		// Not part of the persisted message log.
 	}
-	if tr.Content == nil {
-		return "null"
+}
+
+// startReplyIfToolsAnswered flushes the previous reply once its tool results
+// are in: new output then belongs to the next model reply.
+func (d *drainTranscript) startReplyIfToolsAnswered() {
+	if len(d.toolResults) > 0 {
+		d.flush()
 	}
-	b, err := json.Marshal(tr.Content)
-	if err != nil {
-		fallback, _ := json.Marshal(map[string]any{"error": "content marshal failed: " + err.Error()})
-		return string(fallback)
+}
+
+func (d *drainTranscript) flush() {
+	if d.text.Len() > 0 || len(d.toolCalls) > 0 || len(d.images) > 0 {
+		d.messages = append(d.messages, llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   d.text.String(),
+			Images:    append([]llm.ImagePart(nil), d.images...),
+			ToolCalls: append([]llm.ToolCall(nil), d.toolCalls...),
+		})
 	}
-	return string(b)
+	d.messages = append(d.messages, d.toolResults...)
+	d.text.Reset()
+	d.toolCalls = nil
+	d.images = nil
+	d.toolResults = nil
 }

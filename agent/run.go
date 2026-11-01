@@ -12,18 +12,9 @@ import (
 	"github.com/govengers/aikido/tools"
 )
 
-// Run executes one agent turn from a single user message.
-//
-// The user message and the assistant's response (including any tool calls and
-// tool results produced this turn) are accumulated for one variadic
-// History.Append at end of turn. The returned channel closes after EventEnd.
-//
-// On EndReasonError (including History I/O failure or Lock-acquire timeout)
-// the History is NOT updated for this turn — the caller knows to retry, and
-// the durable transcript stays consistent.
-func (s *Session) Run(ctx context.Context, userText string) (<-chan Event, error) {
-	return s.RunWithOptions(ctx, userText, nil)
-}
+// eventBufferSize is how many events a run queues before it waits for the
+// caller to read.
+const eventBufferSize = 16
 
 // RunOptions tune one Run without changing the Session.
 type RunOptions struct {
@@ -36,15 +27,29 @@ type RunOptions struct {
 	Thinking *llm.ThinkingConfiguration
 }
 
-// RunWithOptions is Run with per-run options. A nil opts is Run.
-func (s *Session) RunWithOptions(ctx context.Context, userText string, opts *RunOptions) (<-chan Event, error) {
-	var ro RunOptions
-	if opts != nil {
-		ro = *opts
+// Run executes one agent turn from a single user message.
+//
+// The user message and the assistant's response (including any tool calls and
+// tool results produced this turn) are accumulated for one variadic
+// History.Append at end of turn. The returned channel always ends with
+// EventEnd and is then closed; the returned error is always nil.
+//
+// On EndReasonError (including History I/O failure or Lock-acquire timeout)
+// the History is NOT updated for this turn: the caller knows to retry, and
+// the durable transcript stays consistent.
+func (s *Session) Run(ctx context.Context, userText string) (<-chan Event, error) {
+	return s.RunWithOptions(ctx, userText, nil)
+}
+
+// RunWithOptions is Run with per-run options. Nil options behave like Run.
+func (s *Session) RunWithOptions(ctx context.Context, userText string, options *RunOptions) (<-chan Event, error) {
+	plan := runPlan{userText: userText, persistToHistory: true}
+	if options != nil {
+		plan.options = *options
 	}
-	out := make(chan Event, 16)
-	go s.runLoop(ctx, out, userText, nil, true, ro)
-	return out, nil
+	events := make(chan Event, eventBufferSize)
+	go s.runLoop(ctx, events, plan)
+	return events, nil
 }
 
 // RunWithMessages is the lower-level escape hatch for callers that maintain
@@ -53,274 +58,327 @@ func (s *Session) RunWithOptions(ctx context.Context, userText string, opts *Run
 // The history slice is the conversation so far, excluding the system prompt
 // (which Run prepends from SessionOptions.SystemPrompt). RunWithMessages does
 // not append to History; the caller owns the message log here and uses Drain
-// to assemble the produced messages.
+// to assemble the produced messages. The channel follows the same contract as
+// Run's; the returned error is always nil.
 func (s *Session) RunWithMessages(ctx context.Context, history []llm.Message) (<-chan Event, error) {
-	out := make(chan Event, 16)
-	go s.runLoop(ctx, out, "", history, false, RunOptions{})
-	return out, nil
+	events := make(chan Event, eventBufferSize)
+	go s.runLoop(ctx, events, runPlan{callerHistory: history})
+	return events, nil
 }
 
-func (s *Session) runLoop(userCtx context.Context, out chan<- Event, userText string, customHistory []llm.Message, useHistoryStore bool, ro RunOptions) {
-	defer close(out)
+// runPlan is what one run starts from. A run either reads and appends the
+// session's History (Run) or works on messages the caller owns
+// (RunWithMessages).
+type runPlan struct {
+	userText         string
+	callerHistory    []llm.Message
+	persistToHistory bool
+	options          RunOptions
+}
 
-	// Build runCtx with RunTimeout cap.
-	runCtx := userCtx
-	var cancelRun context.CancelFunc
-	if s.opts.RunTimeout > 0 {
-		runCtx, cancelRun = context.WithTimeout(userCtx, s.opts.RunTimeout)
-		defer cancelRun()
-	}
+// runState is the conversation of one run as it grows turn by turn.
+type runState struct {
+	messages        []llm.Message // everything the model sees, system prompt first
+	produced        []llm.Message // this run's new messages, flushed to History in one Append
+	toolDefinitions []llm.ToolDefinition
+	thinking        *llm.ThinkingConfiguration
+}
 
-	// Acquire the per-session lock.
-	unlock, err := s.opts.Locker.Lock(runCtx, s.opts.ID)
+func (state *runState) record(message llm.Message) {
+	state.messages = append(state.messages, message)
+	state.produced = append(state.produced, message)
+}
+
+// runLoop owns the run goroutine: it closes events when the run is over.
+func (s *Session) runLoop(userContext context.Context, events chan<- Event, plan runPlan) {
+	defer close(events)
+	sink := eventSink{events: events}
+
+	runContext, cancelRun := context.WithTimeout(userContext, s.options.RunTimeout)
+	defer cancelRun()
+
+	endReason, err := s.execute(userContext, runContext, sink, plan)
 	if err != nil {
-		s.emitErrEnd(out, userCtx, runCtx, nil, fmt.Errorf("aikido/agent: locker.Lock: %w", err))
-		return
+		sink.send(Event{Kind: EventError, Err: err})
+	}
+	sink.send(Event{Kind: EventEnd, EndReason: endReason})
+}
+
+// execute holds the session lock for the whole run and alternates model
+// calls and tool calls until the model stops asking for tools or the turn
+// limit is reached.
+func (s *Session) execute(userContext, runContext context.Context, sink eventSink, plan runPlan) (EndReason, error) {
+	unlock, err := s.options.Locker.Lock(runContext, s.options.ID)
+	if err != nil {
+		return failedRun(userContext, runContext, nil, fmt.Errorf("aikido/agent: locker.Lock: %w", err))
 	}
 	defer unlock()
 
-	// Build the initial message list.
-	var hist []llm.Message
-	if useHistoryStore {
-		hist, err = s.opts.History.Read(runCtx, s.opts.ID)
+	state, err := s.startRun(runContext, plan)
+	if err != nil {
+		return failedRun(userContext, runContext, nil, err)
+	}
+	for range s.options.MaximumTurns {
+		reply, callContextError, err := s.callModel(runContext, sink, state)
 		if err != nil {
-			s.emitErrEnd(out, userCtx, runCtx, nil, fmt.Errorf("aikido/agent: history.Read: %w", err))
-			return
+			return failedRun(userContext, runContext, callContextError, err)
 		}
-	} else {
-		hist = customHistory
+		state.record(reply)
+		if len(reply.ToolCalls) == 0 {
+			return s.finishRun(userContext, runContext, state, plan, EndReasonStop)
+		}
+		s.runToolCalls(runContext, sink, state, reply.ToolCalls)
 	}
-
-	thinking := s.opts.Thinking
-	if ro.Thinking != nil {
-		thinking = ro.Thinking
-	}
-
-	msgs := make([]llm.Message, 0, len(hist)+2)
-	system := s.opts.SystemPrompt
-	if ro.SystemSuffix != "" {
-		if system != "" {
-			system += "\n\n"
-		}
-		system += ro.SystemSuffix
-	}
-	if system != "" {
-		msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: system})
-	}
-	msgs = append(msgs, hist...)
-
-	var appended []llm.Message
-	if useHistoryStore {
-		userMsg := llm.Message{Role: llm.RoleUser, Content: userText}
-		msgs = append(msgs, userMsg)
-		appended = []llm.Message{userMsg}
-	}
-
-	var toolDefs []llm.ToolDefinition
-	if s.opts.Tools != nil {
-		toolDefs = s.opts.Tools.Definitions()
-	}
-
-	for turn := 0; turn < s.opts.MaximumTurns; turn++ {
-		turnID := uuid.New()
-
-		callCtx := runCtx
-		var cancelCall context.CancelFunc = func() {}
-		if s.opts.LLMCallTimeout > 0 {
-			callCtx, cancelCall = context.WithTimeout(runCtx, s.opts.LLMCallTimeout)
-		}
-
-		req := llm.Request{
-			Model:         s.opts.Model,
-			Messages:      msgs,
-			Tools:         toolDefs,
-			MaximumTokens: s.opts.MaximumTokens,
-			Temperature:   s.opts.Temperature,
-			Thinking:      thinking,
-		}
-
-		events, streamErr := s.opts.Client.Stream(callCtx, req)
-		if streamErr != nil {
-			callErr := callCtx.Err()
-			cancelCall()
-			s.emitErrEnd(out, userCtx, runCtx, callErr, fmt.Errorf("aikido/agent: client.Stream: %w", streamErr))
-			return
-		}
-
-		text, calls, images, usage, drainErr := s.drainProviderStream(callCtx, events, out)
-		callErr := callCtx.Err()
-		cancelCall()
-
-		if drainErr != nil {
-			s.emitErrEnd(out, userCtx, runCtx, callErr, drainErr)
-			return
-		}
-
-		if usage != nil {
-			out <- Event{Kind: EventUsage, Usage: usage}
-		}
-
-		assistantMsg := llm.Message{
-			Role:      llm.RoleAssistant,
-			Content:   text,
-			Images:    images,
-			ToolCalls: calls,
-		}
-		msgs = append(msgs, assistantMsg)
-		appended = append(appended, assistantMsg)
-
-		if len(calls) == 0 {
-			if useHistoryStore {
-				if err := s.opts.History.Append(runCtx, s.opts.ID, appended...); err != nil {
-					s.emitErrEnd(out, userCtx, runCtx, nil, fmt.Errorf("aikido/agent: history.Append: %w", err))
-					return
-				}
-			}
-			out <- Event{Kind: EventEnd, EndReason: EndReasonStop}
-			return
-		}
-
-		env := tools.Environment{SessionID: s.opts.ID, TurnID: turnID}
-		for i := range calls {
-			call := calls[i]
-			res, dispErr := s.dispatch(runCtx, call, env)
-
-			tr := buildToolResult(call, res, dispErr)
-			callCopy := call
-			out <- Event{Kind: EventToolCall, ToolCall: &callCopy}
-			out <- Event{Kind: EventToolResult, ToolResult: &tr}
-
-			toolMsg := llm.Message{
-				Role:       llm.RoleTool,
-				ToolCallID: call.ID,
-				Content:    toolResultJSON(tr),
-			}
-			msgs = append(msgs, toolMsg)
-			appended = append(appended, toolMsg)
-		}
-	}
-
-	// MaxTurns exhausted: still flush History (the spec does so) and end.
-	if useHistoryStore {
-		if err := s.opts.History.Append(runCtx, s.opts.ID, appended...); err != nil {
-			s.emitErrEnd(out, userCtx, runCtx, nil, fmt.Errorf("aikido/agent: history.Append: %w", err))
-			return
-		}
-	}
-	out <- Event{Kind: EventEnd, EndReason: EndReasonMaximumTurns}
+	return s.finishRun(userContext, runContext, state, plan, EndReasonMaximumTurns)
 }
 
-// dispatch routes a tool call. If the registry is nil we treat every tool name
-// as unknown; the model self-corrects on the next turn.
-func (s *Session) dispatch(ctx context.Context, call llm.ToolCall, env tools.Environment) (tools.Result, error) {
-	if s.opts.Tools == nil {
-		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrUnknownTool, call.Name)
+// startRun builds the first model request's conversation: system prompt,
+// earlier messages, and for History runs the new user message.
+func (s *Session) startRun(ctx context.Context, plan runPlan) (*runState, error) {
+	earlier := plan.callerHistory
+	if plan.persistToHistory {
+		stored, err := s.options.History.Read(ctx, s.options.ID)
+		if err != nil {
+			return nil, fmt.Errorf("aikido/agent: history.Read: %w", err)
+		}
+		earlier = stored
 	}
-	return s.opts.Tools.Dispatch(ctx, call, env)
+
+	state := &runState{
+		messages: make([]llm.Message, 0, len(earlier)+2),
+		thinking: s.options.Thinking,
+	}
+	if plan.options.Thinking != nil {
+		state.thinking = plan.options.Thinking
+	}
+	if system := systemPrompt(s.options.SystemPrompt, plan.options.SystemSuffix); system != "" {
+		state.messages = append(state.messages, llm.Message{Role: llm.RoleSystem, Content: system})
+	}
+	state.messages = append(state.messages, earlier...)
+	if plan.persistToHistory {
+		state.record(llm.Message{Role: llm.RoleUser, Content: plan.userText})
+	}
+	if s.options.Tools != nil {
+		state.toolDefinitions = s.options.Tools.Definitions()
+	}
+	return state, nil
 }
 
-// drainProviderStream consumes the provider's stream, forwarding TextDelta,
-// Thinking, and Image events to the caller's channel and accumulating text,
-// tool calls, images, and usage for the agent loop.
-func (s *Session) drainProviderStream(ctx context.Context, events <-chan llm.Event, out chan<- Event) (text string, calls []llm.ToolCall, images []llm.ImagePart, usage *llm.Usage, err error) {
-	var sb strings.Builder
+// systemPrompt joins the session prompt and a run's suffix with a blank line.
+func systemPrompt(prompt, suffix string) string {
+	if suffix == "" {
+		return prompt
+	}
+	if prompt == "" {
+		return suffix
+	}
+	return prompt + "\n\n" + suffix
+}
+
+// callModel streams one model reply under LLMCallTimeout, forwarding text,
+// thinking and images to the caller. On failure it also returns the call
+// context's error, which tells an LLMCallTimeout apart from other failures.
+func (s *Session) callModel(runContext context.Context, sink eventSink, state *runState) (reply llm.Message, callContextError, err error) {
+	callContext, cancelCall := context.WithTimeout(runContext, s.options.LLMCallTimeout)
+	defer cancelCall()
+
+	providerEvents, err := s.options.Client.Stream(callContext, llm.Request{
+		Model:         s.options.Model,
+		Messages:      state.messages,
+		Tools:         state.toolDefinitions,
+		MaximumTokens: s.options.MaximumTokens,
+		Temperature:   s.options.Temperature,
+		Thinking:      state.thinking,
+	})
+	if err != nil {
+		return llm.Message{}, callContext.Err(), fmt.Errorf("aikido/agent: client.Stream: %w", err)
+	}
+	builder, err := receiveReply(callContext, providerEvents, sink)
+	if err != nil {
+		return llm.Message{}, callContext.Err(), err
+	}
+	if builder.usage != nil {
+		sink.send(Event{Kind: EventUsage, Usage: builder.usage})
+	}
+	return builder.message(), nil, nil
+}
+
+// receiveReply consumes the provider's stream until it closes or ctx ends.
+// The first EventError of the stream becomes the returned error.
+func receiveReply(ctx context.Context, providerEvents <-chan llm.Event, sink eventSink) (*replyBuilder, error) {
+	builder := &replyBuilder{}
 	for {
 		select {
 		case <-ctx.Done():
-			return sb.String(), calls, images, usage, ctx.Err()
-		case ev, ok := <-events:
-			if !ok {
-				return sb.String(), calls, images, usage, err
+			return builder, ctx.Err()
+		case event, open := <-providerEvents:
+			if !open {
+				return builder, builder.streamError
 			}
-			switch ev.Kind {
-			case llm.EventTextDelta:
-				sb.WriteString(ev.Text)
-				out <- Event{Kind: EventText, Text: ev.Text}
-			case llm.EventThinking:
-				out <- Event{Kind: EventThinking, Text: ev.Text}
-			case llm.EventToolCall:
-				if ev.Tool != nil {
-					calls = append(calls, *ev.Tool)
-				}
-			case llm.EventImage:
-				if ev.Image != nil {
-					images = append(images, *ev.Image)
-					img := *ev.Image
-					out <- Event{Kind: EventImage, Image: &img}
-				}
-			case llm.EventUsage:
-				usage = ev.Usage
-			case llm.EventError:
-				if err == nil {
-					err = ev.Err
-				}
-			case llm.EventEnd:
-				// continue draining; the channel will close right after
-			}
+			builder.add(event, sink)
 		}
 	}
 }
 
-// emitErrEnd is the canonical "something went wrong" exit path. It emits
-// EventError(err) followed by EventEnd with the right EndReason given the
-// state of the various contexts.
-func (s *Session) emitErrEnd(out chan<- Event, userCtx, runCtx context.Context, callErr error, err error) {
-	out <- Event{Kind: EventError, Err: err}
-	out <- Event{Kind: EventEnd, EndReason: resolveEndReason(userCtx, runCtx, callErr)}
+// replyBuilder accumulates one streamed model reply.
+type replyBuilder struct {
+	text        strings.Builder
+	toolCalls   []llm.ToolCall
+	images      []llm.ImagePart
+	usage       *llm.Usage
+	streamError error
 }
 
-// resolveEndReason maps the various ctx errors to the right EndReason.
+func (b *replyBuilder) add(event llm.Event, sink eventSink) {
+	switch event.Kind {
+	case llm.EventTextDelta:
+		b.text.WriteString(event.Text)
+		sink.send(Event{Kind: EventText, Text: event.Text})
+	case llm.EventThinking:
+		sink.send(Event{Kind: EventThinking, Text: event.Text})
+	case llm.EventToolCall:
+		if event.Tool != nil {
+			b.toolCalls = append(b.toolCalls, *event.Tool)
+		}
+	case llm.EventImage:
+		if event.Image != nil {
+			b.images = append(b.images, *event.Image)
+			image := *event.Image
+			sink.send(Event{Kind: EventImage, Image: &image})
+		}
+	case llm.EventUsage:
+		b.usage = event.Usage
+	case llm.EventError:
+		if b.streamError == nil {
+			b.streamError = event.Err
+		}
+	case llm.EventEnd:
+		// The provider closes the channel right after EventEnd; receiveReply ends there.
+	}
+}
+
+func (b *replyBuilder) message() llm.Message {
+	return llm.Message{
+		Role:      llm.RoleAssistant,
+		Content:   b.text.String(),
+		Images:    b.images,
+		ToolCalls: b.toolCalls,
+	}
+}
+
+// runToolCalls dispatches the calls of one model reply in order, reports each
+// call and result to the caller and adds the results to the conversation.
+// A failing tool does not end the run: the model sees the error and can
+// self-correct on the next turn.
+func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall) {
+	environment := tools.Environment{SessionID: s.options.ID, TurnID: uuid.New()}
+	for _, call := range calls {
+		result, err := s.dispatch(ctx, call, environment)
+		toolResult := buildToolResult(call, result, err)
+		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
+		sink.send(Event{Kind: EventToolResult, ToolResult: &toolResult})
+		state.record(llm.Message{
+			Role:       llm.RoleTool,
+			ToolCallID: call.ID,
+			Content:    toolResultJSON(toolResult),
+		})
+	}
+}
+
+// dispatch routes a tool call. Without a registry every tool name is unknown;
+// the model self-corrects on the next turn.
+func (s *Session) dispatch(ctx context.Context, call llm.ToolCall, environment tools.Environment) (tools.Result, error) {
+	if s.options.Tools == nil {
+		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrUnknownTool, call.Name)
+	}
+	return s.options.Tools.Dispatch(ctx, call, environment)
+}
+
+// finishRun flushes the run's messages to History (History runs only, also
+// when the turn limit was hit) and ends the run with endReason.
+func (s *Session) finishRun(userContext, runContext context.Context, state *runState, plan runPlan, endReason EndReason) (EndReason, error) {
+	if !plan.persistToHistory {
+		return endReason, nil
+	}
+	if err := s.options.History.Append(runContext, s.options.ID, state.produced...); err != nil {
+		return failedRun(userContext, runContext, nil, fmt.Errorf("aikido/agent: history.Append: %w", err))
+	}
+	return endReason, nil
+}
+
+// failedRun pairs a run's error with the EndReason the contexts explain.
+func failedRun(userContext, runContext context.Context, callContextError, err error) (EndReason, error) {
+	return resolveEndReason(userContext, runContext, callContextError), err
+}
+
+// resolveEndReason maps the context errors of a failed run to its EndReason.
 //
 // Order matters: caller cancellation always wins, then RunTimeout, then
 // LLMCallTimeout, then everything else is EndReasonError.
-func resolveEndReason(userCtx, runCtx context.Context, callErr error) EndReason {
-	if userCtx != nil {
+func resolveEndReason(userContext, runContext context.Context, callContextError error) EndReason {
+	if userContext != nil {
 		switch {
-		case errors.Is(userCtx.Err(), context.Canceled):
+		case errors.Is(userContext.Err(), context.Canceled):
 			return EndReasonCancelled
-		case errors.Is(userCtx.Err(), context.DeadlineExceeded):
+		case errors.Is(userContext.Err(), context.DeadlineExceeded):
 			return EndReasonTimeout
 		}
 	}
-	if runCtx != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+	if runContext != nil && errors.Is(runContext.Err(), context.DeadlineExceeded) {
 		return EndReasonTimeout
 	}
-	if errors.Is(callErr, context.DeadlineExceeded) {
+	if errors.Is(callContextError, context.DeadlineExceeded) {
 		return EndReasonTimeout
 	}
-	if errors.Is(callErr, context.Canceled) {
+	if errors.Is(callContextError, context.Canceled) {
 		return EndReasonCancelled
 	}
 	return EndReasonError
 }
 
-func buildToolResult(call llm.ToolCall, res tools.Result, err error) ToolResult {
-	tr := ToolResult{
+func buildToolResult(call llm.ToolCall, result tools.Result, err error) ToolResult {
+	toolResult := ToolResult{
 		CallID: call.ID,
 		Name:   call.Name,
 		OK:     err == nil,
 	}
 	if err != nil {
-		tr.Error = err.Error()
+		toolResult.Error = err.Error()
 	} else {
-		tr.Content = res.Content
+		toolResult.Content = result.Content
 	}
-	return tr
+	return toolResult
 }
 
-// toolResultJSON serializes the tool result for the model's tool message.
-func toolResultJSON(tr ToolResult) string {
-	if !tr.OK {
-		b, _ := json.Marshal(map[string]any{"error": tr.Error})
-		return string(b)
+// toolResultJSON serializes a tool result for the model's tool message.
+func toolResultJSON(toolResult ToolResult) string {
+	if !toolResult.OK {
+		return errorJSON(toolResult.Error)
 	}
-	if tr.Content == nil {
+	if toolResult.Content == nil {
 		return "null"
 	}
-	b, err := json.Marshal(tr.Content)
+	content, err := json.Marshal(toolResult.Content)
 	if err != nil {
-		fallback, _ := json.Marshal(map[string]any{"error": "content marshal failed: " + err.Error()})
-		return string(fallback)
+		return errorJSON("content marshal failed: " + err.Error())
 	}
-	return string(b)
+	return string(content)
+}
+
+// errorJSON renders {"error": message}.
+func errorJSON(message string) string {
+	// Marshalling a struct with one string field cannot fail.
+	encoded, _ := json.Marshal(struct {
+		Error string `json:"error"`
+	}{Error: message})
+	return string(encoded)
+}
+
+// eventSink delivers a run's events to the caller's channel.
+type eventSink struct {
+	events chan<- Event
+}
+
+func (sink eventSink) send(event Event) {
+	sink.events <- event
 }
