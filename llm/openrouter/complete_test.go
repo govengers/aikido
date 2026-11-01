@@ -9,24 +9,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/retry"
 )
-
-// jsonHandler returns an http.HandlerFunc that writes the given JSON bytes
-// with status 200 and Content-Type: application/json.
-func jsonHandler(t *testing.T, body []byte) http.HandlerFunc {
-	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}
-}
 
 func TestComplete_SimpleText(t *testing.T) {
 	t.Parallel()
@@ -40,27 +31,26 @@ func TestComplete_SimpleText(t *testing.T) {
 		}],
 		"usage": {"prompt_tokens": 18, "completion_tokens": 4, "total_tokens": 22, "cost": 0.00012}
 	}`)
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if resp.Text != "Hello, world." {
-		t.Errorf("text = %q, want %q", resp.Text, "Hello, world.")
+	if response.Text != "Hello, world." {
+		t.Errorf("text = %q, want %q", response.Text, "Hello, world.")
 	}
-	if resp.FinishReason != "stop" {
-		t.Errorf("finish_reason = %q, want %q", resp.FinishReason, "stop")
+	if response.FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want %q", response.FinishReason, "stop")
 	}
-	if resp.Usage == nil {
+	if response.Usage == nil {
 		t.Fatal("Usage is nil")
 	}
-	if resp.Usage.PromptTokens != 18 || resp.Usage.CompletionTokens != 4 {
-		t.Errorf("usage = %+v", resp.Usage)
+	if response.Usage.PromptTokens != 18 || response.Usage.CompletionTokens != 4 {
+		t.Errorf("usage = %+v", response.Usage)
 	}
-	if resp.Usage.CostUSD == 0 {
+	if response.Usage.CostUSD == 0 {
 		t.Error("CostUSD == 0; want non-zero")
 	}
 }
@@ -81,8 +71,8 @@ func TestComplete_LargeImage(t *testing.T) {
 	// Plausible PNG signature so a downstream sniffer wouldn't reject it.
 	copy(rawData, []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
 	// Fill the rest with non-zero bytes so base64 doesn't compress to nothing.
-	for i := 8; i < rawSize; i++ {
-		rawData[i] = byte(i % 251)
+	for index := 8; index < rawSize; index++ {
+		rawData[index] = byte(index % 251)
 	}
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(rawData)
 
@@ -118,29 +108,28 @@ func TestComplete_LargeImage(t *testing.T) {
 		t.Fatalf("envelope size = %d, want > 1.5 MiB to exercise the SSE cap", len(body))
 	}
 
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if resp.Text != "Here is your image." {
-		t.Errorf("text = %q", resp.Text)
+	if response.Text != "Here is your image." {
+		t.Errorf("text = %q", response.Text)
 	}
-	if len(resp.Images) != 1 {
-		t.Fatalf("images = %d, want 1", len(resp.Images))
+	if len(response.Images) != 1 {
+		t.Fatalf("images = %d, want 1", len(response.Images))
 	}
-	got := resp.Images[0]
+	got := response.Images[0]
 	if got.ContentType != "image/png" {
 		t.Errorf("contentType = %q, want image/png", got.ContentType)
 	}
 	if !bytes.Equal(got.Data, rawData) {
 		t.Errorf("image bytes round-trip failed: got %d bytes, want %d", len(got.Data), len(rawData))
 	}
-	if resp.FinishReason != "stop" {
-		t.Errorf("finish_reason = %q, want stop", resp.FinishReason)
+	if response.FinishReason != "stop" {
+		t.Errorf("finish_reason = %q, want stop", response.FinishReason)
 	}
 }
 
@@ -154,8 +143,8 @@ func TestComplete_LargeImage_ProvesStreamingBreaks(t *testing.T) {
 	// 2.25 MB raw → ~3 MB base64 — same setup as TestComplete_LargeImage.
 	const rawSize = 2_250_000
 	rawData := make([]byte, rawSize)
-	for i := range rawData {
-		rawData[i] = byte(i % 251)
+	for index := range rawData {
+		rawData[index] = byte(index % 251)
 	}
 	dataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(rawData)
 	envelope := map[string]any{
@@ -178,27 +167,26 @@ func TestComplete_LargeImage_ProvesStreamingBreaks(t *testing.T) {
 		t.Fatalf("marshal envelope: %v", err)
 	}
 	// SSE wrapping: one `data: <json>\n\n` line then [DONE].
-	sse := []byte("data: ")
-	sse = append(sse, chunkJSON...)
-	sse = append(sse, []byte("\n\ndata: [DONE]\n\n")...)
+	sseBody := []byte("data: ")
+	sseBody = append(sseBody, chunkJSON...)
+	sseBody = append(sseBody, []byte("\n\ndata: [DONE]\n\n")...)
 
-	srv := httptest.NewServer(sseHandler(t, sse))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, sseHandler(sseBody))
+	client := newTestClient(t, server)
 
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
+	stream, err := client.Stream(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 5*time.Second)
+	events := drain(t, stream, 5*time.Second)
 
-	var sawErr bool
-	for _, ev := range events {
-		if ev.Kind == llm.EventError && errors.Is(ev.Err, llm.ErrServerError) {
-			sawErr = true
+	var sawServerError bool
+	for _, event := range events {
+		if event.Kind == llm.EventError && errors.Is(event.Err, llm.ErrServerError) {
+			sawServerError = true
 		}
 	}
-	if !sawErr {
+	if !sawServerError {
 		t.Errorf("expected SSE path to fail with ErrServerError on >1 MiB line, but it succeeded; events=%d", len(events))
 	}
 }
@@ -221,29 +209,53 @@ func TestComplete_ToolCalls(t *testing.T) {
 		}],
 		"usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42}
 	}`)
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if len(resp.ToolCalls) != 1 {
-		t.Fatalf("tool_calls = %d, want 1", len(resp.ToolCalls))
+	if len(response.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %d, want 1", len(response.ToolCalls))
 	}
-	tc := resp.ToolCalls[0]
-	if tc.ID != "call_1" || tc.Name != "read_file" {
-		t.Errorf("tool_call = %+v", tc)
+	call := response.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "read_file" {
+		t.Errorf("tool_call = %+v", call)
 	}
-	if tc.Arguments != `{"path":"a.md"}` {
-		t.Errorf("tool_call.Arguments = %q", tc.Arguments)
+	if call.Arguments != `{"path":"a.md"}` {
+		t.Errorf("tool_call.Arguments = %q", call.Arguments)
 	}
-	if !json.Valid([]byte(tc.Arguments)) {
+	if !json.Valid([]byte(call.Arguments)) {
 		t.Error("tool_call.Arguments not valid JSON")
 	}
-	if resp.FinishReason != "tool_calls" {
-		t.Errorf("finish_reason = %q", resp.FinishReason)
+	if response.FinishReason != "tool_calls" {
+		t.Errorf("finish_reason = %q", response.FinishReason)
+	}
+}
+
+// TestComplete_ToolCallsWithoutIndexStaySeparate pins that complete calls
+// carrying no index (all decode as index 0) are not merged into one.
+func TestComplete_ToolCallsWithoutIndexStaySeparate(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[
+		{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.md\"}"}},
+		{"id":"c2","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"b.md\"}"}},
+		{"type":"function","function":{"name":"list_files","arguments":""}}
+	]},"finish_reason":"tool_calls"}]}`)
+	client := newTestClient(t, newTestServer(t, jsonHandler(body)))
+
+	response, err := client.Complete(context.Background(), llm.Request{Model: "m"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := []llm.ToolCall{
+		{ID: "c1", Name: "read_file", Arguments: `{"path":"a.md"}`},
+		{ID: "c2", Name: "read_file", Arguments: `{"path":"b.md"}`},
+		{ID: "call_2", Name: "list_files", Arguments: "{}"},
+	}
+	if !slices.Equal(response.ToolCalls, want) {
+		t.Errorf("tool calls = %+v, want %+v", response.ToolCalls, want)
 	}
 }
 
@@ -258,11 +270,10 @@ func TestComplete_ContentFilterFinishReason(t *testing.T) {
 			"finish_reason": "content_filter"
 		}]
 	}`)
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
 	if err == nil {
 		t.Fatal("expected error for finish_reason=content_filter")
 	}
@@ -273,8 +284,8 @@ func TestComplete_ContentFilterFinishReason(t *testing.T) {
 		t.Errorf("err should NOT match ErrServerError when content-filtered")
 	}
 	// Response is preserved so callers can log usage even on filtered turns.
-	if resp.FinishReason != "content_filter" {
-		t.Errorf("resp.FinishReason = %q", resp.FinishReason)
+	if response.FinishReason != "content_filter" {
+		t.Errorf("response.FinishReason = %q", response.FinishReason)
 	}
 }
 
@@ -286,17 +297,47 @@ func TestComplete_ContentFilterErrorEnvelope(t *testing.T) {
 			"message": "Content was blocked by safety policy"
 		}
 	}`)
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	_, err := c.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
+	_, err := client.Complete(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
 	if err == nil {
 		t.Fatal("expected error for content-filter envelope")
 	}
 	if !errors.Is(err, llm.ErrContentFiltered) {
 		t.Errorf("err = %v, want errors.Is(ErrContentFiltered)", err)
 	}
+}
+
+// TestFinishReasonErrorWithoutEnvelope pins that finish_reason "error" without
+// an error envelope fails the call with ErrServerError on both paths, keeping
+// the partial text and the usage of the billed turn.
+func TestFinishReasonErrorWithoutEnvelope(t *testing.T) {
+	t.Parallel()
+	const usage = `"usage":{"prompt_tokens":7,"completion_tokens":3,"cost":0.01}`
+	t.Run("complete", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"partial"},"finish_reason":"error"}],` + usage + `}`)
+		response, err := newTestClient(t, newTestServer(t, jsonHandler(body))).Complete(context.Background(), llm.Request{Model: "m"})
+		if !errors.Is(err, llm.ErrServerError) {
+			t.Errorf("err = %v, want ErrServerError", err)
+		}
+		if response.Text != "partial" || response.FinishReason != finishReasonError || response.Usage == nil || response.Usage.CostUSD != 0.01 {
+			t.Errorf("response = %+v, want the partial text, finish reason and usage", response)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		t.Parallel()
+		body := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n" +
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}]," + usage + "}\n\n"
+		summary := summarize(t, streamBody(t, []byte(body)))
+		if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrServerError) {
+			t.Errorf("errors = %v, want one ErrServerError", summary.errors)
+		}
+		if summary.text != "partial" || len(summary.usages) != 1 || summary.end == nil || summary.end.FinishReason != finishReasonError {
+			t.Errorf("summary = %+v, want the partial text, usage and finish reason", summary)
+		}
+	})
 }
 
 func TestComplete_5xxRetryThenSuccess(t *testing.T) {
@@ -311,27 +352,24 @@ func TestComplete_5xxRetryThenSuccess(t *testing.T) {
 		}]
 	}`)
 	var hits int32
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&hits, 1)
-		if n == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":{"message":"upstream down"}}`))
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = writer.Write([]byte(`{"error":{"message":"upstream down"}}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(successBody)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(successBody)
+	})
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "any"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if resp.Text != "ok" {
-		t.Errorf("text = %q", resp.Text)
+	if response.Text != "ok" {
+		t.Errorf("text = %q", response.Text)
 	}
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Errorf("hits = %d, want 2 (one 503 + one success)", got)
@@ -341,20 +379,18 @@ func TestComplete_5xxRetryThenSuccess(t *testing.T) {
 func TestComplete_4xxNoRetry(t *testing.T) {
 	t.Parallel()
 	var hits int32
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		atomic.AddInt32(&hits, 1)
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+		writer.WriteHeader(http.StatusUnauthorized)
+		_, _ = writer.Write([]byte(`{"error":{"message":"bad key"}}`))
+	})
+	client := newTestClient(t, server)
 
-	_, err := c.Complete(context.Background(), llm.Request{Model: "any"})
+	_, err := client.Complete(context.Background(), llm.Request{Model: "any"})
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
-	if !errors.Is(err, llm.ErrAuth) {
+	if !errors.Is(err, llm.ErrAuthentication) {
 		t.Errorf("err = %v, want ErrAuth", err)
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {
@@ -365,17 +401,15 @@ func TestComplete_4xxNoRetry(t *testing.T) {
 func TestComplete_RequestBodyHasStreamFalse(t *testing.T) {
 	t.Parallel()
 	var captured []byte
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		captured, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`))
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		captured, _ = io.ReadAll(request.Body)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`))
+	})
+	client := newTestClient(t, server)
 
-	if _, err := c.Complete(context.Background(), llm.Request{
+	if _, err := client.Complete(context.Background(), llm.Request{
 		Model:    "any",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 	}); err != nil {
@@ -391,21 +425,19 @@ func TestComplete_RequestBodyHasStreamFalse(t *testing.T) {
 func TestComplete_ImageConfigOnWire(t *testing.T) {
 	t.Parallel()
 	var captured []byte
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		captured, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		captured, _ = io.ReadAll(request.Body)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+	})
+	client := newTestClient(t, server)
 
-	if _, err := c.Complete(context.Background(), llm.Request{
-		Model:       "any",
-		Messages:    []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
-		Modalities:  []string{"image", "text"},
-		ImageConfig: &llm.ImageConfig{AspectRatio: "16:9", ImageSize: "2K"},
+	if _, err := client.Complete(context.Background(), llm.Request{
+		Model:              "any",
+		Messages:           []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+		Modalities:         []string{"image", "text"},
+		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -415,7 +447,7 @@ func TestComplete_ImageConfigOnWire(t *testing.T) {
 
 	// Nil ImageConfig must omit the field entirely.
 	captured = nil
-	if _, err := c.Complete(context.Background(), llm.Request{
+	if _, err := client.Complete(context.Background(), llm.Request{
 		Model:    "any",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
 	}); err != nil {
@@ -446,24 +478,23 @@ func TestComplete_TypedPartsImageInContent(t *testing.T) {
 			"finish_reason": "stop"
 		}]
 	}`, png)
-	srv := httptest.NewServer(jsonHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, jsonHandler(body))
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "any"})
+	response, err := client.Complete(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if resp.Text != "Done." {
-		t.Errorf("text = %q, want %q", resp.Text, "Done.")
+	if response.Text != "Done." {
+		t.Errorf("text = %q, want %q", response.Text, "Done.")
 	}
-	if len(resp.Images) != 1 {
-		t.Fatalf("images = %d, want 1", len(resp.Images))
+	if len(response.Images) != 1 {
+		t.Fatalf("images = %d, want 1", len(response.Images))
 	}
-	if resp.Images[0].ContentType != "image/png" {
-		t.Errorf("contentType = %q", resp.Images[0].ContentType)
+	if response.Images[0].ContentType != "image/png" {
+		t.Errorf("contentType = %q", response.Images[0].ContentType)
 	}
-	if len(resp.Images[0].Data) == 0 {
+	if len(response.Images[0].Data) == 0 {
 		t.Error("image data is empty; want decoded base64 bytes")
 	}
 }
@@ -471,23 +502,22 @@ func TestComplete_TypedPartsImageInContent(t *testing.T) {
 func TestComplete_NetworkError(t *testing.T) {
 	t.Parallel()
 	// Server that closes the connection without responding.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hj, ok := w.(http.Hijacker)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		hijacker, ok := writer.(http.Hijacker)
 		if !ok {
 			t.Fatal("ResponseWriter does not support Hijacker")
 		}
-		conn, _, err := hj.Hijack()
+		conn, _, err := hijacker.Hijack()
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = conn.Close()
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	})
+	client := newTestClient(t, server)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := c.Complete(ctx, llm.Request{Model: "any"})
+	_, err := client.Complete(ctx, llm.Request{Model: "any"})
 	if err == nil {
 		t.Fatal("expected network error")
 	}
@@ -496,18 +526,48 @@ func TestComplete_NetworkError(t *testing.T) {
 	}
 }
 
-func TestComplete_MalformedJSON(t *testing.T) {
+// TestMalformedSuccessBodyIsNotTransient pins RES-002 for a 2xx that does not
+// decode: ErrInvalidResponse, not ErrServerError, so neither the client nor
+// CompleteWithRetry sends (and bills) the request again.
+func TestMalformedSuccessBodyIsNotTransient(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(jsonHandler(t, []byte(`{"this is not valid json`)))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	_, err := c.Complete(context.Background(), llm.Request{Model: "any"})
-	if err == nil {
-		t.Fatal("expected decode error")
+	testCases := []struct {
+		name string
+		call func(client *Client) error
+	}{
+		{name: "complete", call: func(client *Client) error {
+			_, err := llm.CompleteWithRetry(context.Background(), client, llm.Request{Model: "m"}, retry.Policy{MaximumAttempts: 3})
+			return err
+		}},
+		{name: "images", call: func(client *Client) error {
+			_, err := client.GenerateImage(context.Background(), llm.ImageRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
+		{name: "decisions", call: func(client *Client) error {
+			_, err := client.Decide(context.Background(), llm.DecisionRequest{Model: "m", State: "s", Questions: map[string]llm.DecisionQuestion{"q": llm.NoulQuestion("q?")}})
+			return err
+		}},
+		{name: "models", call: func(client *Client) error {
+			_, err := client.Models(context.Background())
+			return err
+		}},
 	}
-	if !errors.Is(err, llm.ErrServerError) {
-		t.Errorf("err = %v, want ErrServerError wrap", err)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var requests atomic.Int32
+			server := newTestServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				_, _ = writer.Write([]byte(`{"this is not valid json`))
+			})
+			err := testCase.call(newTestClient(t, server))
+			if !errors.Is(err, llm.ErrInvalidResponse) || llm.IsTransientServerError(err) {
+				t.Errorf("err = %v, want ErrInvalidResponse and not transient", err)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Errorf("requests = %d, want 1", got)
+			}
+		})
 	}
 }
 
@@ -519,31 +579,30 @@ func TestComplete_WireContract(t *testing.T) {
 		bodies  [][]byte
 		hits    int32
 	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		paths = append(paths, r.URL.Path)
-		headers = append(headers, r.Header.Clone())
-		bodies = append(bodies, b)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		rawBody, _ := io.ReadAll(request.Body)
+		paths = append(paths, request.URL.Path)
+		headers = append(headers, request.Header.Clone())
+		bodies = append(bodies, rawBody)
 		if atomic.AddInt32(&hits, 1) == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"error":{"message":"upstream down"}}`))
+			writer.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = writer.Write([]byte(`{"error":{"message":"upstream down"}}`))
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
-	}))
-	defer srv.Close()
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`))
+	})
 
-	c, err := NewClient(&Options{
+	client, err := NewClient(&Options{
 		APIKey:      "sk-test",
-		BaseURL:     srv.URL,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		BaseURL:     server.URL,
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido CLI",
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if _, err := c.Complete(context.Background(), llm.Request{
+	if _, err := client.Complete(context.Background(), llm.Request{
 		Model:    "any",
 		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
 	}); err != nil {
@@ -553,23 +612,23 @@ func TestComplete_WireContract(t *testing.T) {
 	if len(paths) != 2 {
 		t.Fatalf("attempts = %d, want 2", len(paths))
 	}
-	for i, p := range paths {
-		if p != "/chat/completions" {
-			t.Errorf("attempt %d path = %q, want /chat/completions", i, p)
+	for attempt, path := range paths {
+		if path != "/chat/completions" {
+			t.Errorf("attempt %d path = %q, want /chat/completions", attempt, path)
 		}
 	}
-	for i, h := range headers {
-		if got := h.Get("Accept"); got != "application/json" {
-			t.Errorf("attempt %d Accept = %q", i, got)
+	for attempt, header := range headers {
+		if got := header.Get("Accept"); got != "application/json" {
+			t.Errorf("attempt %d Accept = %q", attempt, got)
 		}
-		if got := h.Get("Authorization"); got != "Bearer sk-test" {
-			t.Errorf("attempt %d Authorization = %q", i, got)
+		if got := header.Get("Authorization"); got != "Bearer sk-test" {
+			t.Errorf("attempt %d Authorization = %q", attempt, got)
 		}
-		if got := h.Get("HTTP-Referer"); got != "https://github.com/mxcd/aikido" {
-			t.Errorf("attempt %d HTTP-Referer = %q", i, got)
+		if got := header.Get("HTTP-Referer"); got != "https://github.com/govengers/aikido" {
+			t.Errorf("attempt %d HTTP-Referer = %q", attempt, got)
 		}
-		if got := h.Get("X-Title"); got != "aikido CLI" {
-			t.Errorf("attempt %d X-Title = %q", i, got)
+		if got := header.Get("X-Title"); got != "aikido CLI" {
+			t.Errorf("attempt %d X-Title = %q", attempt, got)
 		}
 	}
 	if string(bodies[0]) != string(bodies[1]) {
@@ -580,16 +639,15 @@ func TestComplete_WireContract(t *testing.T) {
 func TestComplete_ErrorEnvelopeNoRetry(t *testing.T) {
 	t.Parallel()
 	var hits int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		atomic.AddInt32(&hits, 1)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"error":{"code":"server_error","message":"provider blew up"}}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"error":{"code":"server_error","message":"provider blew up"}}`))
+	})
+	client := newTestClient(t, server)
 
-	_, err := c.Complete(context.Background(), llm.Request{Model: "any"})
+	_, err := client.Complete(context.Background(), llm.Request{Model: "any"})
 	if !errors.Is(err, llm.ErrServerError) {
 		t.Fatalf("err = %v, want ErrServerError", err)
 	}
@@ -600,25 +658,25 @@ func TestComplete_ErrorEnvelopeNoRetry(t *testing.T) {
 
 // trackedBody fails mid-read when failAt is reached and records its Close.
 type trackedBody struct {
-	data   []byte
-	pos    int
-	failAt int
-	closed bool
+	data     []byte
+	position int
+	failAt   int
+	closed   bool
 }
 
-func (b *trackedBody) Read(p []byte) (int, error) {
-	if b.failAt >= 0 && b.pos >= b.failAt {
+func (b *trackedBody) Read(buffer []byte) (int, error) {
+	if b.failAt >= 0 && b.position >= b.failAt {
 		return 0, errors.New("connection reset mid-body")
 	}
-	if b.pos >= len(b.data) {
+	if b.position >= len(b.data) {
 		return 0, io.EOF
 	}
-	n := copy(p, b.data[b.pos:])
-	if b.failAt >= 0 && b.pos+n > b.failAt {
-		n = b.failAt - b.pos
+	count := copy(buffer, b.data[b.position:])
+	if b.failAt >= 0 && b.position+count > b.failAt {
+		count = b.failAt - b.position
 	}
-	b.pos += n
-	return n, nil
+	b.position += count
+	return count, nil
 }
 
 func (b *trackedBody) Close() error {
@@ -626,67 +684,141 @@ func (b *trackedBody) Close() error {
 	return nil
 }
 
-// recordingTransport serves canned responses in order and keeps the request
-// bytes so the caller can assert body identity across retries.
-type recordingTransport struct {
-	bodies   [][]byte
-	attempts int
-	respond  func(attempt int) *http.Response
+// cannedTransport answers every request with respond and counts the requests.
+type cannedTransport struct {
+	requests int
+	respond  func(request *http.Request) *http.Response
 }
 
-func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	b, _ := io.ReadAll(req.Body)
-	rt.bodies = append(rt.bodies, b)
-	rt.attempts++
-	return rt.respond(rt.attempts), nil
+func (transport *cannedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.requests++
+	return transport.respond(request), nil
 }
 
-// TestPostJSON_ReadFailureRetriesAndClosesBody pins the read-failure branch:
-// a body that dies mid-read is an ErrServerError (so it retries), the retry
-// resends identical bytes, and every response body is closed.
-func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
-	t.Parallel()
-	first := &trackedBody{data: []byte(`{"id":"x","choices":[]}`), failAt: 4}
-	second := &trackedBody{data: []byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}`), failAt: -1}
-	// Snapshotted when attempt two starts, so the assertion is "closed before
-	// the retry" and not merely "closed eventually".
-	var firstClosedAtRetry bool
-	rt := &recordingTransport{respond: func(attempt int) *http.Response {
-		body := io.ReadCloser(second)
-		if attempt == 1 {
-			body = first
-		} else {
-			firstClosedAtRetry = first.closed
+// cutBodyTransport answers every request with its endpoint's success status
+// (202 for the video submit, 200 otherwise) and a body that dies after four
+// bytes; bodies collects them so the caller can check they were closed.
+func cutBodyTransport() (*cannedTransport, *[]*trackedBody) {
+	var bodies []*trackedBody
+	transport := &cannedTransport{respond: func(request *http.Request) *http.Response {
+		status := http.StatusOK
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/videos") {
+			status = http.StatusAccepted
 		}
+		body := &trackedBody{data: []byte(`{"id":"x","choices":[]}`), failAt: 4}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: body}
+	}}
+	return transport, &bodies
+}
+
+// TestBodyCutAfterSuccessIsNotRetried pins RES-004 on every non-streaming
+// endpoint: once a 2xx arrived the work may be done and billed, so a body that
+// dies mid-read fails the call with ErrServerError after one request instead
+// of sending it again, and the body is closed.
+func TestBodyCutAfterSuccessIsNotRetried(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name string
+		call func(client *Client) error
+	}{
+		{name: "complete", call: func(client *Client) error {
+			_, err := client.Complete(context.Background(), llm.Request{Model: "m"})
+			return err
+		}},
+		{name: "images", call: func(client *Client) error {
+			_, err := client.GenerateImage(context.Background(), llm.ImageRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
+		{name: "speech", call: func(client *Client) error {
+			_, err := client.Speak(context.Background(), llm.SpeechRequest{Model: "m", Input: "hi", Voice: "v"})
+			return err
+		}},
+		{name: "decisions", call: func(client *Client) error {
+			_, err := client.Decide(context.Background(), llm.DecisionRequest{Model: "m", State: "s", Questions: map[string]llm.DecisionQuestion{"q": llm.NoulQuestion("q?")}})
+			return err
+		}},
+		{name: "models", call: func(client *Client) error {
+			_, err := client.Models(context.Background())
+			return err
+		}},
+		{name: "video_submit", call: func(client *Client) error {
+			_, err := client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			return err
+		}},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			transport, bodies := cutBodyTransport()
+			client, err := NewClient(&Options{APIKey: "k", BaseURL: "https://example.invalid/api/v1", HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			if err := testCase.call(client); !errors.Is(err, llm.ErrServerError) {
+				t.Errorf("err = %v, want ErrServerError", err)
+			}
+			if transport.requests != 1 {
+				t.Errorf("requests = %d, want 1 (a 2xx is never retried)", transport.requests)
+			}
+			for _, body := range *bodies {
+				if !body.closed {
+					t.Error("response body was not closed")
+				}
+			}
+		})
+	}
+}
+
+// TestComplete_OversizedBodyIsNotRead pins the response cap: a declared
+// length above maximumResponseBytes is refused before reading, as
+// ErrInvalidResponse, and not retried.
+func TestComplete_OversizedBodyIsNotRead(t *testing.T) {
+	t.Parallel()
+	transport := &cannedTransport{respond: func(*http.Request) *http.Response {
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       body,
+			StatusCode:    http.StatusOK,
+			ContentLength: maximumResponseBytes + 1,
+			Body:          io.NopCloser(bytes.NewReader([]byte(`{}`))),
 		}
 	}}
-	c, err := NewClient(&Options{APIKey: "sk-test", BaseURL: "https://example.invalid/api/v1", HTTPClient: &http.Client{Transport: rt}})
+	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: "https://example.invalid", HTTPClient: &http.Client{Transport: transport}})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	_, err = client.Complete(context.Background(), llm.Request{Model: "any"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Errorf("err = %v, want ErrInvalidResponse", err)
+	}
+	if transport.requests != 1 {
+		t.Errorf("requests = %d, want 1", transport.requests)
+	}
+}
 
-	resp, err := c.Complete(context.Background(), llm.Request{Model: "any"})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
+// TestReadBounded pins the cap on bodies without a declared length.
+func TestReadBounded(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name    string
+		body    string
+		wantErr error
+	}{
+		{name: "below the cap", body: "1234567"},
+		{name: "at the cap", body: "12345678"},
+		{name: "above the cap", body: "123456789", wantErr: llm.ErrInvalidResponse},
 	}
-	if resp.Text != "ok" {
-		t.Errorf("text = %q, want ok", resp.Text)
-	}
-	if rt.attempts != 2 {
-		t.Fatalf("attempts = %d, want 2", rt.attempts)
-	}
-	if string(rt.bodies[0]) != string(rt.bodies[1]) {
-		t.Errorf("retry sent a different body:\n%s\n%s", rt.bodies[0], rt.bodies[1])
-	}
-	if !firstClosedAtRetry {
-		t.Error("first response body was still open when attempt two started")
-	}
-	if !second.closed {
-		t.Error("last response body was not closed")
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response := &http.Response{ContentLength: -1, Body: io.NopCloser(strings.NewReader(testCase.body))}
+			raw, err := readBounded(context.Background(), response, 8)
+			if !errors.Is(err, testCase.wantErr) {
+				t.Fatalf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if testCase.wantErr == nil && string(raw) != testCase.body {
+				t.Errorf("raw = %q, want %q", raw, testCase.body)
+			}
+		})
 	}
 }
 
@@ -696,35 +828,34 @@ func TestPostJSON_ReadFailureRetriesAndClosesBody(t *testing.T) {
 func TestComplete_ChatImageFixture(t *testing.T) {
 	t.Parallel()
 	var captured []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured, _ = io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(readFixture(t, "chat_image_gemini_nonstream.json"))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		captured, _ = io.ReadAll(request.Body)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write(loadFixture(t, "chat_image_gemini_nonstream.json"))
+	})
+	client := newTestClient(t, server)
 
-	resp, err := c.Complete(context.Background(), llm.Request{
+	response, err := client.Complete(context.Background(), llm.Request{
 		Model: "google/gemini-3.1-flash-image-preview",
 		Messages: []llm.Message{{
 			Role:    llm.RoleUser,
 			Content: "a red cube on white",
 			Images:  []llm.ImagePart{{URL: "data:image/jpeg;base64,QUJD", ContentType: "image/jpeg"}},
 		}},
-		Modalities:  []string{"image", "text"},
-		ImageConfig: &llm.ImageConfig{AspectRatio: "16:9", ImageSize: "2K"},
+		Modalities:         []string{"image", "text"},
+		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if len(resp.Images) != 1 || len(resp.Images[0].Data) == 0 {
-		t.Fatalf("images = %+v, want one inline image", resp.Images)
+	if len(response.Images) != 1 || len(response.Images[0].Data) == 0 {
+		t.Fatalf("images = %+v, want one inline image", response.Images)
 	}
-	if !isPNG(resp.Images[0].Data) {
-		t.Errorf("decoded bytes are not a PNG: %x", resp.Images[0].Data[:8])
+	if !isPNG(response.Images[0].Data) {
+		t.Errorf("decoded bytes are not a PNG: %x", response.Images[0].Data[:8])
 	}
-	if resp.Text != "Here is the image." {
-		t.Errorf("text = %q", resp.Text)
+	if response.Text != "Here is the image." {
+		t.Errorf("text = %q", response.Text)
 	}
 
 	var body struct {

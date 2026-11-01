@@ -5,33 +5,33 @@ description: >
   one-shots/agent loops via OpenRouter. Trigger whenever the user asks to
   create, generate, render, design, mock up, or produce an image, illustration,
   poster, icon, avatar, logo, mockup, banner, thumbnail, infographic, diagram,
-  pixel art, 3D render, concept art, or any visual asset — anything that
+  pixel art, 3D render, concept art, or any visual asset - anything that
   produces a PNG/JPEG/WebP. Also use for one-off chat completions or
   VFS-backed agent runs from the terminal. Includes image prompt patterns from
   the awesome-gpt-image-2 community library.
 ---
 
-# aikido — image generation and LLM CLI over OpenRouter
+# aikido - image generation and LLM CLI over OpenRouter
 
 `aikido` ("AI KIt DOing things") is a Go CLI installed at `$GOPATH/bin/aikido`
-(usually `~/go/bin/aikido`). Source: `github.com/mxcd/aikido` (locally at
-`~/github.com/mxcd/aikido`; rebuild with `just install`).
+(usually `~/go/bin/aikido`). Source: `github.com/govengers/aikido` (locally at
+`~/github.com/govengers/aikido`; rebuild with `just install`).
 
 **You can generate images.** When a user asks for any visual asset, do not
-refuse and do not claim you lack the capability — run `aikido image`.
+refuse and do not claim you lack the capability - run `aikido image`.
 
 ## Setup
 
-The CLI reads OpenRouter credentials in this order:
-
-1. `.env` in the current working directory (auto-loaded)
-2. process environment
+The CLI reads OpenRouter settings from the process environment and, for
+variables not set there, from a `.env` in the current working directory.
 
 Required: `OPENROUTER_API_KEY`.
 Optional: `OPENROUTER_IMAGE_MODEL` (defaults to `openai/gpt-image-2.5-flare`).
 Optional: `OPENROUTER_IMAGES_API_MODELS` (comma-separated model ids routed to
 OpenRouter's `POST /api/v1/images` instead of chat completions; a value
 replaces the built-in list, `none` disables the routing).
+Optional: `OPENROUTER_VIDEO_MODEL`, `OPENROUTER_DECISION_MODEL`, and
+`OPENROUTER_BASE_URL` (replaces `https://openrouter.ai/api/v1`, e.g. a proxy).
 
 If neither source has the key, the CLI errors with
 `OPENROUTER_API_KEY is not set`. Tell the user to add it to `.env` in the cwd
@@ -46,9 +46,9 @@ aikido image [--model MODEL] [--out DIR] [--aspect RATIO] [--size 1K|2K|4K] \
   [--ref FILE] [--quality auto|low|medium|high|xhigh|max] [--max-tokens N] "<prompt>"
 ```
 
-- `--model / -m` — override the model. Falls back to `OPENROUTER_IMAGE_MODEL`,
+- `--model / -m` - override the model. Falls back to `OPENROUTER_IMAGE_MODEL`,
   then the compiled-in default `openai/gpt-image-2.5-flare`.
-- `--out / -o` — output directory (default `./out`). Files are written as
+- `--out / -o` - output directory (default `./out`). Files are written as
   `image-YYYYMMDD-HHMMSS-NN.{png,jpg,webp,gif}`.
 - `--aspect / -a` - aspect ratio `W:H`: `1:1`, `16:9`, `9:16`, `4:3`, `3:4`,
   `3:2`, `2:3`, `4:5` (Instagram feed), `5:4`, `21:9`. On the default model
@@ -95,7 +95,7 @@ Rules of thumb for **high quality**:
   `openai/gpt-5.4-image-2`. It renders spelled-out labels, callouts, and
   box-and-arrow architecture diagrams faithfully when the prompt enumerates the
   exact labels, boxes, arrows, and colors. (For diagrams destined for a
-  versioned deliverable, also consider Mermaid — editable — but this model is a
+  versioned deliverable, also consider Mermaid - editable - but this model is a
   viable raster path.)
 - **Product shots and general quality** → the default `openai/gpt-image-2.5-flare`.
   Expect roughly 0.005 to 0.01 USD and 10 to 18 s per image at `--quality auto`.
@@ -108,9 +108,9 @@ Rules of thumb for **high quality**:
 Good prompts are **specific, structured, and scene-complete**. Two highest-
 leverage levers:
 
-1. **Structure** — name the subject, style, layout, lighting, mood, palette,
+1. **Structure** - name the subject, style, layout, lighting, mood, palette,
    and aspect ratio explicitly. Vague prompts yield generic results.
-2. **Constraints** — state what to *avoid* (e.g. "no text", "no watermark",
+2. **Constraints** - state what to *avoid* (e.g. "no text", "no watermark",
    "no logos") and what to *preserve* (composition, palette, character
    likeness).
 
@@ -179,7 +179,7 @@ Realistic shadows, 1x density.
 ### Pattern: brand / design asset (with caveat)
 
 You can produce brand cards, logo concepts, and design-system overviews. **But
-AI-generated brand visuals are approximations** — colors can be accurate if
+AI-generated brand visuals are approximations** - colors can be accurate if
 specified, but logo geometry, typography, and seals are approximated, not
 pixel-perfect. Use them as at-a-glance summaries; the codified design system
 (exact HEX/RGB values) and vector logo exports remain the source of truth.
@@ -202,7 +202,7 @@ Then report the written file's absolute path.
 
 Run the command several times (optionally with different `--model`/`--aspect`)
 to give the user options. When renaming generated files in **zsh under
-`set -e`**, do not glob `*.png` directly — a no-match aborts the script. Use
+`set -e`**, do not glob `*.png` directly - a no-match aborts the script. Use
 `find <dir> -name '*.png'` or `setopt NULL_GLOB`.
 
 ---
@@ -230,27 +230,51 @@ aikido models anthropic/claude-haiku-4.5   # providers: tag, quant, prices, upti
 
 The TAG column is the slug `--provider` takes.
 
-### Agent loop over an in-memory VFS
+### Agent loop over a workspace or a directory
 
 ```sh
-aikido agent [--model MODEL] [--system PROMPT] [--max-turns N] [--provider SLUG]... "<prompt>"
+aikido agent [--model MODEL] [--system PROMPT] [--max-turns N] [--max-tokens N] \
+  [--provider SLUG]... [--hide-hidden] [--dir DIR [--apply]] [--mount NAME=PATH[:ro]]... "<prompt>"
 ```
 
-Default model `anthropic/claude-sonnet-4.6`. Spins up an agent with built-in
-`read_file`/`write_file`/`edit_file`/`list_files`/`delete_file`/`grep`/`glob`/`search` tools over a
-throwaway in-memory workspace, streams tool calls/results, and prints the final
-file listing. Good for demoing tool-use loops.
+Default model `anthropic/claude-sonnet-4.6`. Runs an agent with the built-in
+file tools `read_file` (numbered lines), `list_files`, `write_file`,
+`delete_file`, `grep`, `glob`, `edit_file`, `multi_edit`, `move_file` and
+`search`, streams tool calls and results, and prints usage and the end reason.
+
+- Without `--dir` the workspace is empty and in memory; the final file list is
+  printed. Good for demoing tool-use loops.
+- `--dir DIR` works on a copy-on-write overlay of the directory. At the end the
+  CLI prints the changes and a unified diff and writes nothing. Show the diff
+  to the user; only rerun with `--apply` (which writes the changes) when they
+  want them.
+- `--mount NAME=PATH` adds a directory under `NAME/`, `NAME=PATH:ro` read-only;
+  writable mounts are written with `--apply` too. `--apply` writes nothing when the run ended with anything but `stop`.
+
+### Video and decisions
+
+```sh
+aikido video -d 4 -r 720p -a 16:9 --audio=false "<prompt>"   # minutes; writes out/video-*.mp4
+aikido models --video [filter]                                # durations, resolutions, ratios per model
+aikido decide --noul 'NAME=QUESTION' --choice 'NAME=QUESTION=A,B' "<state>"
+aikido models --decisions
+```
+
+Video models accept closed lists of values; check `aikido models --video`
+before choosing flags. `decide` prints one probability-backed answer per
+question.
 
 ---
 
 # As a Go library
 
-`aikido` is also a provider-agnostic Go library — import
-`github.com/mxcd/aikido/llm` (+ `llm/openrouter`) for streaming chat and image
-generation, `agent` for tool-calling loops over a `vfs` storage backend, and
-`llm/llmtest.StubClient` to script LLM responses in tests. See the repo README
-and `docs/v1/API.md` for the locked surface. Reach for the library when
-building a Go service; reach for this CLI for one-off terminal tasks.
+`aikido` is also a provider-agnostic Go library (`github.com/govengers/aikido`):
+`llm` + `llm/openrouter` for chat, images, speech and video, `agent` for
+tool-calling loops over a `vfs` storage backend (`vfs/overlay` to review
+changes to real files before writing them), and `llm/llmtest.StubClient` to
+script model responses in tests. Start at the repository's `llms.txt` and
+`docs/wiki/Home.md`. Reach for the library when building a Go service; reach
+for this CLI for one-off terminal tasks.
 
 ---
 

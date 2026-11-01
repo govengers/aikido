@@ -1,0 +1,38 @@
+{
+  "name": "orders-api",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "readTimeoutSeconds": 15,
+    "writeTimeoutSeconds": 15
+  },
+  "database": {
+    "host": "db.internal",
+    "port": 5432,
+    "name": "orders",
+    "pool": {
+      "min": 2,
+      "max": 10
+    }
+  },
+  "features": {
+    "newCheckout": false,
+    "auditLog": true,
+    "giftCards": false
+  },
+  "allowedOrigins": [
+    "https://shop.example.com"
+  ],
+  "upstreams": [
+    {
+      "name": "payments",
+      "url": "http://payments.internal:8080",
+      "port": 8080
+    },
+    {
+      "name": "inventory",
+      "url": "http://inventory.internal:8080",
+      "port": 8080
+    }
+  ]
+}

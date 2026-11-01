@@ -1,0 +1,48 @@
+# govengers/aikido
+
+> Go library for model calls and agents. `llm.Client` is the provider-agnostic model interface (`Stream` events, `Complete` responses; `llm/openrouter`, `llm/codex` for a ChatGPT subscription, `llm/llmtest.StubClient` for tests), with optional capabilities callers type-assert on (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`). `agent.Session` runs the model in a tool loop over a `tools.Registry`, keeps the conversation in a pluggable `agent.History` and serializes runs per session ID with an `agent.Locker`; every run is bounded (turns, run, model-call and tool-call timeouts, tool-result size) and sets prompt-cache breakpoints by default. The built-in file tools work on a four-method `vfs.Storage` (memory, a directory through `os.Root`, any `fs.FS`), composable with a copy-on-write `vfs/overlay` (change list, unified diff, commit) and `vfs/mount`. The library has no shell, no network tools, never logs and reads no environment. `voice` adds speech in and out around a turn; `cmd/aikido` is the CLI.
+
+- Module: `github.com/govengers/aikido` (v1, moved from `github.com/mxcd/aikido` v0.12), Go 1.26, Apache 2.0.
+- Packages: `llm`, `llm/openrouter`, `llm/codex`, `llm/llmtest`, `retry`, `tools`, `agent`, `agent/history/memory`, `agent/history/historytest`, `vfs`, `vfs/memory`, `vfs/osfs`, `vfs/embedfs`, `vfs/overlay`, `vfs/mount`, `vfs/vfstest`, `voice`; binary `cmd/aikido`.
+- Construction: components with settings are `New(options *Options) (*X, error)` or `NewX(options *XOptions) (*X, error)` (`openrouter.NewClient`, `agent.NewSession`, `osfs.New`, `overlay.New`, `voice.New`); they validate at startup and copy the options. Components without settings take none (`memory.New()`, `tools.NewRegistry()`, `agent.NewLocalLocker()`). Tool handlers capture their dependencies by closure; `tools.Environment` carries only `SessionID` and `TurnID`.
+- Errors: match with `errors.Is` on `llm.ErrAuthentication`, `ErrRateLimited`, `ErrServerError`, `ErrInvalidRequest`, `ErrInvalidResponse`, `ErrContentFiltered`, `codex.ErrRefreshInterrupted`; `errors.As` on `*openrouter.APIError`; `tools.ErrUnknownTool`, `ErrInvalidArguments`, `ErrToolPanicked`; `vfs.ErrPathInvalid`, `ErrFileNotFound`, `ErrFileTooLarge`, `ErrReadOnly`. Cancellation is `context.Canceled`/`DeadlineExceeded`. Agent runs report failures as `EventError` plus `EventEnd` with an `agent.EndReason`; tool errors never end a run.
+- Standards: govengers/standards, `library` profile (`.govengers.yml`: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`).
+
+## Docs
+
+- [Home](docs/wiki/Home.md): model, package map, which package for which need, wiring order.
+- [Agent](docs/wiki/Agent.md): `Session`, `Run`/`RunWithOptions`/`RunWithMessages`, events, end reasons, limits, prompt caching, thinking, `History`, `Locker`, `Drain`, files as the authority.
+- [Tools](docs/wiki/Tools.md): `tools.Registry`, schema helpers, handlers, `Dispatch` argument checks and panics, the built-in file tools with their parameters, `todo_write`.
+- [Files](docs/wiki/Files.md): the `vfs.Storage` contract, `Searchable`, `ScopedStorage`, memory, osfs, embedfs, overlay, mount, own backends with `vfstest`.
+- [Models](docs/wiki/Models.md): `Request`, `Response`, `Collect`, streaming, `Usage`, OpenRouter options, provider routing, catalogue, `APIError`, Codex login and `TokenSource`.
+- [Media](docs/wiki/Media.md): images (both endpoints), video, speech, transcription and `Vocabulary`, decision models.
+- [Voice](docs/wiki/Voice.md): `voice.Pipeline`, events, usage, the NDJSON `net/http` handler.
+- [Errors-and-Retry](docs/wiki/Errors-and-Retry.md): sentinels, retry per call path, `retry.Do` and `Policy`.
+- [Testing](docs/wiki/Testing.md): `llmtest.StubClient`, conformance suites, testing an agent offline, the e2e suite.
+- [CLI](docs/wiki/CLI.md): `chat`, `agent` (`--dir`, `--apply`, `--mount`), `image`, `video`, `decide`, `models`, `skill`, environment variables.
+- [Security](docs/wiki/Security.md): guarantees (no OS access by default, path validation, `os.Root`, overlay dry runs, bounds, secrets) and known limits.
+- [Gotchas](docs/wiki/Gotchas.md): the non-obvious rules, one line each.
+
+## Examples
+
+- [examples/chat-oneshot/main.go](examples/chat-oneshot/main.go): one completion with `llm.Collect`, tokens and cost.
+- [examples/agent-vfs/main.go](examples/agent-vfs/main.go): an agent session with the built-in tools over `vfs/memory`.
+- [examples/agent-overlay/main.go](examples/agent-overlay/main.go): an agent edits a real directory through `vfs/overlay` over `vfs/osfs`; changes and diff are reviewed before `Commit`.
+- [examples/chatbot/main.go](examples/chatbot/main.go): a read-only Q&A loop over an embedded corpus (`vfs/embedfs`, `ReadOnly`).
+- [examples/image-generation/main.go](examples/image-generation/main.go): image output from an image-capable model written to disk.
+- [examples/voicebot/main.go](examples/voicebot/main.go): push-to-talk web page over `voice.Handler`.
+- Package `Example*` functions live in each package's `example_test.go` and run with `go test`; the wiki snippets are taken from them.
+
+## Reference
+
+- [README.md](README.md): overview, features, quick start, package table, CLI.
+- [docs/migration.md](docs/migration.md): from `github.com/mxcd/aikido` v0.12 (and v0.3) to v1: renames, constructors, removed API, behaviour changes.
+- [docs/DECISIONS.md](docs/DECISIONS.md): architecture decisions ADR-001 to ADR-041.
+- [GitHub Releases](https://github.com/govengers/aikido/releases): changelog and release notes.
+- [pkg.go.dev](https://pkg.go.dev/github.com/govengers/aikido): API reference.
+
+## Optional
+
+- [justfile](justfile): `just lint`, `just test`, `just test-e2e`, `just check`, `just smoke`, `just wiki`.
+- [test/e2e](test/e2e): the CLI binary and the library API against a fake OpenRouter.
+- [internal/cli/skills/SKILL.md](internal/cli/skills/SKILL.md): the Claude Code skill `aikido skill install` writes.

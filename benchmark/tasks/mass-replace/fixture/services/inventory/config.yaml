@@ -1,0 +1,8 @@
+# inventory service configuration
+service: inventory
+upstream:
+  baseURL: https://docs.acme-legacy.io/v2/inventory
+  timeoutSeconds: 26
+links:
+  help: https://status.acme-legacy.io/inventory
+  health: https://api.acme-legacy.io/health

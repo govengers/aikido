@@ -2,13 +2,19 @@ package llm
 
 import "time"
 
+// Role is the author of a Message, written on the wire as is.
 type Role string
 
+// The roles of a conversation.
 const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
+	// RoleSystem is the system prompt, the first message of a conversation.
+	RoleSystem Role = "system"
+	// RoleUser is the human or calling application.
+	RoleUser Role = "user"
+	// RoleAssistant is the model; its messages carry ToolCalls.
 	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
+	// RoleTool is a tool's result; its messages carry ToolCallID.
+	RoleTool Role = "tool"
 )
 
 // ImagePart is one image attached to a message or returned by an image-capable
@@ -16,7 +22,7 @@ const (
 // supplied a data URI / remote URL on input. Data is set when the provider
 // returned inline bytes (decoded from a data: URI) or when the caller wants to
 // inline an image on output. ContentType is the MIME type when known
-// ("image/png", "image/jpeg", ...) — empty when not provided by the wire.
+// ("image/png", "image/jpeg", ...), empty when not provided by the wire.
 type ImagePart struct {
 	URL         string
 	ContentType string
@@ -32,19 +38,31 @@ type AudioPart struct {
 	Format string
 }
 
+// ToolCall is one call the model made to a tool of Request.Tools.
 type ToolCall struct {
-	ID        string
-	Name      string
+	// ID is the provider's call id; the tool result answers it in
+	// Message.ToolCallID.
+	ID string
+	// Name is the ToolDefinition.Name of the called tool.
+	Name string
+	// Arguments is the JSON object the model passed, as raw text. Models can
+	// emit invalid JSON; the caller validates it.
 	Arguments string
 }
 
-// Usage is the accounting and performance record of one model call.
+// Usage is the accounting and performance record of one model call. Fields
+// the provider did not report stay zero.
 type Usage struct {
-	PromptTokens     int
+	// PromptTokens is the input tokens, cached ones included.
+	PromptTokens int
+	// CompletionTokens is the output tokens, reasoning included.
 	CompletionTokens int
-	CacheReadTokens  int
+	// CacheReadTokens is the part of PromptTokens served from the prompt cache.
+	CacheReadTokens int
+	// CacheWriteTokens is the part of PromptTokens written to the prompt cache.
 	CacheWriteTokens int
-	CostUSD          float64
+	// CostUSD is the provider's billed cost of the call in US dollars.
+	CostUSD float64
 
 	// Provider is the upstream provider that served the call (OpenRouter's
 	// "Anthropic", "Azure", ...). Empty when the client cannot tell.
@@ -62,9 +80,9 @@ type Usage struct {
 	TokensPerSecond float64
 }
 
-// minRateWindow is the shortest generation time SetTiming derives a
+// minimumRateWindow is the shortest generation time SetTiming derives a
 // TokensPerSecond from.
-const minRateWindow = 250 * time.Millisecond
+const minimumRateWindow = 250 * time.Millisecond
 
 // SetTiming fills Latency, Duration and TokensPerSecond from a call that
 // started at start, produced its first output at firstOutput and ended at end.
@@ -72,9 +90,9 @@ const minRateWindow = 250 * time.Millisecond
 // call as latency and computes the rate over Duration.
 func (u *Usage) SetTiming(start, firstOutput, end time.Time) {
 	u.Duration = end.Sub(start)
-	gen := end.Sub(firstOutput)
+	generation := end.Sub(firstOutput)
 	if firstOutput.IsZero() {
-		u.Latency, gen = u.Duration, u.Duration
+		u.Latency, generation = u.Duration, u.Duration
 	} else {
 		u.Latency = firstOutput.Sub(start)
 	}
@@ -82,30 +100,45 @@ func (u *Usage) SetTiming(start, firstOutput, end time.Time) {
 	// Providers that buffer (Bedrock) deliver short replies in a few large
 	// chunks, so a short generation window measures chunking, not the model:
 	// 83 tokens over 62 ms read as 1300 tok/s. Below 250 ms there is no rate.
-	if gen >= minRateWindow && u.CompletionTokens > 0 {
-		u.TokensPerSecond = float64(u.CompletionTokens) / gen.Seconds()
+	if generation >= minimumRateWindow && u.CompletionTokens > 0 {
+		u.TokensPerSecond = float64(u.CompletionTokens) / generation.Seconds()
 	}
 }
 
+// CacheTTL is how long a prompt-cache entry lives at the provider.
 type CacheTTL string
 
+// The cache lifetimes providers offer.
 const (
-	CacheTTL5Min  CacheTTL = "5m"
-	CacheTTL1Hour CacheTTL = "1h"
+	// CacheTTLFiveMinutes is the providers' default lifetime.
+	CacheTTLFiveMinutes CacheTTL = "5m"
+	// CacheTTLOneHour costs more to write and pays off for prompts reused
+	// over a longer session.
+	CacheTTLOneHour CacheTTL = "1h"
 )
 
 // CacheBreakpoint marks a message as a cache breakpoint on providers that
 // support it. nil = no breakpoint. &CacheBreakpoint{} = default 5m TTL.
 type CacheBreakpoint struct {
+	// TTL is the entry's lifetime; empty means CacheTTLFiveMinutes.
 	TTL CacheTTL
 }
 
+// Message is one turn of a conversation. Which fields are set depends on
+// Role: Content (and Images, Audio) for system and user, Content and
+// ToolCalls for assistant, Content and ToolCallID for tool.
 type Message struct {
-	Role       Role
-	Content    string
-	Images     []ImagePart
-	Audio      []AudioPart
-	ToolCalls  []ToolCall
+	Role    Role
+	Content string
+	// Images are attached images; only user messages carry them on most
+	// providers.
+	Images []ImagePart
+	// Audio are attached audio clips (user messages).
+	Audio []AudioPart
+	// ToolCalls are the calls an assistant message made.
+	ToolCalls []ToolCall
+	// ToolCallID is the ToolCall.ID a tool message answers.
 	ToolCallID string
-	Cache      *CacheBreakpoint
+	// Cache marks the message as a prompt-cache breakpoint; nil means none.
+	Cache *CacheBreakpoint
 }

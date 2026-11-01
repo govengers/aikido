@@ -6,6 +6,7 @@ import "context"
 // Empty optional fields are omitted from the wire body, leaving the provider
 // default per-field.
 type SpeechRequest struct {
+	// Model is the provider's model id ("elevenlabs/eleven-v4-turbo").
 	Model string
 	// Input is the text to speak. ElevenLabs models take up to 10,000
 	// characters and read inline audio tags such as "[laughs]".
@@ -23,6 +24,7 @@ type SpeechRequest struct {
 
 // SpeechResponse is the synthesized audio of one Speak call.
 type SpeechResponse struct {
+	// Audio is the encoded clip in the requested Format.
 	Audio []byte
 	// ContentType is the provider's reported type: "audio/mpeg" for mp3,
 	// "audio/pcm" for pcm.
@@ -39,7 +41,8 @@ type SpeechResponse struct {
 // type-assert on it.
 //
 // Implementations map provider errors onto the same Err* sentinels Complete
-// uses (ErrAuth, ErrRateLimited, ErrServerError, ErrInvalidRequest).
+// uses (ErrAuthentication, ErrRateLimited, ErrServerError, ErrInvalidRequest).
 type SpeechGenerator interface {
+	// Speak synthesizes request.Input and returns the whole clip.
 	Speak(ctx context.Context, req SpeechRequest) (SpeechResponse, error)
 }

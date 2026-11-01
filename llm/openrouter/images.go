@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // Compile-time conformance for the optional images capability.
@@ -25,13 +25,16 @@ var _ llm.ImageGenerator = (*Client)(nil)
 // family) should keep using Complete with Modalities: []string{"image", "text"},
 // which is the only path that also carries a conversation.
 //
-// Retry and error classification are Complete's: 429 and 5xx retry per
-// retryPolicy, auth and bad-request short-circuit. A 200 carrying a top-level
-// error envelope that isContentFilterErrorEnvelope recognises surfaces as
-// ErrContentFiltered; a non-200 is classified by status through
-// classifyHTTPError, which has no content-filter case.
-func (c *Client) GenerateImage(ctx context.Context, req llm.ImageRequest) (llm.ImageResponse, error) {
-	body, err := buildImagesBody(req)
+// An invalid request (no model or prompt, a malformed Size, Size together
+// with AspectRatio or ImageSize, a reference without URL) fails with
+// llm.ErrInvalidRequest before any request. Retry and error classification
+// are Complete's: 429 and 5xx retry per Options.MaximumAttempts, auth and
+// bad-request short-circuit. A 200 carrying a top-level error envelope that
+// reads like content filtering surfaces as ErrContentFiltered; a non-200 is
+// classified by status, which has no content-filter case. Zero images in a
+// 200 is not an error.
+func (c *Client) GenerateImage(ctx context.Context, request llm.ImageRequest) (llm.ImageResponse, error) {
+	body, err := buildImagesBody(request)
 	if err != nil {
 		return llm.ImageResponse{}, fmt.Errorf("openrouter: images: %w", err)
 	}
@@ -40,11 +43,11 @@ func (c *Client) GenerateImage(ctx context.Context, req llm.ImageRequest) (llm.I
 	if err != nil {
 		return llm.ImageResponse{}, err
 	}
-	resp, err := parseImagesResponse(raw)
-	if resp.Usage != nil {
-		resp.Usage.SetTiming(start, time.Time{}, time.Now())
+	response, err := parseImagesResponse(raw)
+	if response.Usage != nil {
+		response.Usage.SetTiming(start, time.Time{}, time.Now())
 	}
-	return resp, err
+	return response, err
 }
 
 // sizePattern is the endpoint's `size` shape: WIDTHxHEIGHT in pixels.
@@ -54,83 +57,98 @@ var sizePattern = regexp.MustCompile(`^[1-9][0-9]{2,3}x[1-9][0-9]{2,3}$`)
 // fields stay off the wire. ImageSize maps onto `resolution`, never `size`:
 // the endpoint's `size` field wants WxH pixels (ImageRequest.Size) and rejects
 // the 1K/2K/4K tiers.
-func buildImagesBody(req llm.ImageRequest) ([]byte, error) {
-	if strings.TrimSpace(req.Model) == "" {
-		return nil, fmt.Errorf("model is required: %w", llm.ErrInvalidRequest)
+func buildImagesBody(request llm.ImageRequest) ([]byte, error) {
+	if err := validateImageRequest(request); err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(req.Prompt) == "" {
-		return nil, fmt.Errorf("prompt is required: %w", llm.ErrInvalidRequest)
+	body := imagesRequest{
+		Model:       request.Model,
+		Prompt:      request.Prompt,
+		AspectRatio: request.AspectRatio,
+		Resolution:  request.ImageSize,
+		Size:        request.Size,
+		Quality:     request.Quality,
 	}
-	if req.Size != "" {
-		if !sizePattern.MatchString(req.Size) {
-			return nil, fmt.Errorf("size %q: want WIDTHxHEIGHT in pixels: %w", req.Size, llm.ErrInvalidRequest)
+	for index, reference := range request.References {
+		if reference.URL == "" {
+			return nil, fmt.Errorf("reference image %d has no URL: %w", index, llm.ErrInvalidRequest)
 		}
-		if req.AspectRatio != "" || req.ImageSize != "" {
-			return nil, fmt.Errorf("size and aspect ratio/resolution are mutually exclusive: %w", llm.ErrInvalidRequest)
-		}
-	}
-	ir := imagesRequest{
-		Model:       req.Model,
-		Prompt:      req.Prompt,
-		AspectRatio: req.AspectRatio,
-		Resolution:  req.ImageSize,
-		Size:        req.Size,
-		Quality:     req.Quality,
-	}
-	for i, ref := range req.References {
-		if ref.URL == "" {
-			return nil, fmt.Errorf("reference image %d has no URL: %w", i, llm.ErrInvalidRequest)
-		}
-		ir.InputReferences = append(ir.InputReferences, apiImagePart{
+		body.InputReferences = append(body.InputReferences, apiImagePart{
 			Type:     "image_url",
-			ImageURL: &apiImageURL{URL: ref.URL},
+			ImageURL: &apiImageURL{URL: reference.URL},
 		})
 	}
-	return json.Marshal(ir)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode images request: %w", err)
+	}
+	return encoded, nil
+}
+
+func validateImageRequest(request llm.ImageRequest) error {
+	if strings.TrimSpace(request.Model) == "" {
+		return fmt.Errorf("model is required: %w", llm.ErrInvalidRequest)
+	}
+	if strings.TrimSpace(request.Prompt) == "" {
+		return fmt.Errorf("prompt is required: %w", llm.ErrInvalidRequest)
+	}
+	if request.Size == "" {
+		return nil
+	}
+	if !sizePattern.MatchString(request.Size) {
+		return fmt.Errorf("size %q: want WIDTHxHEIGHT in pixels: %w", request.Size, llm.ErrInvalidRequest)
+	}
+	if request.AspectRatio != "" || request.ImageSize != "" {
+		return fmt.Errorf("size and aspect ratio/resolution are mutually exclusive: %w", llm.ErrInvalidRequest)
+	}
+	return nil
 }
 
 // parseImagesResponse maps an images-endpoint JSON body onto llm.ImageResponse.
-//
-// Each datum carries either base64 bytes or a URL. Missing media_type is
-// sniffed from the decoded bytes; a URL datum keeps whatever the provider
-// reported. An empty data array is not an error here: the caller decides
-// whether zero images is a failure.
+// An empty data array is not an error here: the caller decides whether zero
+// images is a failure.
 func parseImagesResponse(body []byte) (llm.ImageResponse, error) {
-	var out imagesResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		return llm.ImageResponse{}, fmt.Errorf("openrouter: images: decode response: %w", llm.ErrServerError)
+	var decoded imagesResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return llm.ImageResponse{}, decodeError("images: decode response", err)
 	}
-
 	// A 200 may still carry a top-level error envelope, same as chat completions.
-	if out.Error != nil {
-		msg := out.Error.Message
-		if msg == "" {
-			msg = "provider error"
-		}
-		cause := llm.ErrServerError
-		if isContentFilterErrorEnvelope(out.Error) {
-			cause = llm.ErrContentFiltered
-		}
-		return llm.ImageResponse{}, fmt.Errorf("openrouter: images: %s: %w", msg, cause)
+	if decoded.Error != nil {
+		return llm.ImageResponse{}, fmt.Errorf("openrouter: images: %s: %w", decoded.Error.message(), decoded.Error.cause())
 	}
 
-	var resp llm.ImageResponse
-	for i, d := range out.Data {
-		switch {
-		case d.B64JSON != "":
-			data, err := base64.StdEncoding.DecodeString(d.B64JSON)
-			if err != nil {
-				return llm.ImageResponse{}, fmt.Errorf("openrouter: images: image %d: bad base64 payload: %w", i, llm.ErrServerError)
-			}
-			ct := d.MediaType
-			if ct == "" {
-				ct = http.DetectContentType(data)
-			}
-			resp.Images = append(resp.Images, llm.ImagePart{ContentType: ct, Data: data})
-		case d.URL != "":
-			resp.Images = append(resp.Images, llm.ImagePart{URL: d.URL, ContentType: d.MediaType})
+	var response llm.ImageResponse
+	for index, datum := range decoded.Data {
+		image, ok, err := toImagePart(datum)
+		if err != nil {
+			return llm.ImageResponse{}, fmt.Errorf("openrouter: images: image %d: %w", index, err)
+		}
+		if ok {
+			response.Images = append(response.Images, image)
 		}
 	}
-	resp.Usage = toLLMUsage(out.Usage)
-	return resp, nil
+	response.Usage = toLLMUsage(decoded.Usage)
+	return response, nil
+}
+
+// toImagePart maps one datum: base64 bytes (a missing media_type is sniffed)
+// or a URL (keeping whatever media type the provider reported). A datum with
+// neither is skipped (ok false).
+func toImagePart(datum imagesDatum) (llm.ImagePart, bool, error) {
+	switch {
+	case datum.B64JSON != "":
+		data, err := base64.StdEncoding.DecodeString(datum.B64JSON)
+		if err != nil {
+			return llm.ImagePart{}, false, decodeError("bad base64 payload", err)
+		}
+		contentType := datum.MediaType
+		if contentType == "" {
+			contentType = http.DetectContentType(data)
+		}
+		return llm.ImagePart{ContentType: contentType, Data: data}, true, nil
+	case datum.URL != "":
+		return llm.ImagePart{URL: datum.URL, ContentType: datum.MediaType}, true, nil
+	default:
+		return llm.ImagePart{}, false, nil
+	}
 }

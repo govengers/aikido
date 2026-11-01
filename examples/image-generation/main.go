@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -15,67 +16,82 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/openrouter"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
 )
 
+const outputDirectory = "out"
+
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
-		log.Fatal("OPENROUTER_API_KEY not set")
+		return errors.New("OPENROUTER_API_KEY not set")
 	}
 
 	client, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido image-generation example",
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	_, _, images, usage, err := llm.Collect(ctx, client, llm.Request{
+	response, err := llm.Collect(ctx, client, llm.Request{
 		Model: "google/gemini-2.5-flash-image-preview",
 		Messages: []llm.Message{
 			{Role: llm.RoleUser, Content: "Generate a small pixel-art icon of a fox sitting in tall grass."},
 		},
-		MaxTokens: 1024,
+		MaximumTokens: 1024,
 	})
 	if err != nil {
-		log.Fatalf("Collect: %v", err)
+		return fmt.Errorf("collect: %w", err)
 	}
-	if len(images) == 0 {
-		log.Fatal("provider returned no images")
+	if len(response.Images) == 0 {
+		return errors.New("provider returned no images")
 	}
-
-	outDir := "out"
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		log.Fatal(err)
+	if err := writeImages(response.Images); err != nil {
+		return err
 	}
-	for i, img := range images {
-		ext := extFromContentType(img.ContentType)
-		switch {
-		case len(img.Data) > 0:
-			path := filepath.Join(outDir, fmt.Sprintf("image-%02d%s", i, ext))
-			if err := os.WriteFile(path, img.Data, 0o644); err != nil {
-				log.Fatal(err)
-			}
-			fmt.Printf("wrote %s (%d bytes, %s)\n", path, len(img.Data), img.ContentType)
-		case img.URL != "":
-			fmt.Printf("image %d available at: %s\n", i, img.URL)
-		}
-	}
-	if usage != nil {
+	if usage := response.Usage; usage != nil {
 		fmt.Printf("tokens: prompt=%d completion=%d cost=$%.6f\n",
 			usage.PromptTokens, usage.CompletionTokens, usage.CostUSD)
 	}
+	return nil
 }
 
-func extFromContentType(ct string) string {
-	switch strings.ToLower(ct) {
+// writeImages saves the inline images into outputDirectory and prints the URL
+// of any image the provider only links to.
+func writeImages(images []llm.ImagePart) error {
+	if err := os.MkdirAll(outputDirectory, 0o750); err != nil {
+		return err
+	}
+	for index, image := range images {
+		switch {
+		case len(image.Data) > 0:
+			path := filepath.Join(outputDirectory, fmt.Sprintf("image-%02d%s", index, imageExtension(image.ContentType)))
+			if err := os.WriteFile(path, image.Data, 0o600); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s (%d bytes, %s)\n", path, len(image.Data), image.ContentType)
+		case image.URL != "":
+			fmt.Printf("image %d available at: %s\n", index, image.URL)
+		}
+	}
+	return nil
+}
+
+func imageExtension(contentType string) string {
+	switch strings.ToLower(contentType) {
 	case "image/png":
 		return ".png"
 	case "image/jpeg", "image/jpg":

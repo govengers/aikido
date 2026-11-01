@@ -7,17 +7,22 @@ import (
 	"github.com/google/uuid"
 )
 
-// Env carries per-call execution context to a Handler.
-type Env struct {
+// Environment carries per-call execution context to a Handler.
+type Environment struct {
+	// SessionID is the agent session the call belongs to.
 	SessionID string
-	TurnID    uuid.UUID
+	// TurnID identifies the model reply that made the call; calls of the
+	// same reply share it.
+	TurnID uuid.UUID
 }
 
-// Result is what a Handler returns. Content is JSON-serialized to the model.
+// Result is what a Handler returns. Content is JSON-serialized to the model;
+// nil is sent as JSON null.
 type Result struct {
 	Content any
-	Display string
 }
 
-// Handler is the function signature every tool implements.
-type Handler func(ctx context.Context, args json.RawMessage, env Env) (Result, error)
+// Handler is the function signature every tool implements. arguments holds
+// the model's raw JSON arguments, unvalidated. A returned error is shown to
+// the model as the tool's failure, so it can correct itself.
+type Handler func(ctx context.Context, arguments json.RawMessage, environment Environment) (Result, error)

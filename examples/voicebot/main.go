@@ -14,17 +14,20 @@ package main
 
 import (
 	"embed"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/mxcd/aikido/agent"
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/openrouter"
-	"github.com/mxcd/aikido/tools"
-	"github.com/mxcd/aikido/vfs/embedfs"
-	"github.com/mxcd/aikido/voice"
+	"github.com/govengers/aikido/agent"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
+	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs/embedfs"
+	"github.com/govengers/aikido/voice"
 )
 
 //go:embed knowledge/*.md
@@ -38,86 +41,114 @@ const systemPrompt = `Du bist ein Badplaner. In deinem Arbeitsbereich liegen Mar
 	`und antworte nur mit dem, was dort steht. Steht es nicht dort, sag das offen. Antworte in der ` +
 	`Sprache des Nutzers.`
 
-// vocabulary is what the speech recognizer should spell exactly: brand,
+// newVocabulary is what the speech recognizer should spell exactly: brand,
 // series and article numbers from the corpus, plus trade words.
-var vocabulary = &llm.Vocabulary{
-	Terms: []string{"Liv", "PFEIFFER & MAY", "LIV60G", "LIV80W", "LIV80U", "Duschtasse", "Waschtisch", "Unterschrank", "Vorwandinstallation", "Walk-in-Dusche"},
-	Replacements: map[string]string{
-		"pfeifer und mai":  "PFEIFFER & MAY",
-		"pfeiffer und mai": "PFEIFFER & MAY",
-		"pfeiffer und may": "PFEIFFER & MAY",
-	},
-	Fuzzy: true,
+func newVocabulary() *llm.Vocabulary {
+	return &llm.Vocabulary{
+		Terms: []string{"Liv", "PFEIFFER & MAY", "LIV60G", "LIV80W", "LIV80U", "Duschtasse", "Waschtisch", "Unterschrank", "Vorwandinstallation", "Walk-in-Dusche"},
+		Replacements: map[string]string{
+			"pfeifer und mai":  "PFEIFFER & MAY",
+			"pfeiffer und mai": "PFEIFFER & MAY",
+			"pfeiffer und may": "PFEIFFER & MAY",
+		},
+		Fuzzy: true,
+	}
 }
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
-		log.Fatal("OPENROUTER_API_KEY not set")
+		return errors.New("OPENROUTER_API_KEY not set")
 	}
-	addr := os.Getenv("ADDR")
-	if addr == "" {
-		addr = "localhost:8080"
+	address := os.Getenv("ADDR")
+	if address == "" {
+		address = "localhost:8080"
 	}
-
 	client, err := openrouter.NewClient(&openrouter.Options{
 		APIKey:      apiKey,
-		HTTPReferer: "https://github.com/mxcd/aikido",
+		HTTPReferer: "https://github.com/govengers/aikido",
 		XTitle:      "aikido voicebot example",
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
+	}
+	session, err := newSession(client)
+	if err != nil {
+		return err
+	}
+	turn, err := newTurnHandler(client, session)
+	if err != nil {
+		return err
 	}
 
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/turn", turn)
+	mux.HandleFunc("GET /{$}", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = writer.Write(indexHTML) // the browser went away; nothing left to tell it
+	})
+	// LAY-006. No WriteTimeout: a turn streams its answer for as long as the
+	// model and the speech synthesis take.
+	server := &http.Server{
+		Addr:              address,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       time.Minute,
+		IdleTimeout:       2 * time.Minute,
+	}
+	fmt.Printf("voicebot on http://%s\n", address)
+	return server.ListenAndServe()
+}
+
+func newSession(client *openrouter.Client) (*agent.Session, error) {
 	knowledge, err := fs.Sub(knowledgeFS, "knowledge")
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
+	}
+	storage, err := embedfs.New(&embedfs.Options{FileSystem: knowledge})
+	if err != nil {
+		return nil, err
 	}
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
-		Storage:  embedfs.NewStorage(knowledge),
+		Storage:  storage,
 		ReadOnly: true,
 	}); err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	session, err := agent.NewLocalSession(&agent.SessionOptions{
+	return agent.NewLocalSession(&agent.SessionOptions{
 		ID:           "voicebot",
 		Client:       client,
 		Tools:        registry,
 		Model:        "anthropic/claude-haiku-4.5",
 		SystemPrompt: systemPrompt,
-		MaxTurns:     10,
+		MaximumTurns: 10,
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
+}
 
+// newTurnHandler serves POST /api/turn: voice or text in, text or voice out,
+// all on the one session.
+func newTurnHandler(client *openrouter.Client, session *agent.Session) (*voice.Handler, error) {
 	pipeline, err := voice.New(&voice.Options{
-		Transcriber:      client,
-		Vocabulary:       vocabulary,
-		Speech:           client,
-		SpeechModel:      voice.DefaultSpeechModel, // elevenlabs/eleven-v4-turbo
-		Voice:            "sarah",
-		SpeechUSDPerChar: 0.00002,
-		SpokenStyle:      voice.DefaultSpokenStyle,
+		Transcriber:           client,
+		Vocabulary:            newVocabulary(),
+		Speech:                client,
+		SpeechModel:           voice.DefaultSpeechModel, // elevenlabs/eleven-v4-turbo
+		Voice:                 "sarah",
+		SpeechUSDPerCharacter: 0.00002,
+		SpokenStyle:           voice.DefaultSpokenStyle,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	turn, err := voice.NewHandler(&voice.HandlerOptions{
+	return voice.NewHandler(&voice.HandlerOptions{
 		Pipeline: pipeline,
 		Session:  func(*http.Request) (voice.Runner, error) { return session, nil },
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("POST /api/turn", turn)
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(indexHTML)
-	})
-	log.Printf("voicebot on http://%s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
 }

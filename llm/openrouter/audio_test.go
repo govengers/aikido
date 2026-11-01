@@ -9,13 +9,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 func TestAudioInputOnWire(t *testing.T) {
 	t.Parallel()
 	clip := []byte("\x1aE\xdf\xa3 webm bytes")
-	req := llm.Request{
+	chatRequest := llm.Request{
 		Model: "google/gemini-3.1-flash-lite",
 		Messages: []llm.Message{{
 			Role:    llm.RoleUser,
@@ -25,26 +25,28 @@ func TestAudioInputOnWire(t *testing.T) {
 	}
 	for _, stream := range []bool{true, false} {
 		var captured []byte
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			captured, _ = io.ReadAll(r.Body)
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			captured, _ = io.ReadAll(request.Body)
 			if stream {
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 				return
 			}
-			_, _ = io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+			_, _ = io.WriteString(writer, `{"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
 		}))
-		c := newTestClient(t, srv)
+		client := newTestClient(t, server)
 		var text string
 		var err error
 		if stream {
-			text, _, _, _, err = llm.Collect(context.Background(), c, req)
+			var response llm.Response
+			response, err = llm.Collect(context.Background(), client, chatRequest)
+			text = response.Text
 		} else {
-			var resp llm.Response
-			resp, err = c.Complete(context.Background(), req)
-			text = resp.Text
+			var response llm.Response
+			response, err = client.Complete(context.Background(), chatRequest)
+			text = response.Text
 		}
-		srv.Close()
+		server.Close()
 		if err != nil || text != "hi" {
 			t.Fatalf("stream=%v: text %q err %v", stream, text, err)
 		}
@@ -68,9 +70,9 @@ func TestAudioInputOnWire(t *testing.T) {
 		if len(parts) != 2 || parts[0].Type != "text" || parts[0].Text != "transcribe" {
 			t.Fatalf("stream=%v: parts = %+v", stream, parts)
 		}
-		a := parts[1]
-		if a.Type != "input_audio" || a.InputAudio == nil || a.InputAudio.Format != "webm" || a.InputAudio.Data != base64.StdEncoding.EncodeToString(clip) {
-			t.Errorf("stream=%v: audio part = %+v", stream, a)
+		audioPart := parts[1]
+		if audioPart.Type != "input_audio" || audioPart.InputAudio == nil || audioPart.InputAudio.Format != "webm" || audioPart.InputAudio.Data != base64.StdEncoding.EncodeToString(clip) {
+			t.Errorf("stream=%v: audio part = %+v", stream, audioPart)
 		}
 	}
 }

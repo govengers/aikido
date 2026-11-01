@@ -7,11 +7,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
+	"github.com/govengers/aikido/llm"
 )
 
 // TestUsageAccounting_RequestedOnBothPaths pins the wire contract that makes
@@ -20,43 +20,42 @@ import (
 func TestUsageAccounting_RequestedOnBothPaths(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	testCases := []struct {
 		name string
-		call func(t *testing.T, c *Client)
+		call func(t *testing.T, client *Client)
 		body []byte
 	}{
 		{
 			name: "stream",
-			call: func(t *testing.T, c *Client) {
-				ch, err := c.Stream(context.Background(), llm.Request{Model: "any"})
+			call: func(t *testing.T, client *Client) {
+				stream, err := client.Stream(context.Background(), llm.Request{Model: "any"})
 				if err != nil {
 					t.Fatalf("Stream: %v", err)
 				}
-				_ = drain(t, ch, 2*time.Second)
+				_ = drain(t, stream, 2*time.Second)
 			},
 		},
 		{
 			name: "complete",
-			call: func(t *testing.T, c *Client) {
-				if _, err := c.Complete(context.Background(), llm.Request{Model: "any"}); err != nil {
+			call: func(t *testing.T, client *Client) {
+				if _, err := client.Complete(context.Background(), llm.Request{Model: "any"}); err != nil {
 					t.Fatalf("Complete: %v", err)
 				}
 			},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			var captured []byte
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				captured, _ = io.ReadAll(r.Body)
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`))
-			}))
-			defer srv.Close()
+			server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+				captured, _ = io.ReadAll(request.Body)
+				writer.WriteHeader(http.StatusOK)
+				_, _ = writer.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`))
+			})
 
-			tt.call(t, newTestClient(t, srv))
+			testCase.call(t, newTestClient(t, server))
 
 			if !bytes.Contains(captured, []byte(`"usage":{"include":true}`)) {
 				t.Errorf("request body missing usage accounting: %s", captured)
@@ -77,43 +76,41 @@ func TestUsageAccounting_RequestedOnBothPaths(t *testing.T) {
 // still billed, so the price has to reach the caller with the error.
 func TestComplete_ErrorEnvelopeKeepsUsage(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"error":{"code":"server_error","message":"provider blew up"},` +
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"error":{"code":"server_error","message":"provider blew up"},` +
 			`"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12,"cost":0.00042}}`))
-	}))
-	defer srv.Close()
+	})
 
-	resp, err := newTestClient(t, srv).Complete(context.Background(), llm.Request{Model: "any"})
+	response, err := newTestClient(t, server).Complete(context.Background(), llm.Request{Model: "any"})
 	if !errors.Is(err, llm.ErrServerError) {
 		t.Fatalf("err = %v, want ErrServerError", err)
 	}
-	if resp.Usage == nil {
+	if response.Usage == nil {
 		t.Fatal("usage dropped on the error path")
 	}
-	if resp.Usage.CostUSD != 0.00042 {
-		t.Errorf("CostUSD = %v, want 0.00042", resp.Usage.CostUSD)
+	if response.Usage.CostUSD != 0.00042 {
+		t.Errorf("CostUSD = %v, want 0.00042", response.Usage.CostUSD)
 	}
-	if resp.Usage.PromptTokens != 12 {
-		t.Errorf("PromptTokens = %d, want 12", resp.Usage.PromptTokens)
+	if response.Usage.PromptTokens != 12 {
+		t.Errorf("PromptTokens = %d, want 12", response.Usage.PromptTokens)
 	}
 }
 
 func TestComplete_CostIsMapped(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],` +
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}],` +
 			`"usage":{"prompt_tokens":18,"completion_tokens":4,"total_tokens":22,"cost":0.000066}}`))
-	}))
-	defer srv.Close()
+	})
 
-	resp, err := newTestClient(t, srv).Complete(context.Background(), llm.Request{Model: "any"})
+	response, err := newTestClient(t, server).Complete(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if resp.Usage == nil || resp.Usage.CostUSD != 0.000066 {
-		t.Fatalf("usage = %+v, want CostUSD 0.000066", resp.Usage)
+	if response.Usage == nil || response.Usage.CostUSD != 0.000066 {
+		t.Fatalf("usage = %+v, want CostUSD 0.000066", response.Usage)
 	}
 }
 
@@ -127,24 +124,23 @@ data: {"id":"g","error":{"code":"server_error","message":"boom"},"usage":{"promp
 
 data: [DONE]
 `)
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
+	server := newTestServer(t, sseHandler(body))
 
-	ch, err := newTestClient(t, srv).Stream(context.Background(), llm.Request{Model: "any"})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 2*time.Second)
+	events := drain(t, stream, 2*time.Second)
 
 	kinds := eventKinds(events)
-	usageAt, errAt := indexOf(kinds, llm.EventUsage), indexOf(kinds, llm.EventError)
+	usageAt, errorAt := slices.Index(kinds, llm.EventUsage), slices.Index(kinds, llm.EventError)
 	if usageAt < 0 {
 		t.Fatalf("no usage event; kinds = %v", kinds)
 	}
-	if errAt < 0 {
+	if errorAt < 0 {
 		t.Fatalf("no error event; kinds = %v", kinds)
 	}
-	if usageAt > errAt {
+	if usageAt > errorAt {
 		t.Errorf("usage arrived after the error; kinds = %v", kinds)
 	}
 	if got := events[usageAt].Usage.CostUSD; got != 0.00011 {
@@ -168,24 +164,23 @@ data: {"id":"g","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":1,"t
 
 data: [DONE]
 `)
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
+	server := newTestServer(t, sseHandler(body))
 
-	ch, err := newTestClient(t, srv).Stream(context.Background(), llm.Request{Model: "any"})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 2*time.Second)
+	events := drain(t, stream, 2*time.Second)
 	kinds := eventKinds(events)
 
-	usageAt := indexOf(kinds, llm.EventUsage)
+	usageAt := slices.Index(kinds, llm.EventUsage)
 	if usageAt < 0 {
 		t.Fatalf("trailing usage dropped; kinds = %v", kinds)
 	}
 	if got := events[usageAt].Usage.CostUSD; got != 0.00013 {
 		t.Errorf("CostUSD = %v, want 0.00013", got)
 	}
-	if errAt := indexOf(kinds, llm.EventError); errAt < 0 || errAt > usageAt {
+	if errorAt := slices.Index(kinds, llm.EventError); errorAt < 0 || errorAt > usageAt {
 		t.Errorf("expected the error before the trailing usage; kinds = %v", kinds)
 	}
 	if last := events[len(events)-1].Kind; last != llm.EventEnd {
@@ -205,24 +200,23 @@ data: {"id":"g","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":0,"t
 
 data: [DONE]
 `)
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
+	server := newTestServer(t, sseHandler(body))
 
-	ch, err := newTestClient(t, srv).Stream(context.Background(), llm.Request{Model: "any"})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 2*time.Second)
+	events := drain(t, stream, 2*time.Second)
 	kinds := eventKinds(events)
 
-	usageAt := indexOf(kinds, llm.EventUsage)
+	usageAt := slices.Index(kinds, llm.EventUsage)
 	if usageAt < 0 {
 		t.Fatalf("usage after a content filter dropped; kinds = %v", kinds)
 	}
 	if got := events[usageAt].Usage.CostUSD; got != 0.00002 {
 		t.Errorf("CostUSD = %v, want 0.00002", got)
 	}
-	if err := events[indexOf(kinds, llm.EventError)].Err; !errors.Is(err, llm.ErrContentFiltered) {
+	if err := events[slices.Index(kinds, llm.EventError)].Err; !errors.Is(err, llm.ErrContentFiltered) {
 		t.Errorf("err = %v, want ErrContentFiltered", err)
 	}
 }
@@ -237,39 +231,21 @@ data: {"id":"g","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage
 
 data: [DONE]
 `)
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
+	server := newTestServer(t, sseHandler(body))
 
-	ch, err := newTestClient(t, srv).Stream(context.Background(), llm.Request{Model: "any"})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "any"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 2*time.Second)
+	events := drain(t, stream, 2*time.Second)
 
 	var usages int
-	for _, ev := range events {
-		if ev.Kind == llm.EventUsage {
+	for _, event := range events {
+		if event.Kind == llm.EventUsage {
 			usages++
 		}
 	}
 	if usages != 1 {
 		t.Errorf("usage events = %d, want 1", usages)
 	}
-}
-
-func eventKinds(events []llm.Event) []llm.EventKind {
-	out := make([]llm.EventKind, 0, len(events))
-	for _, ev := range events {
-		out = append(out, ev.Kind)
-	}
-	return out
-}
-
-func indexOf(kinds []llm.EventKind, want llm.EventKind) int {
-	for i, k := range kinds {
-		if k == want {
-			return i
-		}
-	}
-	return -1
 }

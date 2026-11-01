@@ -1,0 +1,8 @@
+# orders service configuration
+service: orders
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/orders
+  timeoutSeconds: 18
+links:
+  help: https://status.acme-legacy.io/orders
+  health: https://api.acme-legacy.io/health

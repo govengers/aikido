@@ -1,0 +1,8 @@
+# shipping service configuration
+service: shipping
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/shipping
+  timeoutSeconds: 8
+links:
+  help: https://docs.acme-legacy.io/shipping
+  health: https://api.acme-legacy.io/health

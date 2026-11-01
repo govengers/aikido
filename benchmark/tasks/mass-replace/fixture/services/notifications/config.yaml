@@ -1,0 +1,8 @@
+# notifications service configuration
+service: notifications
+upstream:
+  baseURL: https://docs.acme-legacy.io/v2/notifications
+  timeoutSeconds: 25
+links:
+  help: https://status.acme-legacy.io/notifications
+  health: https://api.acme-legacy.io/health

@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"strings"
@@ -13,42 +14,52 @@ import (
 // blank lines are skipped. Quoted values ("..." or '...') are unwrapped. A
 // missing file is not an error.
 func LoadDotEnv(path string) error {
-	f, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // G304: the caller names the .env file to load
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
-	defer f.Close()
+	defer file.Close() // read-only; a close error carries no information
 
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		key, value, ok := parseDotEnvLine(scanner.Text())
+		if !ok {
 			continue
 		}
-		eq := strings.IndexByte(line, '=')
-		if eq < 1 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		val = unquote(val)
 		if _, set := os.LookupEnv(key); set {
 			continue
 		}
-		_ = os.Setenv(key, val)
-	}
-	return sc.Err()
-}
-
-func unquote(s string) string {
-	if len(s) >= 2 {
-		first, last := s[0], s[len(s)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			return s[1 : len(s)-1]
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set %s from %s: %w", key, path, err)
 		}
 	}
-	return s
+	return scanner.Err()
+}
+
+// parseDotEnvLine returns the key and unquoted value of a KEY=VALUE line, or
+// false for a blank line, a comment or a line without a key.
+func parseDotEnvLine(line string) (key, value string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", false
+	}
+	key, value, found := strings.Cut(line, "=")
+	key = strings.TrimSpace(key)
+	if !found || key == "" {
+		return "", "", false
+	}
+	return key, unquote(strings.TrimSpace(value)), true
+}
+
+func unquote(value string) string {
+	if len(value) >= 2 {
+		first, last := value[0], value[len(value)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
 }

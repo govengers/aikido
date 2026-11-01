@@ -8,7 +8,9 @@ import "context"
 // duration) instead of ignoring them, so the caller sends only what the model
 // lists as supported.
 type VideoRequest struct {
-	Model  string
+	// Model is the provider's model id.
+	Model string
+	// Prompt describes the clip.
 	Prompt string
 
 	// AspectRatio is "W:H" from the model's supported list. Models that take
@@ -19,8 +21,8 @@ type VideoRequest struct {
 	// Size is an explicit "WIDTHxHEIGHT", for models that list sizes instead
 	// of resolution tiers. Set Size OR AspectRatio+Resolution.
 	Size string
-	// Duration in seconds. The model's list of supported lengths is closed.
-	Duration int
+	// DurationSeconds in seconds. The model's list of supported lengths is closed.
+	DurationSeconds int
 	// GenerateAudio is sent only when non-nil: models without an audio
 	// option refuse the field. Models with audio default to true.
 	GenerateAudio *bool
@@ -39,6 +41,7 @@ type VideoRequest struct {
 
 // VideoResponse is the finished clip.
 type VideoResponse struct {
+	// Video is the encoded clip.
 	Video []byte
 	// ContentType is sniffed from the bytes ("video/mp4"); providers do not
 	// report a reliable one.
@@ -59,5 +62,6 @@ type VideoResponse struct {
 // bounds it with ctx. Implementations map provider errors onto the same Err*
 // sentinels Complete uses; a refused prompt or frame is ErrContentFiltered.
 type VideoGenerator interface {
+	// GenerateVideo runs one generation job to completion and returns the clip.
 	GenerateVideo(ctx context.Context, req VideoRequest) (VideoResponse, error)
 }

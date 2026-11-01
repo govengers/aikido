@@ -8,6 +8,6 @@
 //	schema, _ := json.Marshal(jsonschema.Reflect(&FooArgs{}))
 //
 // Tool handlers capture the dependencies they need (storage, logger, clock) at
-// registration time via closure (ADR-021). The Env passed to a Handler carries
+// registration time via closure (ADR-021). The Environment passed to a Handler carries
 // only fields that genuinely change per dispatch: SessionID and TurnID.
 package tools

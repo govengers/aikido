@@ -1,0 +1,8 @@
+# payments service configuration
+service: payments
+upstream:
+  baseURL: https://api.acme-legacy.io/v2/payments
+  timeoutSeconds: 17
+links:
+  help: https://api.acme-legacy.io/payments
+  health: https://api.acme-legacy.io/health

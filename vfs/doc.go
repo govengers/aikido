@@ -1,10 +1,15 @@
 // Package vfs is the pluggable storage abstraction for AI-managed projects.
 //
-// The base Storage contract is intentionally minimal (4 methods).
-// Optional capabilities — scoping (ScopedStorage) and search (Searchable) —
-// extend it via interface assertion or registration-time binding, mirroring
-// the capability pattern used in mxcd/go-basicauth.
+// The base Storage contract is intentionally minimal (4 methods). Optional
+// capabilities, scoping (ScopedStorage) and search (Searchable), extend it via
+// interface assertion or registration-time binding, mirroring the capability
+// pattern used in govengers/auth.
 //
-// v1 ships memory-only (vfs/memory). Other backends are caller-implemented
-// or come in v1.x / v2.
+// Backends: vfs/memory (in-process, searchable), vfs/osfs (a directory on
+// disk) and vfs/embedfs (any fs.FS, read-only, searchable). Other backends are
+// caller-implemented and verified with vfs/vfstest.RunConformance.
+//
+// Composition: vfs/overlay keeps writes and deletes in memory over any base
+// until Commit (with Changes and UnifiedDiff for review), and vfs/mount
+// combines several backends by path prefix.
 package vfs

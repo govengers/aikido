@@ -1,0 +1,38 @@
+# Helm values for orders-api.
+# Owned by the platform team; keep comments when editing.
+
+replicaCount: 2
+
+image:
+  repository: registry.example.com/orders-api
+  # Bumped by the release pipeline.
+  tag: "1.4.2"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+env:
+  - name: LOG_LEVEL
+    value: "info"
+  - name: DB_HOST
+    value: "db.internal"
+  # Kept for the migration window, remove after 2027-01.
+  - name: LEGACY_MODE
+    value: "false"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Sidecar that ships logs; its memory limit is tuned separately.
+logShipper:
+  enabled: true
+  resources:
+    limits:
+      memory: 512Mi

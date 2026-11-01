@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mxcd/aikido/llm"
-	"github.com/mxcd/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm/openrouter"
 )
 
 var fakePNG = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'x', 'x'}
@@ -24,21 +25,21 @@ func TestRunImage_WritesInlineImageToDisk(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 5, CompletionTokens: 0, CostUSD: 0.0002}},
 		{Kind: llm.EventEnd},
 	}})
-	dir := t.TempDir()
+	directory := t.TempDir()
 	var out bytes.Buffer
-	err := runImage(context.Background(), imageOpts{
-		model:     "google/gemini-3.1-flash-image-preview",
-		outDir:    dir,
-		prompt:    "a fox",
-		maxTokens: 256,
+	err := runImage(context.Background(), imageOptions{
+		model:           "google/gemini-3.1-flash-image-preview",
+		outputDirectory: directory,
+		prompt:          "a fox",
+		maximumTokens:   256,
 	}, &out, stub)
 	if err != nil {
 		t.Fatalf("runImage: %v", err)
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(directory)
 	if err != nil {
-		t.Fatalf("read tmp dir: %v", err)
+		t.Fatalf("read tmp directory: %v", err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("want 1 file, got %d: %+v", len(entries), entries)
@@ -46,7 +47,7 @@ func TestRunImage_WritesInlineImageToDisk(t *testing.T) {
 	if !strings.HasSuffix(entries[0].Name(), ".png") {
 		t.Errorf("unexpected extension: %s", entries[0].Name())
 	}
-	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	data, err := os.ReadFile(filepath.Join(directory, entries[0].Name())) //nolint:gosec // G304: the test reads its own temp output
 	if err != nil {
 		t.Fatalf("read image: %v", err)
 	}
@@ -57,9 +58,9 @@ func TestRunImage_WritesInlineImageToDisk(t *testing.T) {
 		t.Errorf("missing usage line: %q", out.String())
 	}
 
-	reqs := stub.Requests()
-	if len(reqs) != 1 || reqs[0].Model != "google/gemini-3.1-flash-image-preview" {
-		t.Errorf("model not threaded: %+v", reqs)
+	requests := stub.Requests()
+	if len(requests) != 1 || requests[0].Model != "google/gemini-3.1-flash-image-preview" {
+		t.Errorf("model not threaded: %+v", requests)
 	}
 }
 
@@ -68,15 +69,15 @@ func TestRunImage_PrintsURLWhenNoInlineData(t *testing.T) {
 		{Kind: llm.EventImage, Image: &llm.ImagePart{URL: "https://example.com/x.png", ContentType: "image/png"}},
 		{Kind: llm.EventEnd},
 	}})
-	dir := t.TempDir()
+	directory := t.TempDir()
 	var out bytes.Buffer
-	if err := runImage(context.Background(), imageOpts{model: "m", outDir: dir, prompt: "hi"}, &out, stub); err != nil {
+	if err := runImage(context.Background(), imageOptions{model: "m", outputDirectory: directory, prompt: "hi"}, &out, stub); err != nil {
 		t.Fatalf("runImage: %v", err)
 	}
 	if !strings.Contains(out.String(), "https://example.com/x.png") {
 		t.Errorf("missing URL line: %q", out.String())
 	}
-	entries, _ := os.ReadDir(dir)
+	entries, _ := os.ReadDir(directory)
 	if len(entries) != 0 {
 		t.Errorf("unexpected files for URL-only image: %+v", entries)
 	}
@@ -85,7 +86,7 @@ func TestRunImage_PrintsURLWhenNoInlineData(t *testing.T) {
 func TestRunImage_RequiresPrompt(t *testing.T) {
 	stub := llmtest.NewStubClient()
 	var out bytes.Buffer
-	if err := runImage(context.Background(), imageOpts{model: "m", outDir: t.TempDir()}, &out, stub); err == nil {
+	if err := runImage(context.Background(), imageOptions{model: "m", outputDirectory: t.TempDir()}, &out, stub); err == nil {
 		t.Error("expected error for missing prompt")
 	}
 }
@@ -96,7 +97,7 @@ func TestRunImage_ErrorsWhenNoImages(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	var out bytes.Buffer
-	err := runImage(context.Background(), imageOpts{model: "m", outDir: t.TempDir(), prompt: "hi"}, &out, stub)
+	err := runImage(context.Background(), imageOptions{model: "m", outputDirectory: t.TempDir(), prompt: "hi"}, &out, stub)
 	if err == nil || !strings.Contains(err.Error(), "no images") {
 		t.Errorf("expected 'no images' error, got %v", err)
 	}
@@ -115,14 +116,14 @@ func TestImageCommand_EnvVarOverridesModel(t *testing.T) {
 	}
 
 	app := NewApp(factory)
-	dir := t.TempDir()
-	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", dir, "say hi"}); err != nil {
+	directory := t.TempDir()
+	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", directory, "say hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
 	select {
-	case req := <-captured:
-		if req.Model != "custom/model-from-env" {
-			t.Errorf("model = %q, want custom/model-from-env", req.Model)
+	case request := <-captured:
+		if request.Model != "custom/model-from-env" {
+			t.Errorf("model = %q, want custom/model-from-env", request.Model)
 		}
 	default:
 		t.Fatal("no request captured")
@@ -139,21 +140,21 @@ func TestImageCommand_ThreadsAspectAndSize(t *testing.T) {
 		return &capturingClient{inner: stub, sink: captured}, nil
 	}
 	app := NewApp(factory)
-	dir := t.TempDir()
-	args := []string{"aikido", "image", "--out", dir, "-m", "google/gemini-3.1-flash-image-preview", "--aspect", "16:9", "--size", "2K", "wide shot"}
-	if err := app.Run(context.Background(), args); err != nil {
+	directory := t.TempDir()
+	arguments := []string{"aikido", "image", "--out", directory, "-m", "google/gemini-3.1-flash-image-preview", "--aspect", "16:9", "--size", "2K", "wide shot"}
+	if err := app.Run(context.Background(), arguments); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
 	select {
-	case req := <-captured:
-		if req.ImageConfig == nil {
+	case request := <-captured:
+		if request.ImageConfiguration == nil {
 			t.Fatal("ImageConfig not threaded")
 		}
-		if req.ImageConfig.AspectRatio != "16:9" {
-			t.Errorf("AspectRatio = %q, want 16:9", req.ImageConfig.AspectRatio)
+		if request.ImageConfiguration.AspectRatio != "16:9" {
+			t.Errorf("AspectRatio = %q, want 16:9", request.ImageConfiguration.AspectRatio)
 		}
-		if req.ImageConfig.ImageSize != "2K" {
-			t.Errorf("ImageSize = %q, want 2K", req.ImageConfig.ImageSize)
+		if request.ImageConfiguration.ImageSize != "2K" {
+			t.Errorf("ImageSize = %q, want 2K", request.ImageConfiguration.ImageSize)
 		}
 	default:
 		t.Fatal("no request captured")
@@ -170,14 +171,14 @@ func TestImageCommand_OmitsImageConfigWhenUnset(t *testing.T) {
 		return &capturingClient{inner: stub, sink: captured}, nil
 	}
 	app := NewApp(factory)
-	dir := t.TempDir()
-	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", dir, "-m", "google/gemini-3.1-flash-image-preview", "hi"}); err != nil {
+	directory := t.TempDir()
+	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", directory, "-m", "google/gemini-3.1-flash-image-preview", "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
 	select {
-	case req := <-captured:
-		if req.ImageConfig != nil {
-			t.Errorf("ImageConfig = %+v, want nil when flags unset", req.ImageConfig)
+	case request := <-captured:
+		if request.ImageConfiguration != nil {
+			t.Errorf("ImageConfig = %+v, want nil when flags unset", request.ImageConfiguration)
 		}
 	default:
 		t.Fatal("no request captured")
@@ -189,40 +190,40 @@ type capturingClient struct {
 	sink  chan<- llm.Request
 }
 
-func (c *capturingClient) Stream(ctx context.Context, req llm.Request) (<-chan llm.Event, error) {
+func (c *capturingClient) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
 	select {
-	case c.sink <- req:
+	case c.sink <- request:
 	default:
 	}
-	return c.inner.Stream(ctx, req)
+	return c.inner.Stream(ctx, request)
 }
 
-func (c *capturingClient) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+func (c *capturingClient) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
 	select {
-	case c.sink <- req:
+	case c.sink <- request:
 	default:
 	}
-	return c.inner.Complete(ctx, req)
+	return c.inner.Complete(ctx, request)
 }
 
-func (c *capturingClient) GenerateImage(ctx context.Context, req llm.ImageRequest) (llm.ImageResponse, error) {
-	gen, ok := c.inner.(llm.ImageGenerator)
+func (c *capturingClient) GenerateImage(ctx context.Context, request llm.ImageRequest) (llm.ImageResponse, error) {
+	generator, ok := c.inner.(llm.ImageGenerator)
 	if !ok {
 		return llm.ImageResponse{}, errors.New("inner client is not an llm.ImageGenerator")
 	}
-	return gen.GenerateImage(ctx, req)
+	return generator.GenerateImage(ctx, request)
 }
 
 // chatOnlyClient implements llm.Client and nothing else, standing in for a
 // provider that has no images endpoint.
 type chatOnlyClient struct{ inner llm.Client }
 
-func (c *chatOnlyClient) Stream(ctx context.Context, req llm.Request) (<-chan llm.Event, error) {
-	return c.inner.Stream(ctx, req)
+func (c *chatOnlyClient) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
+	return c.inner.Stream(ctx, request)
 }
 
-func (c *chatOnlyClient) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return c.inner.Complete(ctx, req)
+func (c *chatOnlyClient) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
+	return c.inner.Complete(ctx, request)
 }
 
 // imagesStub returns a stub scripted with one PNG on the images endpoint.
@@ -236,23 +237,23 @@ func imagesStub() *llmtest.StubClient {
 }
 
 func TestNormalizeModelID(t *testing.T) {
-	cases := map[string]string{
+	testCases := map[string]string{
 		"openai/gpt-image-2.5-flare":      "openai/gpt-image-2.5-flare",
 		"  openai/gpt-image-2.5-flare  ":  "openai/gpt-image-2.5-flare",
 		"openai/gpt-image-2.5-flare:free": "openai/gpt-image-2.5-flare",
 		" meta/muse-image:nitro ":         "meta/muse-image",
 		"":                                "",
 	}
-	for in, want := range cases {
-		if got := normalizeModelID(in); got != want {
-			t.Errorf("normalizeModelID(%q) = %q, want %q", in, got, want)
+	for input, want := range testCases {
+		if got := normalizeModelID(input); got != want {
+			t.Errorf("normalizeModelID(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
 func TestUsesImagesAPI(t *testing.T) {
 	list := defaultImagesAPIModels
-	cases := []struct {
+	testCases := []struct {
 		model string
 		want  bool
 	}{
@@ -264,9 +265,9 @@ func TestUsesImagesAPI(t *testing.T) {
 		{"openai/gpt-5.4-image-2", false},
 		{"", false},
 	}
-	for _, tc := range cases {
-		if got := usesImagesAPI(tc.model, list); got != tc.want {
-			t.Errorf("usesImagesAPI(%q) = %v, want %v", tc.model, got, tc.want)
+	for _, testCase := range testCases {
+		if got := usesImagesAPI(testCase.model, list); got != testCase.want {
+			t.Errorf("usesImagesAPI(%q) = %v, want %v", testCase.model, got, testCase.want)
 		}
 	}
 	// A list entry may carry the same noise the model id does.
@@ -279,9 +280,9 @@ func TestUsesImagesAPI(t *testing.T) {
 }
 
 func TestParseImagesAPIModels(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
+	testCases := []struct {
+		input string
+		want  []string
 	}{
 		{"a/b,c/d", []string{"a/b", "c/d"}},
 		{" a/b , c/d ", []string{"a/b", "c/d"}},
@@ -290,22 +291,34 @@ func TestParseImagesAPIModels(t *testing.T) {
 		{"", defaultImagesAPIModels},
 		{"  ,  ", defaultImagesAPIModels},
 	}
-	for _, tc := range cases {
-		got := parseImagesAPIModels(tc.in)
-		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
-			t.Errorf("parseImagesAPIModels(%q) = %v, want %v", tc.in, got, tc.want)
+	for _, testCase := range testCases {
+		got := parseImagesAPIModels(testCase.input)
+		if strings.Join(got, "|") != strings.Join(testCase.want, "|") {
+			t.Errorf("parseImagesAPIModels(%q) = %v, want %v", testCase.input, got, testCase.want)
 		}
 	}
 }
 
 // clearImageEnv removes both image env vars for the duration of the test.
-// t.Setenv registers the restore; os.Unsetenv then makes them genuinely absent.
 func clearImageEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"OPENROUTER_IMAGE_MODEL", "OPENROUTER_IMAGES_API_MODELS"} {
-		t.Setenv(k, "")
-		if err := os.Unsetenv(k); err != nil {
-			t.Fatalf("unset %s: %v", k, err)
+	unsetForTest(t, "OPENROUTER_IMAGE_MODEL")
+	unsetForTest(t, "OPENROUTER_IMAGES_API_MODELS")
+}
+
+func TestImageExtension(t *testing.T) {
+	testCases := map[string]string{
+		"image/png":  ".png",
+		"IMAGE/JPEG": ".jpg",
+		"image/jpg":  ".jpg",
+		"image/webp": ".webp",
+		"image/gif":  ".gif",
+		"image/avif": ".bin",
+		"":           ".bin",
+	}
+	for contentType, want := range testCases {
+		if got := imageExtension(contentType); got != want {
+			t.Errorf("imageExtension(%q) = %q, want %q", contentType, got, want)
 		}
 	}
 }
@@ -314,25 +327,25 @@ func TestImageCommand_DefaultModelUsesImagesAPI(t *testing.T) {
 	clearImageEnv(t)
 	stub := imagesStub()
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
-	dir := t.TempDir()
-	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", dir, "a red cube on white"}); err != nil {
+	directory := t.TempDir()
+	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", directory, "a red cube on white"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
 
-	reqs := stub.ImageRequests()
-	if len(reqs) != 1 {
-		t.Fatalf("image requests = %d, want 1", len(reqs))
+	requests := stub.ImageRequests()
+	if len(requests) != 1 {
+		t.Fatalf("image requests = %d, want 1", len(requests))
 	}
-	if reqs[0].Model != defaultImageModel {
-		t.Errorf("model = %q, want %q", reqs[0].Model, defaultImageModel)
+	if requests[0].Model != defaultImageModel {
+		t.Errorf("model = %q, want %q", requests[0].Model, defaultImageModel)
 	}
-	if reqs[0].Prompt != "a red cube on white" {
-		t.Errorf("prompt = %q", reqs[0].Prompt)
+	if requests[0].Prompt != "a red cube on white" {
+		t.Errorf("prompt = %q", requests[0].Prompt)
 	}
-	if n := len(stub.Requests()); n != 0 {
-		t.Errorf("chat requests = %d, want 0 on the images path", n)
+	if calls := len(stub.Requests()); calls != 0 {
+		t.Errorf("chat requests = %d, want 0 on the images path", calls)
 	}
-	entries, _ := os.ReadDir(dir)
+	entries, _ := os.ReadDir(directory)
 	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".png") {
 		t.Errorf("output files = %+v, want one PNG", entries)
 	}
@@ -346,9 +359,9 @@ func TestImageCommand_EmptyEnvFallsBackToDefault(t *testing.T) {
 	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	reqs := stub.ImageRequests()
-	if len(reqs) != 1 || reqs[0].Model != defaultImageModel {
-		t.Errorf("image requests = %+v, want one call on %s", reqs, defaultImageModel)
+	requests := stub.ImageRequests()
+	if len(requests) != 1 || requests[0].Model != defaultImageModel {
+		t.Errorf("image requests = %+v, want one call on %s", requests, defaultImageModel)
 	}
 }
 
@@ -384,8 +397,8 @@ func TestImageCommand_ImagesAPIModelsEnv(t *testing.T) {
 	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "-m", "x/y", "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	if reqs := stub.ImageRequests(); len(reqs) != 1 || reqs[0].Model != "x/y" {
-		t.Errorf("image requests = %+v, want one call on x/y", reqs)
+	if requests := stub.ImageRequests(); len(requests) != 1 || requests[0].Model != "x/y" {
+		t.Errorf("image requests = %+v, want one call on x/y", requests)
 	}
 
 	// flare fell off the list, so it takes chat completions.
@@ -393,15 +406,15 @@ func TestImageCommand_ImagesAPIModelsEnv(t *testing.T) {
 		{Kind: llm.EventImage, Image: &llm.ImagePart{ContentType: "image/png", Data: fakePNG}},
 		{Kind: llm.EventEnd},
 	}})
-	app2 := NewApp(func() (llm.Client, error) { return chat, nil })
-	if err := app2.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "hi"}); err != nil {
+	chatApp := NewApp(func() (llm.Client, error) { return chat, nil })
+	if err := chatApp.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	if reqs := chat.Requests(); len(reqs) != 1 || reqs[0].Model != defaultImageModel {
-		t.Errorf("chat requests = %+v, want one call on %s", reqs, defaultImageModel)
+	if requests := chat.Requests(); len(requests) != 1 || requests[0].Model != defaultImageModel {
+		t.Errorf("chat requests = %+v, want one call on %s", requests, defaultImageModel)
 	}
-	if n := len(chat.ImageRequests()); n != 0 {
-		t.Errorf("image requests = %d, want 0", n)
+	if calls := len(chat.ImageRequests()); calls != 0 {
+		t.Errorf("image requests = %d, want 0", calls)
 	}
 }
 
@@ -411,36 +424,36 @@ func TestImageCommand_FlagBeatsEnv(t *testing.T) {
 
 	stub := imagesStub()
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
-	args := []string{"aikido", "image", "--out", t.TempDir(), "--images-api-models", "openai/gpt-image-2.5-flare", "hi"}
-	if err := app.Run(context.Background(), args); err != nil {
+	arguments := []string{"aikido", "image", "--out", t.TempDir(), "--images-api-models", "openai/gpt-image-2.5-flare", "hi"}
+	if err := app.Run(context.Background(), arguments); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	if reqs := stub.ImageRequests(); len(reqs) != 1 || reqs[0].Model != defaultImageModel {
-		t.Errorf("image requests = %+v, want the flag list to win over the env", reqs)
+	if requests := stub.ImageRequests(); len(requests) != 1 || requests[0].Model != defaultImageModel {
+		t.Errorf("image requests = %+v, want the flag list to win over the env", requests)
 	}
 }
 
 func TestImageCommand_ThreadsQualityAndRefs(t *testing.T) {
 	clearImageEnv(t)
-	ref := filepath.Join(t.TempDir(), "ref.png")
-	if err := os.WriteFile(ref, fakePNG, 0o644); err != nil {
+	referencePath := filepath.Join(t.TempDir(), "ref.png")
+	if err := os.WriteFile(referencePath, fakePNG, 0o600); err != nil {
 		t.Fatalf("write reference: %v", err)
 	}
 	stub := imagesStub()
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
-	args := []string{
+	arguments := []string{
 		"aikido", "image", "--out", t.TempDir(),
-		"--quality", "high", "--aspect", "9:16", "--size", "2K", "--ref", ref,
+		"--quality", "high", "--aspect", "9:16", "--size", "2K", "--ref", referencePath,
 		"a red cube on white",
 	}
-	if err := app.Run(context.Background(), args); err != nil {
+	if err := app.Run(context.Background(), arguments); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	reqs := stub.ImageRequests()
-	if len(reqs) != 1 {
-		t.Fatalf("image requests = %d, want 1", len(reqs))
+	requests := stub.ImageRequests()
+	if len(requests) != 1 {
+		t.Fatalf("image requests = %d, want 1", len(requests))
 	}
-	got := reqs[0]
+	got := requests[0]
 	if got.Quality != "high" || got.Size != "2048x3648" || got.AspectRatio != "" || got.ImageSize != "" {
 		t.Errorf("request = %+v", got)
 	}
@@ -455,25 +468,25 @@ func TestImageCommand_ThreadsQualityAndRefs(t *testing.T) {
 
 func TestImageCommand_RefWithComma(t *testing.T) {
 	clearImageEnv(t)
-	ref := filepath.Join(t.TempDir(), "a,b.png")
-	if err := os.WriteFile(ref, fakePNG, 0o644); err != nil {
+	referencePath := filepath.Join(t.TempDir(), "a,b.png")
+	if err := os.WriteFile(referencePath, fakePNG, 0o600); err != nil {
 		t.Fatalf("write reference: %v", err)
 	}
 	stub := imagesStub()
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
-	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "--ref", ref, "hi"}); err != nil {
+	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "--ref", referencePath, "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	reqs := stub.ImageRequests()
-	if len(reqs) != 1 || len(reqs[0].References) != 1 {
-		t.Fatalf("a comma in the path split the flag: %+v", reqs)
+	requests := stub.ImageRequests()
+	if len(requests) != 1 || len(requests[0].References) != 1 {
+		t.Fatalf("a comma in the path split the flag: %+v", requests)
 	}
 }
 
 func TestRunImage_RefsOnChatPath(t *testing.T) {
-	dir := t.TempDir()
-	ref := filepath.Join(dir, "ref.png")
-	if err := os.WriteFile(ref, fakePNG, 0o644); err != nil {
+	directory := t.TempDir()
+	referencePath := filepath.Join(directory, "ref.png")
+	if err := os.WriteFile(referencePath, fakePNG, 0o600); err != nil {
 		t.Fatalf("write reference: %v", err)
 	}
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
@@ -481,33 +494,33 @@ func TestRunImage_RefsOnChatPath(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	var out bytes.Buffer
-	err := runImage(context.Background(), imageOpts{
-		model:  "google/gemini-3.1-flash-image-preview",
-		outDir: dir,
-		prompt: "a fox",
-		refs:   []string{ref},
+	err := runImage(context.Background(), imageOptions{
+		model:           "google/gemini-3.1-flash-image-preview",
+		outputDirectory: directory,
+		prompt:          "a fox",
+		referencePaths:  []string{referencePath},
 	}, &out, stub)
 	if err != nil {
 		t.Fatalf("runImage: %v", err)
 	}
-	reqs := stub.Requests()
-	if len(reqs) != 1 || len(reqs[0].Messages) != 1 {
-		t.Fatalf("requests = %+v", reqs)
+	requests := stub.Requests()
+	if len(requests) != 1 || len(requests[0].Messages) != 1 {
+		t.Fatalf("requests = %+v", requests)
 	}
-	imgs := reqs[0].Messages[0].Images
-	if len(imgs) != 1 || !strings.HasPrefix(imgs[0].URL, "data:image/png;base64,") {
-		t.Errorf("Messages[0].Images = %+v", imgs)
+	images := requests[0].Messages[0].Images
+	if len(images) != 1 || !strings.HasPrefix(images[0].URL, "data:image/png;base64,") {
+		t.Errorf("Messages[0].Images = %+v", images)
 	}
 }
 
 func TestRunImage_QualityRejectedOnChatPath(t *testing.T) {
 	stub := llmtest.NewStubClient()
 	var out bytes.Buffer
-	err := runImage(context.Background(), imageOpts{
-		model:   "google/gemini-3.1-flash-image-preview",
-		outDir:  t.TempDir(),
-		prompt:  "hi",
-		quality: "high",
+	err := runImage(context.Background(), imageOptions{
+		model:           "google/gemini-3.1-flash-image-preview",
+		outputDirectory: t.TempDir(),
+		prompt:          "hi",
+		quality:         "high",
 	}, &out, stub)
 	if err == nil || !strings.Contains(err.Error(), "--quality") {
 		t.Errorf("err = %v, want a --quality rejection", err)
@@ -517,9 +530,9 @@ func TestRunImage_QualityRejectedOnChatPath(t *testing.T) {
 func TestRunImage_ClientWithoutImageGenerator(t *testing.T) {
 	client := &chatOnlyClient{inner: llmtest.NewStubClient()}
 	var out bytes.Buffer
-	err := runImage(context.Background(), imageOpts{
+	err := runImage(context.Background(), imageOptions{
 		model:           defaultImageModel,
-		outDir:          t.TempDir(),
+		outputDirectory: t.TempDir(),
 		prompt:          "hi",
 		imagesAPIModels: defaultImagesAPIModels,
 	}, &out, client)
@@ -528,22 +541,19 @@ func TestRunImage_ClientWithoutImageGenerator(t *testing.T) {
 	}
 }
 
-func TestLoadReferenceImages(t *testing.T) {
-	dir := t.TempDir()
+func writeReferenceFile(t *testing.T, path string, content []byte) string {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
-	png := filepath.Join(dir, "a.png")
-	if err := os.WriteFile(png, fakePNG, 0o644); err != nil {
-		t.Fatal(err)
-	}
+func TestLoadReferenceImages(t *testing.T) {
+	directory := t.TempDir()
+	png := writeReferenceFile(t, filepath.Join(directory, "a.png"), fakePNG)
 	// No extension: the MIME type has to be sniffed from the bytes.
-	sniffed := filepath.Join(dir, "noext")
-	if err := os.WriteFile(sniffed, fakePNG, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	notAnImage := filepath.Join(dir, "notes.txt")
-	if err := os.WriteFile(notAnImage, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	sniffed := writeReferenceFile(t, filepath.Join(directory, "noext"), fakePNG)
 
 	if got, err := loadReferenceImages(nil); err != nil || got != nil {
 		t.Errorf("loadReferenceImages(nil) = %+v, %v", got, err)
@@ -556,37 +566,41 @@ func TestLoadReferenceImages(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %d, want 2", len(parts))
 	}
-	for i, p := range parts {
-		if p.ContentType != "image/png" {
-			t.Errorf("part %d ContentType = %q, want image/png", i, p.ContentType)
+	for index, part := range parts {
+		if part.ContentType != "image/png" {
+			t.Errorf("part %d ContentType = %q, want image/png", index, part.ContentType)
 		}
-		if p.URL != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(fakePNG) {
-			t.Errorf("part %d URL = %q", i, p.URL)
+		if part.URL != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(fakePNG) {
+			t.Errorf("part %d URL = %q", index, part.URL)
 		}
 	}
+}
 
-	if _, err := loadReferenceImages([]string{notAnImage}); err == nil || !strings.Contains(err.Error(), "not an image") {
-		t.Errorf("err = %v, want a non-image rejection", err)
-	}
-	if _, err := loadReferenceImages([]string{filepath.Join(dir, "missing.png")}); err == nil {
-		t.Error("expected an error for a missing file")
-	}
+func TestLoadReferenceImages_Rejects(t *testing.T) {
+	directory := t.TempDir()
+	png := writeReferenceFile(t, filepath.Join(directory, "a.png"), fakePNG)
+	notAnImage := writeReferenceFile(t, filepath.Join(directory, "notes.txt"), []byte("hello"))
+	big := writeReferenceFile(t, filepath.Join(directory, "big.png"), append(append([]byte{}, fakePNG...), make([]byte, maximumReferenceBytes)...))
 
-	big := filepath.Join(dir, "big.png")
-	if err := os.WriteFile(big, append(append([]byte{}, fakePNG...), make([]byte, maxReferenceBytes)...), 0o644); err != nil {
-		t.Fatal(err)
+	testCases := []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{"not an image", []string{notAnImage}, "not an image"},
+		{"missing file", []string{filepath.Join(directory, "missing.png")}, "no such file"},
+		{"over the size budget", []string{big}, "exceed"},
+		// The budget is for all references together, not per file.
+		{"budget spans every reference", []string{png, big}, "exceed"},
+		// A directory is not a regular file and must be rejected before any read.
+		{"directory", []string{directory}, "regular file"},
 	}
-	if _, err := loadReferenceImages([]string{big}); err == nil || !strings.Contains(err.Error(), "exceed") {
-		t.Errorf("err = %v, want a size-budget rejection", err)
-	}
-	// The budget is for all references together, not per file.
-	if _, err := loadReferenceImages([]string{png, big}); err == nil || !strings.Contains(err.Error(), "exceed") {
-		t.Errorf("err = %v, want the budget to span every reference", err)
-	}
-
-	// A directory is not a regular file and must be rejected before any read.
-	if _, err := loadReferenceImages([]string{dir}); err == nil || !strings.Contains(err.Error(), "regular file") {
-		t.Errorf("err = %v, want a non-regular-file rejection", err)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := loadReferenceImages(testCase.paths); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("err = %v, want one containing %q", err, testCase.want)
+			}
+		})
 	}
 }
 
@@ -616,26 +630,32 @@ func TestHintImagesAPI(t *testing.T) {
 	if hintImagesAPI(nil) != nil {
 		t.Error("nil error must stay nil")
 	}
-	plain := errors.New("openrouter: status 401: bad key")
-	if got := hintImagesAPI(plain); got != plain {
-		t.Errorf("unrelated error was rewritten: %v", got)
-	}
-	for _, msg := range []string{
-		`openrouter: status 404: this model is only available via the /api/v1/images endpoint`,
-		`openrouter: status 400: model does not support the requested output modalities`,
+	for _, unrelated := range []error{
+		&openrouter.APIError{StatusCode: 401, Message: "bad key"},
+		errors.New("openrouter: status 404: only available via the /api/v1/images endpoint"), // text alone is no signal
 	} {
-		got := hintImagesAPI(errors.New(msg))
-		if !strings.Contains(got.Error(), "OPENROUTER_IMAGES_API_MODELS") {
-			t.Errorf("hint missing for %q: %v", msg, got)
+		if got := hintImagesAPI(unrelated); got.Error() != unrelated.Error() {
+			t.Errorf("unrelated error was rewritten: %v", got)
 		}
-		if !strings.Contains(got.Error(), msg) {
-			t.Errorf("original message lost: %v", got)
+	}
+	for _, apiError := range []*openrouter.APIError{
+		{StatusCode: 404, Message: "This model is only available via the /api/v1/images endpoint"},
+		{StatusCode: 400, Message: "model does not support the requested output modalities"},
+	} {
+		wrapped := fmt.Errorf("complete: %w", apiError)
+		got := hintImagesAPI(wrapped)
+		want := wrapped.Error() + " (model may need the images endpoint: add it to OPENROUTER_IMAGES_API_MODELS)"
+		if got.Error() != want {
+			t.Errorf("hintImagesAPI = %q; want %q", got, want)
+		}
+		if !errors.Is(got, apiError) {
+			t.Errorf("hint dropped the error chain: %v", got)
 		}
 	}
 }
 
 func TestImagesAPISize(t *testing.T) {
-	cases := []struct{ aspect, tier, want string }{
+	testCases := []struct{ aspect, tier, want string }{
 		{"4:5", "", "1024x1280"},
 		{"4:5", "1K", "1024x1280"},
 		{"5:4", "1k", "1280x1024"},
@@ -653,26 +673,26 @@ func TestImagesAPISize(t *testing.T) {
 		{"4:5", "4K", "2576x3216"},
 		{" 4:5 ", "", "1024x1280"},
 	}
-	for _, tc := range cases {
-		got, err := imagesAPISize(tc.aspect, tc.tier)
-		if err != nil || got != tc.want {
-			t.Errorf("imagesAPISize(%q, %q) = %q, %v; want %q", tc.aspect, tc.tier, got, err, tc.want)
+	for _, testCase := range testCases {
+		got, err := imagesAPISize(testCase.aspect, testCase.tier)
+		if err != nil || got != testCase.want {
+			t.Errorf("imagesAPISize(%q, %q) = %q, %v; want %q", testCase.aspect, testCase.tier, got, err, testCase.want)
 			continue
 		}
-		var w, h int
-		if _, err := fmt.Sscanf(got, "%dx%d", &w, &h); err != nil {
+		var width, height int
+		if _, err := fmt.Sscanf(got, "%dx%d", &width, &height); err != nil {
 			t.Fatalf("parse %q: %v", got, err)
 		}
-		if w%16 != 0 || h%16 != 0 || max(w, h) > imagesMaxEdge || w*h > imagesMaxPixels {
+		if width%16 != 0 || height%16 != 0 || max(width, height) > imagesMaximumEdge || width*height > imagesMaximumPixels {
 			t.Errorf("%q breaks the endpoint limits", got)
 		}
 	}
 }
 
 func TestImagesAPISize_Unsupported(t *testing.T) {
-	for _, tc := range []struct{ aspect, tier string }{{"1:4", ""}, {"8:1", "2K"}, {"4:5", "0.5K"}} {
-		if _, err := imagesAPISize(tc.aspect, tc.tier); !errors.Is(err, errFrameUnsupported) {
-			t.Errorf("imagesAPISize(%q, %q) err = %v, want errFrameUnsupported", tc.aspect, tc.tier, err)
+	for _, testCase := range []struct{ aspect, tier string }{{"1:4", ""}, {"8:1", "2K"}, {"4:5", "0.5K"}} {
+		if _, err := imagesAPISize(testCase.aspect, testCase.tier); !errors.Is(err, errFrameUnsupported) {
+			t.Errorf("imagesAPISize(%q, %q) err = %v, want errFrameUnsupported", testCase.aspect, testCase.tier, err)
 		}
 	}
 	for _, bad := range []string{"4x5", "a:b", "0:5", "4:", "-4:5"} {
@@ -689,9 +709,9 @@ func TestImageCommand_DefaultModelSendsPixelsFor45(t *testing.T) {
 	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "4:5", "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	reqs := stub.ImageRequests()
-	if len(reqs) != 1 || reqs[0].Size != "1024x1280" || reqs[0].AspectRatio != "" || reqs[0].ImageSize != "" {
-		t.Errorf("image requests = %+v, want one call with size 1024x1280 only", reqs)
+	requests := stub.ImageRequests()
+	if len(requests) != 1 || requests[0].Size != "1024x1280" || requests[0].AspectRatio != "" || requests[0].ImageSize != "" {
+		t.Errorf("image requests = %+v, want one call with size 1024x1280 only", requests)
 	}
 }
 
@@ -702,8 +722,8 @@ func TestImageCommand_AutoAspectPassesThrough(t *testing.T) {
 	if err := app.Run(context.Background(), []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "auto", "hi"}); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	if reqs := stub.ImageRequests(); len(reqs) != 1 || reqs[0].AspectRatio != "auto" || reqs[0].Size != "" {
-		t.Errorf("image requests = %+v, want aspect auto passed through", reqs)
+	if requests := stub.ImageRequests(); len(requests) != 1 || requests[0].AspectRatio != "auto" || requests[0].Size != "" {
+		t.Errorf("image requests = %+v, want aspect auto passed through", requests)
 	}
 }
 
@@ -714,36 +734,45 @@ func TestImageCommand_UnsupportedFrameFallsBackForDefaultModel(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	app := NewApp(func() (llm.Client, error) { return chat, nil })
-	args := []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "1:4", "--quality", "low", "hi"}
-	if err := app.Run(context.Background(), args); err != nil {
+	var stdout, stderr bytes.Buffer
+	app.Writer, app.ErrWriter = &stdout, &stderr
+	arguments := []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "1:4", "--quality", "low", "hi"}
+	if err := app.Run(context.Background(), arguments); err != nil {
 		t.Fatalf("app.Run: %v", err)
 	}
-	reqs := chat.Requests()
-	if len(reqs) != 1 || reqs[0].Model != fallbackImageModel || reqs[0].ImageConfig == nil || reqs[0].ImageConfig.AspectRatio != "1:4" {
-		t.Errorf("chat requests = %+v, want one %s call with 1:4", reqs, fallbackImageModel)
+	wantNotice := "aikido: " + defaultImageModel + " cannot render --aspect 1:4, using " + fallbackImageModel + "\n"
+	if stderr.String() != wantNotice {
+		t.Errorf("stderr = %q, want the fallback notice %q", stderr.String(), wantNotice)
 	}
-	if n := len(chat.ImageRequests()); n != 0 {
-		t.Errorf("image requests = %d, want 0", n)
+	if strings.Contains(stdout.String(), "cannot render") {
+		t.Errorf("the fallback notice leaked to stdout: %q", stdout.String())
+	}
+	requests := chat.Requests()
+	if len(requests) != 1 || requests[0].Model != fallbackImageModel || requests[0].ImageConfiguration == nil || requests[0].ImageConfiguration.AspectRatio != "1:4" {
+		t.Errorf("chat requests = %+v, want one %s call with 1:4", requests, fallbackImageModel)
+	}
+	if calls := len(chat.ImageRequests()); calls != 0 {
+		t.Errorf("image requests = %d, want 0", calls)
 	}
 }
 
 func TestImageCommand_UnsupportedFrameErrorsForExplicitModel(t *testing.T) {
 	for _, viaEnv := range []bool{false, true} {
 		clearImageEnv(t)
-		args := []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "1:4"}
+		arguments := []string{"aikido", "image", "--out", t.TempDir(), "--aspect", "1:4"}
 		if viaEnv {
 			t.Setenv("OPENROUTER_IMAGE_MODEL", defaultImageModel)
 		} else {
-			args = append(args, "-m", defaultImageModel)
+			arguments = append(arguments, "-m", defaultImageModel)
 		}
 		stub := imagesStub()
 		app := NewApp(func() (llm.Client, error) { return stub, nil })
-		err := app.Run(context.Background(), append(args, "hi"))
+		err := app.Run(context.Background(), append(arguments, "hi"))
 		if err == nil || !strings.Contains(err.Error(), "-m "+fallbackImageModel) {
 			t.Errorf("viaEnv=%v: err = %v, want a hint naming %s", viaEnv, err, fallbackImageModel)
 		}
-		if n := len(stub.ImageRequests()) + len(stub.Requests()); n != 0 {
-			t.Errorf("viaEnv=%v: %d provider calls, want 0", viaEnv, n)
+		if calls := len(stub.ImageRequests()) + len(stub.Requests()); calls != 0 {
+			t.Errorf("viaEnv=%v: %d provider calls, want 0", viaEnv, calls)
 		}
 	}
 }

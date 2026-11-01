@@ -2,17 +2,33 @@ package llm
 
 import "errors"
 
-// Errors providers wrap with %w when mapping HTTP status to a typed cause.
+// Errors providers wrap with %w when mapping a failure to a typed cause.
+// Match them with errors.Is; the message around them is not part of the API.
 var (
-	ErrAuth           = errors.New("aikido/llm: authentication failed")
-	ErrRateLimited    = errors.New("aikido/llm: rate limited")
-	ErrServerError    = errors.New("aikido/llm: provider server error")
+	// ErrAuthentication is a rejected or missing credential, or an account
+	// that cannot pay (HTTP 401, 402, 403). Retrying does not help.
+	ErrAuthentication = errors.New("aikido/llm: authentication failed")
+	// ErrRateLimited is HTTP 429. The provider clients in this module retry it
+	// themselves (llm/openrouter honoring Retry-After), so it surfaces once
+	// their attempts are exhausted.
+	ErrRateLimited = errors.New("aikido/llm: rate limited")
+	// ErrServerError is a provider-side failure (HTTP 5xx, 408, a broken
+	// stream) that may pass on a retry; see IsTransientServerError.
+	ErrServerError = errors.New("aikido/llm: provider server error")
+	// ErrInvalidRequest is a request the provider refused (other HTTP 4xx) or
+	// that a client or helper rejected before sending. Retrying does not help.
 	ErrInvalidRequest = errors.New("aikido/llm: invalid request")
+	// ErrInvalidResponse is an answer the client cannot use: a success status
+	// whose body does not decode, or a body or stream above the client's size
+	// caps. It is not transient (IsTransientServerError is false): sending the
+	// same request again is not expected to fix it, and the failed call may
+	// already have been billed.
+	ErrInvalidResponse = errors.New("aikido/llm: invalid provider response")
 
 	// ErrContentFiltered is wrapped when the provider's safety policy aborts a
 	// generation. Detected from finish_reason="content_filter" on a streamed
 	// chunk OR a structured error envelope whose code/type signals content
-	// filtering. Callers should NOT retry — the same prompt will trip the
+	// filtering. Callers should NOT retry: the same prompt will trip the
 	// classifier deterministically.
 	//
 	// Note: providers sometimes mid-stream RST without sending a structured

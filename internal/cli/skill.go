@@ -17,7 +17,7 @@ import (
 const skillName = "aikido"
 
 // skillMarkdown is the SKILL.md shipped with the binary. It teaches a Claude
-// Code agent to drive this CLI — chiefly for high-quality image generation.
+// Code agent to drive this CLI, chiefly for high-quality image generation.
 //
 //go:embed skills/SKILL.md
 var skillMarkdown string
@@ -27,7 +27,7 @@ func skillCommand() *urfavecli.Command {
 		Name:  "skill",
 		Usage: "Install the aikido Claude Code skill",
 		Description: "Writes the bundled SKILL.md into a Claude Code skills directory so\n" +
-			"Claude learns to use this CLI — especially for generating high-quality images.",
+			"Claude learns to use this CLI, especially for generating high-quality images.",
 		Commands: []*urfavecli.Command{
 			skillInstallCommand(),
 		},
@@ -58,64 +58,71 @@ func skillInstallCommand() *urfavecli.Command {
 				Usage: "Print the skill markdown to stdout instead of installing",
 			},
 		},
-		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
-			return runSkillInstall(skillInstallOpts{
-				scope: cmd.String("scope"),
-				dir:   cmd.String("dir"),
-				force: cmd.Bool("force"),
-				print: cmd.Bool("print"),
-			}, resolveWriter(cmd))
+		Action: func(_ context.Context, command *urfavecli.Command) error {
+			return runSkillInstall(skillInstallOptions{
+				scope:     command.String("scope"),
+				directory: command.String("dir"),
+				force:     command.Bool("force"),
+				print:     command.Bool("print"),
+			}, resolveWriter(command))
 		},
 	}
 }
 
-type skillInstallOpts struct {
-	scope string
-	dir   string
-	force bool
-	print bool
+type skillInstallOptions struct {
+	scope     string
+	directory string
+	force     bool
+	print     bool
 }
 
-func runSkillInstall(o skillInstallOpts, out io.Writer) error {
-	if o.print {
+func runSkillInstall(options skillInstallOptions, out io.Writer) error {
+	if options.print {
 		_, err := io.WriteString(out, skillMarkdown)
 		return err
 	}
-
-	root, err := skillsRoot(o.scope, o.dir)
+	root, err := skillsRoot(options.scope, options.directory)
 	if err != nil {
 		return err
 	}
-
-	skillDir := filepath.Join(root, skillName)
-	target := filepath.Join(skillDir, "SKILL.md")
-
-	if !o.force {
-		switch _, statErr := os.Stat(target); {
-		case statErr == nil:
-			return fmt.Errorf("%s already exists; pass --force to overwrite", target)
-		case !errors.Is(statErr, os.ErrNotExist):
-			return fmt.Errorf("stat %s: %w", target, statErr)
+	skillDirectory := filepath.Join(root, skillName)
+	target := filepath.Join(skillDirectory, "SKILL.md")
+	if !options.force {
+		if err := refuseExisting(target); err != nil {
+			return err
 		}
 	}
-
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", skillDir, err)
+	//nolint:gosec // G301: a config directory holding no secrets; umask applies
+	if err := os.MkdirAll(skillDirectory, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", skillDirectory, err)
 	}
+	//nolint:gosec // G306: the published skill text, no secret; umask applies
 	if err := os.WriteFile(target, []byte(skillMarkdown), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}
-
 	fmt.Fprintf(out, "installed aikido skill → %s\n", target)
 	fmt.Fprintf(out, "invoke it in Claude Code with /%s, or it triggers automatically on image-generation requests\n", skillName)
 	return nil
 }
 
-// skillsRoot resolves the Claude Code skills directory. An explicit dir wins;
-// otherwise scope selects the user-global or project-local convention.
-func skillsRoot(scope, dir string) (string, error) {
-	if dir != "" {
-		return dir, nil
+// refuseExisting returns an error if target exists or cannot be checked.
+func refuseExisting(target string) error {
+	_, err := os.Stat(target)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%s already exists; pass --force to overwrite", target)
+	case errors.Is(err, os.ErrNotExist):
+		return nil
+	default:
+		return fmt.Errorf("stat %s: %w", target, err)
+	}
+}
+
+// skillsRoot resolves the Claude Code skills directory. An explicit directory
+// wins; otherwise scope selects the user-global or project-local convention.
+func skillsRoot(scope, directory string) (string, error) {
+	if directory != "" {
+		return directory, nil
 	}
 	switch scope {
 	case "", "user":

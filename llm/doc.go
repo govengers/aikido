@@ -4,5 +4,7 @@
 // The shapes here are deliberately the lowest common denominator across
 // providers. Provider-specific knobs live on each provider's Options struct.
 //
-// See [docs/v1/API.md] for the rationale behind every type.
+// Optional capabilities (ImageGenerator, SpeechGenerator, VideoGenerator,
+// Decider) are separate interfaces; Collect, CollectWithRetry and Transcribe
+// work on any Client. Guide: docs/wiki/Models.md in the repository.
 package llm

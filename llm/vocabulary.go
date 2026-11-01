@@ -1,18 +1,30 @@
 package llm
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
-// MaxVocabularyPromptTerms and MaxVocabularyPromptBytes cap how much of
+// MaximumVocabularyPromptTerms and MaximumVocabularyPromptBytes cap how much of
 // Vocabulary.Terms goes into the transcription prompt. Terms past the cap are
 // still used for post-correction.
 const (
-	MaxVocabularyPromptTerms = 200
-	MaxVocabularyPromptBytes = 3000
+	MaximumVocabularyPromptTerms = 200
+	MaximumVocabularyPromptBytes = 3000
+)
+
+// Limits of the matching Vocabulary.Correct documents.
+const (
+	// maximumTermWindow bounds how many heard words one term may span ("L I V 6 0 G").
+	maximumTermWindow = 6
+	// maximumFuzzyWindow bounds how many heard words a fuzzy match may span.
+	maximumFuzzyWindow       = 3
+	minimumFuzzyWordLength   = 4
+	minimumFuzzyTermLength   = 6
+	minimumTwoEditTermLength = 9
 )
 
 // Vocabulary is a dictionary of well-known terms that corrects voice input in
@@ -31,77 +43,16 @@ const (
 //     1 (2 from 9 letters on), same first letter, and every heard word at
 //     least 4 letters long: "Duschtase" becomes "Duschtasse". Short common
 //     words are never touched.
+//
+// A Vocabulary is read-only during Correct and may be shared between
+// goroutines as long as nobody modifies it.
 type Vocabulary struct {
-	Terms        []string
+	// Terms are the canonical spellings, in the order they go into the prompt.
+	Terms []string
+	// Replacements maps a heard variant to its canonical term.
 	Replacements map[string]string
-	Fuzzy        bool
-}
-
-// promptLine is the instruction block appended to the transcription prompt,
-// or "" without terms.
-func (v *Vocabulary) promptLine() string {
-	if v == nil {
-		return ""
-	}
-	var b strings.Builder
-	n := 0
-	for _, t := range v.Terms {
-		t = strings.TrimSpace(t)
-		if t == "" {
-			continue
-		}
-		if n == MaxVocabularyPromptTerms || b.Len()+len(t)+2 > MaxVocabularyPromptBytes {
-			break
-		}
-		if n > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(t)
-		n++
-	}
-	if n == 0 {
-		return ""
-	}
-	return "Expected terms; when you hear one, spell it exactly like this: " + b.String() + "."
-}
-
-type token struct {
-	start, end int    // byte span in the text
-	norm       string // lowercase
-}
-
-func tokenize(s string) []token {
-	var toks []token
-	start := -1
-	for i, r := range s {
-		word := unicode.IsLetter(r) || unicode.IsDigit(r)
-		switch {
-		case word && start < 0:
-			start = i
-		case !word && start >= 0:
-			toks = append(toks, token{start, i, strings.ToLower(s[start:i])})
-			start = -1
-		}
-	}
-	if start >= 0 {
-		toks = append(toks, token{start, len(s), strings.ToLower(s[start:])})
-	}
-	return toks
-}
-
-func joinNorm(toks []token) string {
-	var b strings.Builder
-	for _, t := range toks {
-		b.WriteString(t.norm)
-	}
-	return b.String()
-}
-
-type rule struct {
-	words []string // replacement variant, tokenized
-	key   string   // term, normalized with no separators
-	canon string
-	fuzzy bool
+	// Fuzzy enables the near-miss matching of step 3.
+	Fuzzy bool
 }
 
 // Correct returns text with the vocabulary applied. A nil Vocabulary returns
@@ -110,132 +61,277 @@ func (v *Vocabulary) Correct(text string) string {
 	if v == nil || text == "" {
 		return text
 	}
-	var reps, terms []rule
-	for heard, canon := range v.Replacements {
-		var words []string
-		for _, t := range tokenize(heard) {
-			words = append(words, t.norm)
+	rules := correctionRules{
+		replacements: compileReplacements(v.Replacements),
+		terms:        compileTerms(v.Terms, v.Fuzzy),
+	}
+	return rules.apply(text)
+}
+
+// promptLine is the instruction block appended to the transcription prompt,
+// or "" without terms.
+func (v *Vocabulary) promptLine() string {
+	if v == nil {
+		return ""
+	}
+	var termList strings.Builder
+	count := 0
+	for _, term := range v.Terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
 		}
-		if len(words) > 0 && canon != "" {
-			reps = append(reps, rule{words: words, canon: canon})
+		if count == MaximumVocabularyPromptTerms || termList.Len()+len(term)+len(", ") > MaximumVocabularyPromptBytes {
+			break
+		}
+		if count > 0 {
+			termList.WriteString(", ")
+		}
+		termList.WriteString(term)
+		count++
+	}
+	if count == 0 {
+		return ""
+	}
+	return "Expected terms; when you hear one, spell it exactly like this: " + termList.String() + "."
+}
+
+type token struct {
+	start, end int // byte span in the text
+	normalized string
+}
+
+type replacementRule struct {
+	heardWords []string
+	canonical  string
+}
+
+type termRule struct {
+	key       string // the term's normalized words joined without separators
+	keyRunes  []rune
+	canonical string
+	fuzzy     bool
+}
+
+type correctionRules struct {
+	replacements []replacementRule
+	terms        []termRule
+}
+
+// compileReplacements returns the replacement rules, the variant with the
+// most words first, then in a fixed order so map iteration never decides.
+func compileReplacements(replacements map[string]string) []replacementRule {
+	var rules []replacementRule
+	for heard, canonical := range replacements {
+		words := normalizedWords(heard)
+		if len(words) > 0 && canonical != "" {
+			rules = append(rules, replacementRule{heardWords: words, canonical: canonical})
 		}
 	}
-	// Longest variant first, then a stable order so a map never decides.
-	sort.Slice(reps, func(i, j int) bool {
-		if len(reps[i].words) != len(reps[j].words) {
-			return len(reps[i].words) > len(reps[j].words)
-		}
-		return strings.Join(reps[i].words, " ") < strings.Join(reps[j].words, " ")
+	slices.SortFunc(rules, func(left, right replacementRule) int {
+		return cmp.Or(
+			cmp.Compare(len(right.heardWords), len(left.heardWords)),
+			cmp.Compare(strings.Join(left.heardWords, " "), strings.Join(right.heardWords, " ")),
+			cmp.Compare(left.canonical, right.canonical),
+		)
 	})
-	for _, t := range v.Terms {
-		key := joinNorm(tokenize(t))
+	return rules
+}
+
+// compileTerms returns the term rules, the longest key first so a fuzzy match
+// prefers the longer term; terms of equal length keep their order.
+func compileTerms(terms []string, fuzzy bool) []termRule {
+	var rules []termRule
+	for _, term := range terms {
+		key := joinNormalized(tokenize(term))
 		if key == "" {
 			continue
 		}
-		terms = append(terms, rule{key: key, canon: strings.TrimSpace(t), fuzzy: v.Fuzzy && utf8.RuneCountInString(key) >= 6})
+		keyRunes := []rune(key)
+		rules = append(rules, termRule{
+			key:       key,
+			keyRunes:  keyRunes,
+			canonical: strings.TrimSpace(term),
+			fuzzy:     fuzzy && len(keyRunes) >= minimumFuzzyTermLength,
+		})
 	}
-	sort.SliceStable(terms, func(i, j int) bool { return len(terms[i].key) > len(terms[j].key) })
-
-	toks := tokenize(text)
-	var b strings.Builder
-	last := 0
-	for i := 0; i < len(toks); {
-		n, canon := matchAt(toks[i:], reps, terms)
-		if n == 0 {
-			i++
-			continue
-		}
-		b.WriteString(text[last:toks[i].start])
-		b.WriteString(canon)
-		last = toks[i+n-1].end
-		i += n
-	}
-	b.WriteString(text[last:])
-	return b.String()
+	slices.SortStableFunc(rules, func(left, right termRule) int {
+		return cmp.Compare(len(right.key), len(left.key))
+	})
+	return rules
 }
 
-// maxTermWindow bounds how many heard words one term may span ("L I V 6 0 G").
-const maxTermWindow = 6
+// apply replaces every matched run of tokens with its canonical term and keeps
+// the text between matches as it is.
+func (r correctionRules) apply(text string) string {
+	tokens := tokenize(text)
+	var corrected strings.Builder
+	copiedUntil := 0
+	for index := 0; index < len(tokens); {
+		tokenCount, canonical := r.matchAt(tokens[index:])
+		if tokenCount == 0 {
+			index++
+			continue
+		}
+		corrected.WriteString(text[copiedUntil:tokens[index].start])
+		corrected.WriteString(canonical)
+		copiedUntil = tokens[index+tokenCount-1].end
+		index += tokenCount
+	}
+	corrected.WriteString(text[copiedUntil:])
+	return corrected.String()
+}
 
-func matchAt(toks []token, reps, terms []rule) (int, string) {
-	for _, r := range reps {
-		if len(r.words) > len(toks) {
-			continue
-		}
-		ok := true
-		for k, w := range r.words {
-			if toks[k].norm != w {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return len(r.words), r.canon
+// matchAt returns how many of the leading tokens the best rule covers and its
+// canonical term, or 0 and "" when no rule matches.
+func (r correctionRules) matchAt(tokens []token) (int, string) {
+	if tokenCount, canonical := matchReplacement(r.replacements, tokens); tokenCount > 0 {
+		return tokenCount, canonical
+	}
+	if tokenCount, canonical := matchExactTerm(r.terms, tokens); tokenCount > 0 {
+		return tokenCount, canonical
+	}
+	return matchFuzzyTerm(r.terms, tokens)
+}
+
+func matchReplacement(replacements []replacementRule, tokens []token) (int, string) {
+	for _, replacement := range replacements {
+		if startsWithWords(tokens, replacement.heardWords) {
+			return len(replacement.heardWords), replacement.canonical
 		}
 	}
-	// Exact match over the widest window first, so "liv 60 g" wins over "liv".
-	for n := min(maxTermWindow, len(toks)); n >= 1; n-- {
-		heard := joinNorm(toks[:n])
-		for _, t := range terms {
-			if heard == t.key {
-				return n, t.canon
-			}
-		}
-	}
-	for n := min(3, len(toks)); n >= 1; n-- {
-		short := false
-		for _, t := range toks[:n] {
-			if utf8.RuneCountInString(t.norm) < 4 {
-				short = true
-			}
-		}
-		if short {
-			continue
-		}
-		heard := []rune(joinNorm(toks[:n]))
-		for _, t := range terms {
-			if !t.fuzzy {
-				continue
-			}
-			key := []rune(t.key)
-			maxDist := 1
-			if len(key) >= 9 {
-				maxDist = 2
-			}
-			if heard[0] != key[0] || abs(len(heard)-len(key)) > maxDist {
-				continue
-			}
-			if levenshtein(heard, key) <= maxDist {
-				return n, t.canon
+	return 0, ""
+}
+
+// matchExactTerm tries the widest window first, so "liv 60 g" wins over "liv".
+func matchExactTerm(terms []termRule, tokens []token) (int, string) {
+	for width := min(maximumTermWindow, len(tokens)); width >= 1; width-- {
+		heard := joinNormalized(tokens[:width])
+		for _, term := range terms {
+			if heard == term.key {
+				return width, term.canonical
 			}
 		}
 	}
 	return 0, ""
 }
 
-func abs(x int) int {
-	if x < 0 {
-		return -x
+func matchFuzzyTerm(terms []termRule, tokens []token) (int, string) {
+	for width := min(maximumFuzzyWindow, len(tokens)); width >= 1; width-- {
+		window := tokens[:width]
+		if containsShortWord(window) {
+			continue
+		}
+		heard := []rune(joinNormalized(window))
+		for _, term := range terms {
+			if term.fuzzy && nearMatch(heard, term.keyRunes) {
+				return width, term.canonical
+			}
+		}
 	}
-	return x
+	return 0, ""
 }
 
-func levenshtein(a, b []rune) int {
-	prev := make([]int, len(b)+1)
-	cur := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
+func startsWithWords(tokens []token, words []string) bool {
+	if len(words) > len(tokens) {
+		return false
 	}
-	for i := 1; i <= len(a); i++ {
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+	for index, word := range words {
+		if tokens[index].normalized != word {
+			return false
 		}
-		prev, cur = cur, prev
 	}
-	return prev[len(b)]
+	return true
+}
+
+func containsShortWord(tokens []token) bool {
+	return slices.ContainsFunc(tokens, func(word token) bool {
+		return utf8.RuneCountInString(word.normalized) < minimumFuzzyWordLength
+	})
+}
+
+// nearMatch reports whether heard is within the edit distance key allows and
+// starts with the same letter. Both must be non-empty.
+func nearMatch(heard, key []rune) bool {
+	maximumDistance := allowedEditDistance(len(key))
+	if heard[0] != key[0] || absoluteDifference(len(heard), len(key)) > maximumDistance {
+		return false
+	}
+	return levenshtein(heard, key) <= maximumDistance
+}
+
+func allowedEditDistance(keyLength int) int {
+	if keyLength >= minimumTwoEditTermLength {
+		return 2
+	}
+	return 1
+}
+
+// tokenize splits text into runs of letters and digits, lowercased.
+func tokenize(text string) []token {
+	var tokens []token
+	start := -1
+	for offset, character := range text {
+		inWord := unicode.IsLetter(character) || unicode.IsDigit(character)
+		switch {
+		case inWord && start < 0:
+			start = offset
+		case !inWord && start >= 0:
+			tokens = append(tokens, token{start, offset, strings.ToLower(text[start:offset])})
+			start = -1
+		}
+	}
+	if start >= 0 {
+		tokens = append(tokens, token{start, len(text), strings.ToLower(text[start:])})
+	}
+	return tokens
+}
+
+func normalizedWords(text string) []string {
+	var words []string
+	for _, word := range tokenize(text) {
+		words = append(words, word.normalized)
+	}
+	return words
+}
+
+func joinNormalized(tokens []token) string {
+	var joined strings.Builder
+	for _, word := range tokens {
+		joined.WriteString(word.normalized)
+	}
+	return joined.String()
+}
+
+func absoluteDifference(first, second int) int {
+	if first < second {
+		return second - first
+	}
+	return first - second
+}
+
+// levenshtein is the edit distance between source and target, computed with
+// two rolling rows.
+func levenshtein(source, target []rune) int {
+	previousRow := make([]int, len(target)+1)
+	currentRow := make([]int, len(target)+1)
+	for targetIndex := range previousRow {
+		previousRow[targetIndex] = targetIndex
+	}
+	for sourceIndex := 1; sourceIndex <= len(source); sourceIndex++ {
+		currentRow[0] = sourceIndex
+		for targetIndex := 1; targetIndex <= len(target); targetIndex++ {
+			substitutionCost := 1
+			if source[sourceIndex-1] == target[targetIndex-1] {
+				substitutionCost = 0
+			}
+			currentRow[targetIndex] = min(
+				previousRow[targetIndex]+1,
+				currentRow[targetIndex-1]+1,
+				previousRow[targetIndex-1]+substitutionCost,
+			)
+		}
+		previousRow, currentRow = currentRow, previousRow
+	}
+	return previousRow[len(target)]
 }
