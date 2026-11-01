@@ -32,8 +32,16 @@ var (
 	errBackReferenceUnsupported = &regexError{"back-references are not supported by this grep/sed"}
 )
 
+// maximumRepetition is the largest count of an interval {m,n}: Go's
+// limit (GNU allows 32767).
+const maximumRepetition = 1000
+
 // compileGo compiles Go regexp syntax; "." matches a newline like in POSIX.
+// Go matches text as UTF-8, so a pattern with other bytes is refused.
 func compileGo(pattern string, ignoreCase, longest bool) (*regexp.Regexp, error) {
+	if !utf8.ValidString(pattern) {
+		return nil, &regexError{"pattern is not valid UTF-8"}
+	}
 	flags := "(?s)"
 	if ignoreCase {
 		flags = "(?si)"
@@ -308,7 +316,7 @@ func (t *posixTranslator) interval(basic bool) error {
 		return &regexError{`Invalid content of \{\}`}
 	}
 	t.position += end + len(closing)
-	if minimum > 255 || maximum > 255 {
+	if minimum > maximumRepetition || maximum > maximumRepetition {
 		return &regexError{"Regular expression too big"}
 	}
 	bounds := strconv.Itoa(minimum)
