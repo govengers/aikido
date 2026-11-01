@@ -548,8 +548,14 @@ func bracketEnd(pattern string, open int) int {
 		index++
 	}
 	for ; index < len(pattern); index++ {
-		if pattern[index] == ']' {
+		switch {
+		case pattern[index] == ']':
 			return index
+		case pattern[index] == '[' && index+1 < len(pattern) && strings.IndexByte(":=.", pattern[index+1]) >= 0:
+			// [:alpha:], [=a=] and [.a.] end with their own "]".
+			if end := strings.Index(pattern[index+2:], pattern[index+1:index+2]+"]"); end >= 0 {
+				index += end + 3
+			}
 		}
 	}
 	return -1

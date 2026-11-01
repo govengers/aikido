@@ -88,6 +88,7 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "find -empty on files", files: map[string]string{"empty": "", "full": "x"}, script: "find . -type f -empty", want: "./empty\n"},
 		{name: "find /dev", files: files, script: "find /dev/null -type c", want: "/dev/null\n"},
 		{name: "find patterns", files: map[string]string{"a[1].txt": "", "b.TXT": "", "c.go": ""}, script: "find . -name 'a\\[1\\]*'; find . -iname '*.txt' -name '[!a]*'; find . -name '[ab]*' -name '*.go'", want: "./a[1].txt\n./b.TXT\n"},
+		{name: "find bracket classes (review S29)", files: map[string]string{"a1": "", "B2": "", "_x": "", "9z": ""}, script: "find . -name '[[:alpha:]]*' | sort; find . -name '[![:alnum:]]*'; find . -name '[[:digit:]][[:lower:]]'", want: "./B2\n./a1\n.\n./_x\n./9z\n"},
 	}, nil)
 }
 
