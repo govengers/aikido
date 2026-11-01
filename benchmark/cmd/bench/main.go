@@ -46,9 +46,10 @@ type suite struct {
 }
 
 var suites = map[string]suite{
-	"coding": {tasksDirectory: "tasks", defaultHarnesses: "aikido,aikido-bash,opencode", harnesses: map[string]harness{
-		"aikido":      {run: runAikido(false)},
-		"aikido-bash": {run: runAikido(true)},
+	"coding": {tasksDirectory: "tasks", defaultHarnesses: "aikido,aikido-bash,aikido-vsh,opencode", harnesses: map[string]harness{
+		"aikido":      {run: runAikido(shellNone)},
+		"aikido-bash": {run: runAikido(shellHost)},
+		"aikido-vsh":  {run: runAikido(shellVirtual)},
 		"opencode":    {run: runOpencode, prepare: prepareOpencode},
 	}},
 	"worker": {tasksDirectory: "worker-tasks", fakeTools: true, defaultHarnesses: "claude-code,opencode,aikido-worker", harnesses: map[string]harness{

@@ -12,6 +12,7 @@ import (
 	"github.com/govengers/aikido/agent"
 	"github.com/govengers/aikido/llm/openrouter"
 	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/tools/shell"
 	"github.com/govengers/aikido/vfs/osfs"
 )
 
@@ -25,13 +26,22 @@ const aikidoMaximumTurns = 60
 // the work directory, all VFS tools, todo_write, and optionally the prototype
 // bash tool. Library defaults stay on (prompt caching, tool result cap, tool
 // timeout).
-func runAikido(withBash bool) harnessRunner {
+func runAikido(shellMode aikidoShell) harnessRunner {
 	return func(ctx context.Context, run *job, observed *metrics) error {
-		return runAikidoJob(ctx, run, observed, withBash)
+		return runAikidoJob(ctx, run, observed, shellMode)
 	}
 }
 
-func runAikidoJob(ctx context.Context, run *job, observed *metrics, withBash bool) error {
+// aikidoShell selects the shell an aikido harness gets next to the file tools.
+type aikidoShell int
+
+const (
+	shellNone    aikidoShell = iota // file tools only
+	shellHost                       // the prototype bash tool on the host (bash.go)
+	shellVirtual                    // tools/shell over the work directory's Storage
+)
+
+func runAikidoJob(ctx context.Context, run *job, observed *metrics, shellMode aikidoShell) error {
 	client, err := openrouter.NewClient(&openrouter.Options{APIKey: run.APIKey, XTitle: "aikido-bench"})
 	if err != nil {
 		return err
@@ -41,7 +51,7 @@ func runAikidoJob(ctx context.Context, run *job, observed *metrics, withBash boo
 		return err
 	}
 	defer storage.Close()
-	registry, err := aikidoTools(storage, run.WorkDirectory, withBash)
+	registry, err := aikidoTools(storage, run.WorkDirectory, shellMode)
 	if err != nil {
 		return err
 	}
@@ -84,7 +94,7 @@ func runAikidoJob(ctx context.Context, run *job, observed *metrics, withBash boo
 	return nil
 }
 
-func aikidoTools(storage *osfs.Storage, workDirectory string, withBash bool) (*tools.Registry, error) {
+func aikidoTools(storage *osfs.Storage, workDirectory string, shellMode aikidoShell) (*tools.Registry, error) {
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage}); err != nil {
 		return nil, err
@@ -92,10 +102,16 @@ func aikidoTools(storage *osfs.Storage, workDirectory string, withBash bool) (*t
 	if err := agent.RegisterPlanTool(registry); err != nil {
 		return nil, err
 	}
-	if withBash {
+	switch shellMode {
+	case shellHost:
 		if err := registry.Register(bashToolDefinition(), bashHandler(workDirectory)); err != nil {
 			return nil, err
 		}
+	case shellVirtual:
+		if err := shell.Register(registry, &shell.Options{Storage: storage}); err != nil {
+			return nil, err
+		}
+	case shellNone:
 	}
 	return registry, nil
 }
