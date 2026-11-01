@@ -56,6 +56,13 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "mv keeps empty directories", files: files, script: "mkdir -p dir/empty; mv dir moved; ls moved", want: "b.txt\ndeep\nempty\n"},
 		{name: "cp -v, -n and into itself", files: files, script: "cp -v a.txt c.txt; cp -n dir/b.txt c.txt; cat c.txt; cp -r dir dir/deep", want: "'a.txt' -> 'c.txt'\nalpha\ncp: cannot copy a directory, 'dir', into itself, 'dir/deep/dir'\n", status: 1},
 		{name: "cp onto a directory name inside a directory", files: map[string]string{"a": "1", "d/a/x": "2"}, script: "cp a d", want: "cp: cannot overwrite directory 'd/a' with non-directory\n", status: 1},
+		{
+			name: "mv and cp with several sources need a directory", files: files,
+			script: "mv a.txt dir/b.txt nodir; cp a.txt dir/b.txt nodir/; cp a.txt dir/b.txt a.txt; mv dir a.txt dir/b.txt; ls",
+			want: "mv: target 'nodir': No such file or directory\ncp: target 'nodir/': No such file or directory\n" +
+				"cp: target 'a.txt': Not a directory\nmv: target 'dir/b.txt': Not a directory\n" +
+				"a.txt\ndir\n",
+		},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
 		{
 			name: "cp -rn checks every destination (review S13)",

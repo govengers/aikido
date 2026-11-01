@@ -111,7 +111,12 @@ func planTransfers(ctx context.Context, invocation *Invocation, files workspace,
 	intoDirectory := lastEntry.kind == entryDirectory
 	switch {
 	case len(sources) > 1 && !intoDirectory:
-		return nil, fmt.Errorf("target '%s' is not a directory", last)
+		// GNU's "target 'x': " with why x cannot be opened as a directory.
+		reason := errNotDirectory
+		if lastEntry.kind == entryMissing {
+			reason = errNotFound
+		}
+		return nil, fmt.Errorf("target '%s': %w", last, reason)
 	case strings.HasSuffix(last, "/") && !intoDirectory:
 		// "out/" names a directory; GNU never creates a file for it.
 		switch {
