@@ -3,11 +3,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/govengers/aikido/vfs"
+	"github.com/govengers/aikido/vfs/osfs"
+	"github.com/govengers/aikido/vfs/overlay"
 )
 
 func TestApplyEdits(t *testing.T) {
@@ -119,13 +125,22 @@ func TestMultiEdit(t *testing.T) {
 	}
 }
 
-// faultyStorage fails DeleteFile, and ReadFile of one path, on top of a
-// working Storage.
+// faultyStorage fails DeleteFile, and ReadFile and WriteFile of one path
+// each, on top of a working Storage.
 type faultyStorage struct {
 	vfs.Storage
-	deleteError   error
-	readErrorPath string
-	readError     error
+	deleteError    error
+	readErrorPath  string
+	readError      error
+	writeErrorPath string
+	writeError     error
+}
+
+func (s faultyStorage) WriteFile(ctx context.Context, filePath string, content []byte, contentType string) error {
+	if filePath == s.writeErrorPath {
+		return s.writeError
+	}
+	return s.Storage.WriteFile(ctx, filePath, content, contentType)
 }
 
 func (s faultyStorage) DeleteFile(ctx context.Context, filePath string) error {
@@ -201,6 +216,127 @@ func TestMoveFile_StorageFailures(t *testing.T) {
 				t.Errorf("err = %v; want %q", err, testCase.wantError)
 			}
 		})
+	}
+}
+
+// caseInsensitiveDirectory returns a temporary directory on a filesystem
+// that ignores case (the macOS and Windows defaults) and skips the test
+// elsewhere.
+func caseInsensitiveDirectory(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "probe"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "PROBE")); err != nil {
+		t.Skip("the temporary directory is case-sensitive")
+	}
+	if err := os.Remove(filepath.Join(directory, "probe")); err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+func listedPaths(t *testing.T, storage vfs.Storage) []string {
+	t.Helper()
+	files, err := storage.ListFiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	return paths
+}
+
+// caseInsensitiveStorage returns an osfs storage holding Readme.md on a
+// case-insensitive temporary directory, optionally behind an overlay.
+func caseInsensitiveStorage(t *testing.T, throughOverlay bool) vfs.Storage {
+	t.Helper()
+	disk, err := osfs.New(&osfs.Options{Directory: caseInsensitiveDirectory(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = disk.Close() })
+	mustWriteFile(t, disk, "Readme.md", "keep me")
+	if !throughOverlay {
+		return disk
+	}
+	staged, err := overlay.New(&overlay.Options{Base: disk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return staged
+}
+
+func TestMoveFile_CaseOnlyRenameOnCaseInsensitiveDisk(t *testing.T) {
+	testCases := []struct{ overwrite, throughOverlay bool }{{false, false}, {true, false}, {false, true}, {true, true}}
+	for _, testCase := range testCases {
+		t.Run(fmt.Sprintf("overwrite=%v overlay=%v", testCase.overwrite, testCase.throughOverlay), func(t *testing.T) {
+			storage := caseInsensitiveStorage(t, testCase.throughOverlay)
+			registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: storage})
+
+			mustDispatch(t, registry, "move_file", fmt.Sprintf(`{"source":"Readme.md","destination":"README.md","overwrite":%v}`, testCase.overwrite))
+			if got := readBack(t, storage, "README.md"); got != "keep me" {
+				t.Errorf("README.md = %q; want the moved content", got)
+			}
+			if paths := listedPaths(t, storage); !slices.Equal(paths, []string{"README.md"}) {
+				t.Errorf("files = %v; want only README.md", paths)
+			}
+		})
+	}
+}
+
+func TestMoveFile_CaseOnlyRenameThroughOverlayCommit(t *testing.T) {
+	t.Skip("needs the vfs/overlay fix: Commit applies deletes before writes and Changes treats a write shadowed by an EqualFold tombstone as a create")
+	storage := caseInsensitiveStorage(t, true)
+	staged, ok := storage.(*overlay.Storage)
+	if !ok {
+		t.Fatalf("storage is %T; want *overlay.Storage", storage)
+	}
+	mustDispatch(t, newRegistryWithVFS(t, &VFSToolOptions{Storage: staged}), "move_file", `{"source":"Readme.md","destination":"README.md"}`)
+	if err := staged.Commit(context.Background()); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	staged.Discard()
+	if got := readBack(t, staged, "README.md"); got != "keep me" {
+		t.Errorf("README.md on disk = %q; want the moved content", got)
+	}
+	if paths := listedPaths(t, staged); !slices.Equal(paths, []string{"README.md"}) {
+		t.Errorf("files on disk = %v; want only README.md", paths)
+	}
+}
+
+func TestMoveFile_CaseOnlyRenameOnCaseSensitiveStorage(t *testing.T) {
+	options := seeded(t, VFSToolOptions{}, map[string]string{"Readme.md": "source", "README.md": "existing"})
+	registry := newRegistryWithVFS(t, options)
+
+	if _, err := dispatch(t, registry, "move_file", `{"source":"Readme.md","destination":"README.md"}`); err == nil || !strings.Contains(err.Error(), "destination README.md exists") {
+		t.Fatalf("err = %v; want the existing destination refused", err)
+	}
+	mustDispatch(t, registry, "move_file", `{"source":"Readme.md","destination":"README.md","overwrite":true}`)
+	if got := readBack(t, options.Storage, "README.md"); got != "source" {
+		t.Errorf("README.md = %q; want source", got)
+	}
+	if paths := listedPaths(t, options.Storage); !slices.Equal(paths, []string{"README.md"}) {
+		t.Errorf("files = %v; want only README.md, no staging file", paths)
+	}
+}
+
+func TestMoveFile_CaseOnlyRenameRestoresTheSourceOnFailure(t *testing.T) {
+	base := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "alpha"}).Storage
+	options := &VFSToolOptions{Storage: faultyStorage{Storage: base, writeErrorPath: "A.md", writeError: errors.New("disk full")}}
+	registry := newRegistryWithVFS(t, options)
+
+	if _, err := dispatch(t, registry, "move_file", `{"source":"a.md","destination":"A.md"}`); err == nil || !strings.Contains(err.Error(), "write A.md: disk full") {
+		t.Fatalf("err = %v; want the failed destination write", err)
+	}
+	if got := readBack(t, base, "a.md"); got != "alpha" {
+		t.Errorf("a.md = %q; want it restored", got)
+	}
+	if paths := listedPaths(t, base); !slices.Equal(paths, []string{"a.md"}) {
+		t.Errorf("files = %v; want only a.md, no staging file", paths)
 	}
 }
 

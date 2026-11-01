@@ -69,7 +69,7 @@ In an agent run all three are tool errors: the model sees them and the run conti
 | `glob` | **`pattern`** (`*` in a segment, `**` across, `?`, `{a,b}`) | matching paths, sorted, at most 500 |
 | `edit_file` | **`path`**, **`old_string`**, **`new_string`**, `replace_all` | exact replacement; `old_string` must be unique unless `replace_all`, and differ from `new_string`. Without the line-number prefix of `read_file` |
 | `multi_edit` | **`path`**, **`edits`** (array of `old_string`, `new_string`, `replace_all`) | the edits apply in order, each on the previous result; all or nothing |
-| `move_file` | **`source`**, **`destination`**, `overwrite` | writes the destination, then deletes the source (the Storage has no rename; a failed delete leaves both and says so). Fails on an existing destination unless `overwrite` |
+| `move_file` | **`source`**, **`destination`**, `overwrite` | writes the destination, then deletes the source (the Storage has no rename; a failed delete leaves both and says so). Fails on an existing destination unless `overwrite`. A rename that only changes case (`Readme.md` to `README.md`) goes through a hidden staging file in the same directory, so it is safe on case-insensitive disks (macOS, Windows) |
 | `search` | **`query`** | paths matching the backend's query syntax; the description embeds `SearchSyntax()` |
 
 Options:

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
+	"slices"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/tools"
 	"github.com/govengers/aikido/vfs"
@@ -238,7 +241,9 @@ func moveFileHandler(options VFSToolOptions) tools.Handler {
 }
 
 // moveFile writes the source's bytes to the destination, then deletes the
-// source. The Storage has no rename, so a failed delete leaves both files.
+// source. The Storage has no rename, so a failed delete leaves both files. A
+// destination that differs from the source only in case goes through
+// moveCaseOnly.
 func moveFile(ctx context.Context, options VFSToolOptions, arguments moveFileArguments) (int64, error) {
 	if err := validatePolicyPath(options, arguments.Source); err != nil {
 		return 0, err
@@ -256,12 +261,17 @@ func moveFile(ctx context.Context, options VFSToolOptions, arguments moveFileArg
 	if err := checkFileSize(options, len(content)); err != nil {
 		return 0, err
 	}
+	caseOnly := strings.EqualFold(arguments.Source, arguments.Destination)
 	if !arguments.Overwrite {
-		if err := checkAbsent(ctx, options.Storage, arguments.Destination); err != nil {
+		if err := checkAbsent(ctx, options.Storage, arguments.Destination, caseOnly); err != nil {
 			return 0, err
 		}
 	}
-	if err := options.Storage.WriteFile(ctx, arguments.Destination, content, movedContentType(arguments.Destination, metadata.ContentType)); err != nil {
+	contentType := movedContentType(arguments.Destination, metadata.ContentType)
+	if caseOnly {
+		return int64(len(content)), moveCaseOnly(ctx, options.Storage, arguments, content, contentType)
+	}
+	if err := options.Storage.WriteFile(ctx, arguments.Destination, content, contentType); err != nil {
 		return 0, err
 	}
 	if err := options.Storage.DeleteFile(ctx, arguments.Source); err != nil {
@@ -270,16 +280,67 @@ func moveFile(ctx context.Context, options VFSToolOptions, arguments moveFileArg
 	return int64(len(content)), nil
 }
 
-// checkAbsent fails when filePath already holds a file.
-func checkAbsent(ctx context.Context, storage vfs.Storage, filePath string) error {
+// moveCaseOnly moves source to a destination that differs only in case. On a
+// case-insensitive backend (vfs/osfs on macOS or Windows) both name one file,
+// so writing the destination and then deleting the source would delete the
+// moved file. The bytes go through a staging file next to the destination
+// instead: write staging, delete source, write destination, delete staging.
+// Cleanup after a failed step ignores ctx's cancellation, so a cancelled move
+// does not lose the file; if even restoring the source fails, the error names
+// the staging file that still holds the content.
+func moveCaseOnly(ctx context.Context, storage vfs.Storage, arguments moveFileArguments, content []byte, contentType string) error {
+	staging := path.Join(path.Dir(arguments.Destination), ".aikido-move-"+uuid.NewString()+path.Ext(arguments.Destination))
+	if err := storage.WriteFile(ctx, staging, content, contentType); err != nil {
+		return fmt.Errorf("stage %s: %w", arguments.Source, err)
+	}
+	cleanupContext := context.WithoutCancel(ctx)
+	if err := storage.DeleteFile(ctx, arguments.Source); err != nil {
+		return errors.Join(fmt.Errorf("delete %s: %w", arguments.Source, err), storage.DeleteFile(cleanupContext, staging))
+	}
+	if err := storage.WriteFile(ctx, arguments.Destination, content, contentType); err != nil {
+		if restoreError := storage.WriteFile(cleanupContext, arguments.Source, content, contentType); restoreError != nil {
+			return fmt.Errorf("write %s: %w; restoring %s failed too (%w), its content is in %s", arguments.Destination, err, arguments.Source, restoreError, staging)
+		}
+		return errors.Join(fmt.Errorf("write %s: %w", arguments.Destination, err), storage.DeleteFile(cleanupContext, staging))
+	}
+	if err := storage.DeleteFile(cleanupContext, staging); err != nil {
+		return fmt.Errorf("moved %s to %s but could not delete the staging file %s: %w", arguments.Source, arguments.Destination, staging, err)
+	}
+	return nil
+}
+
+// checkAbsent fails when filePath already holds a file. For a case-only move
+// it looks for filePath in the listing instead of reading it, since a read on
+// a case-insensitive backend finds the source itself.
+func checkAbsent(ctx context.Context, storage vfs.Storage, filePath string, caseOnly bool) error {
+	exists, err := fileExists(ctx, storage, filePath, caseOnly)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("destination %s exists; set overwrite to replace it", filePath)
+	}
+	return nil
+}
+
+// fileExists reports whether storage holds filePath, by reading it or, with
+// fromListing, by looking for the exact path in ListFiles.
+func fileExists(ctx context.Context, storage vfs.Storage, filePath string, fromListing bool) (bool, error) {
+	if fromListing {
+		files, err := storage.ListFiles(ctx)
+		if err != nil {
+			return false, err
+		}
+		return slices.ContainsFunc(files, func(file vfs.FileMetadata) bool { return file.Path == filePath }), nil
+	}
 	_, _, err := storage.ReadFile(ctx, filePath)
 	switch {
 	case err == nil:
-		return fmt.Errorf("destination %s exists; set overwrite to replace it", filePath)
+		return true, nil
 	case errors.Is(err, vfs.ErrFileNotFound):
-		return nil
+		return false, nil
 	default:
-		return err
+		return false, err
 	}
 }
 
