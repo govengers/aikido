@@ -40,7 +40,7 @@ func grepDefinition() llm.ToolDefinition {
 			"output_mode content (default) returns `path:line:text` for matches and `path-line-text` for context lines; "+
 			"files_with_matches returns matching paths; count returns matches per file. "+
 			"Returns at most %d entries, lines cut at %d characters; truncated is true when results were cut or the scan stopped early. "+
-			"Binary files are skipped. %s", grepMaximumLines, grepMaximumLineChars, globSyntax),
+			"Binary files are skipped, and so are files over the workspace's size limit (truncated is then true). %s", grepMaximumLines, grepMaximumLineChars, globSyntax),
 		Parameters: tools.Object(map[string]any{
 			"pattern":          tools.String("Regular expression to search for."),
 			"path_glob":        tools.String("Optional glob limiting which files are searched, e.g. `docs/**/*.md`."),
@@ -171,7 +171,10 @@ func (q grepQuery) searches(options VFSToolOptions, filePath string) bool {
 }
 
 // grepFiles scans files in order until the result is full or the scan budget
-// is spent; both mark the result truncated.
+// is spent; both mark the result truncated. A file whose listed size exceeds
+// MaximumFileBytes is skipped unread and also marks the result truncated, so
+// one huge file cannot exhaust memory; a file that would overrun the scan
+// budget ends the scan before it is read.
 //
 // ponytail: brute force over ListFiles + ReadFile (one storage round trip
 // per file), bounded by grepScanBudget. Add an optional vfs.Greppable
@@ -183,7 +186,11 @@ func grepFiles(ctx context.Context, options VFSToolOptions, query grepQuery, fil
 		if !query.searches(options, file.Path) {
 			continue
 		}
-		if scanned >= grepScanBudget {
+		if file.Size > options.MaximumFileBytes {
+			result.truncated = true
+			continue
+		}
+		if scanned >= grepScanBudget || file.Size > grepScanBudget-scanned {
 			result.truncated = true
 			break
 		}
@@ -192,6 +199,10 @@ func grepFiles(ctx context.Context, options VFSToolOptions, query grepQuery, fil
 			return nil, err
 		}
 		scanned += int64(len(content))
+		if int64(len(content)) > options.MaximumFileBytes {
+			result.truncated = true // the listing understated the size
+			continue
+		}
 		if isBinary(content) {
 			continue
 		}
