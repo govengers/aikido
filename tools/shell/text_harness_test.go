@@ -43,7 +43,7 @@ type textCase struct {
 
 // allTextCases gathers the case tables of every text command.
 func allTextCases() []textCase {
-	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases, grepCases, sedCases, diffCases)
+	return slices.Concat(headCases, tailCases, wcCases, sortCases, uniqCases, cutCases, trCases, grepCases, sedCases, diffCases, jqCases)
 }
 
 func TestTextCases(t *testing.T) {
@@ -234,21 +234,30 @@ func TestTextCasesAgainstGNU(t *testing.T) {
 	runner := gnuRunner(t)
 	directory := t.TempDir()
 	var cases []textCase
-	var hostCases []textCase
 	for _, testCase := range allTextCases() {
-		switch {
-		case testCase.gnuSkip != "":
-		case testCase.reference != "":
-			hostCases = append(hostCases, testCase)
-		default:
+		if testCase.gnuSkip == "" && testCase.reference == "" {
 			cases = append(cases, testCase)
 		}
 	}
 	writeGNUCases(t, directory, cases)
 	runner(t, directory)
 	compareGNUResults(t, directory, cases)
-	t.Logf("compared %d cases against GNU, %d against host references", len(cases), len(hostCases))
-	checkHostReferences(t, hostCases)
+	t.Logf("compared %d cases against GNU", len(cases))
+}
+
+// TestTextCasesAgainstHostReferences checks the cases whose reference is a
+// host binary (jq) against it; a missing binary skips its cases.
+func TestTextCasesAgainstHostReferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("differential run against host references skipped with -short")
+	}
+	var cases []textCase
+	for _, testCase := range allTextCases() {
+		if testCase.gnuSkip == "" && testCase.reference != "" {
+			cases = append(cases, testCase)
+		}
+	}
+	checkHostReferences(t, cases)
 }
 
 // gnuRunner returns how to run the generated script: natively when the
