@@ -1,7 +1,6 @@
 package llm_test
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -61,7 +60,7 @@ func TestVocabulary_Correct(t *testing.T) {
 func TestTranscribeDetailed_Vocabulary(t *testing.T) {
 	t.Parallel()
 	stub := llmtest.NewStubClient(textTurn("Ich hätte gern einen wasch tisch von Pfeifer und Mai."))
-	got, err := llm.TranscribeDetailed(context.Background(), stub, llm.TranscribeRequest{
+	got, err := llm.TranscribeDetailed(t.Context(), stub, llm.TranscribeRequest{
 		Audio:      []byte("RIFF"),
 		Format:     "wav",
 		Hint:       "The speaker speaks German.",
@@ -89,7 +88,7 @@ func TestTranscribe_VocabularyPromptCap(t *testing.T) {
 		terms[index] = "Begriff" + strings.Repeat("x", index%7)
 	}
 	stub := llmtest.NewStubClient(textTurn("ok"))
-	if _, _, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav", Vocabulary: &llm.Vocabulary{Terms: terms}}); err != nil {
+	if _, _, err := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav", Vocabulary: &llm.Vocabulary{Terms: terms}}); err != nil {
 		t.Fatal(err)
 	}
 	prompt := stub.Requests()[0].Messages[0].Content
@@ -106,13 +105,13 @@ func TestTranscribe_TranslatedNoSpeechMarker(t *testing.T) {
 	t.Parallel()
 	for _, reply := range []string{"[keine Sprache]", "[Keine Sprache erkannt].", "[nessun parlato]", "[No speech]"} {
 		stub := llmtest.NewStubClient(textTurn(reply))
-		got, err := llm.TranscribeDetailed(context.Background(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav"})
+		got, err := llm.TranscribeDetailed(t.Context(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav"})
 		if err != nil || got.Text != "" || got.Raw != "" {
 			t.Errorf("%q: got %+v, %v", reply, got, err)
 		}
 	}
 	stub := llmtest.NewStubClient(textTurn("[Musik] Hallo zusammen, wie geht es euch heute?"))
-	if text, _, _ := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav"}); text == "" {
+	if text, _, _ := llm.Transcribe(t.Context(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav"}); text == "" {
 		t.Error("speech with a leading tag was dropped")
 	}
 }
