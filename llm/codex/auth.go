@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -42,6 +41,17 @@ const (
 // expired or revoked): the user has to log in again. Retrying cannot help.
 var ErrReauthenticationRequired = errors.New("aikido/codex: ChatGPT login expired or revoked, log in again")
 
+// ErrRefreshInterrupted means a refresh got no complete answer (transport
+// failure, cut response, a 200 without tokens): the issuer may have rotated
+// the refresh token, and the rotated one is lost. The error wraps the cause
+// too: llm.ErrServerError, or context.DeadlineExceeded when the refresh ran
+// out of time. The next Token call refreshes with the previous token
+// again; if that fails with ErrReauthenticationRequired, the user has to sign
+// in again. No client can do better: the issuer offers no way to recover a
+// rotated token whose answer did not arrive.
+var ErrRefreshInterrupted = errors.New("aikido/codex: refresh interrupted, the refresh token may have rotated; " +
+	"if the next refresh fails with refresh token reuse, sign in again")
+
 // ErrDeviceLoginDisabled means the issuer does not offer device-code login
 // (it answered 404 to the user-code request).
 var ErrDeviceLoginDisabled = errors.New("aikido/codex: device-code login is not enabled")
@@ -61,7 +71,8 @@ type Tokens struct {
 }
 
 // LoginOptions configure the login endpoints. A nil *LoginOptions and zero
-// fields use the defaults.
+// fields use the defaults. A login endpoint answer over 1 MiB is an error
+// wrapping llm.ErrServerError.
 type LoginOptions struct {
 	// Issuer overrides DefaultIssuer (tests).
 	Issuer string
@@ -268,11 +279,20 @@ func exchangeDeviceGrant(ctx context.Context, options *LoginOptions, body []byte
 // to expire. It is safe for concurrent use. Use one TokenSource per login and
 // process: the mutex keeps exactly one refresh in flight, since a second
 // refresh with the same (rotated) refresh token would revoke the login.
+//
+// Known limit: a refresh whose answer does not arrive (ErrRefreshInterrupted)
+// cannot be repaired client-side. One Token call never retries a refresh; the
+// next call tries the previous refresh token once more, which either works
+// (the issuer did not rotate) or fails with ErrReauthenticationRequired, and
+// then only a new sign-in helps.
 type TokenSource struct {
 	mutex     sync.Mutex
 	tokens    Tokens
 	login     *LoginOptions
 	onRefresh func(context.Context, Tokens) error
+	// interrupted records that the last refresh got no complete answer, so a
+	// following reuse error can name the cause.
+	interrupted bool
 }
 
 // TokenSourceOptions configure a TokenSource.
@@ -298,7 +318,8 @@ func NewTokenSource(options *TokenSourceOptions) (*TokenSource, error) {
 
 // Token returns a login whose access token is valid for at least a few more
 // minutes. A refresh that fails for good returns an error wrapping
-// ErrReauthenticationRequired. If persisting a refreshed login fails the error
+// ErrReauthenticationRequired; one without a complete answer an error
+// wrapping ErrRefreshInterrupted (see TokenSource). If persisting a refreshed login fails the error
 // is returned, but the new login is kept in memory, so the next call succeeds
 // without refreshing.
 func (s *TokenSource) Token(ctx context.Context) (Tokens, error) {
@@ -314,8 +335,9 @@ func (s *TokenSource) Token(ctx context.Context) (Tokens, error) {
 	defer cancel()
 	fresh, err := refresh(ctx, s.login, s.tokens.RefreshToken)
 	if err != nil {
-		return Tokens{}, err
+		return Tokens{}, s.refreshFailed(err)
 	}
+	s.interrupted = false
 	fresh = keepMissingFields(fresh, s.tokens)
 	s.tokens = fresh
 	if s.onRefresh != nil {
@@ -324,6 +346,17 @@ func (s *TokenSource) Token(ctx context.Context) (Tokens, error) {
 		}
 	}
 	return fresh, nil
+}
+
+// refreshFailed records whether err left the refresh outcome unknown and
+// names an earlier interruption as the likely cause of a permanent failure.
+func (s *TokenSource) refreshFailed(err error) error {
+	wasInterrupted := s.interrupted
+	s.interrupted = errors.Is(err, ErrRefreshInterrupted)
+	if wasInterrupted && errors.Is(err, ErrReauthenticationRequired) {
+		return fmt.Errorf("aikido/codex: refresh after an interrupted one: %w", err)
+	}
+	return err
 }
 
 // keepMissingFields fills what a refresh response left out from the previous
@@ -345,18 +378,23 @@ func keepMissingFields(fresh, previous Tokens) Tokens {
 // login helps.
 var permanentRefreshErrors = []string{"refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "invalid_grant"}
 
-// refresh trades refreshToken for a new login at /oauth/token.
+// refresh trades refreshToken for a new login at /oauth/token. A failure
+// without a complete answer wraps ErrRefreshInterrupted.
 func refresh(ctx context.Context, options *LoginOptions, refreshToken string) (Tokens, error) {
 	status, body, err := postJSON(ctx, options, "/oauth/token", map[string]string{
 		"client_id": ClientID, "grant_type": "refresh_token", "refresh_token": refreshToken,
 	})
 	if err != nil {
-		return Tokens{}, err
+		return Tokens{}, fmt.Errorf("%w: %w", ErrRefreshInterrupted, err)
 	}
 	if status != http.StatusOK {
 		return Tokens{}, refreshError(status, body)
 	}
-	return tokensFromResponse(body)
+	tokens, err := tokensFromResponse(body)
+	if err != nil {
+		return Tokens{}, fmt.Errorf("%w: %w: %w", ErrRefreshInterrupted, err, llm.ErrServerError)
+	}
+	return tokens, nil
 }
 
 // refreshError classifies a failed refresh. A 401 or a 4xx naming a permanent
@@ -416,7 +454,7 @@ func post(ctx context.Context, options *LoginOptions, path, contentType string, 
 		return 0, nil, transportError(ctx, "aikido/codex: "+path, err)
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maximumLoginResponseBytes))
+	raw, err := readAtMost(response.Body, maximumLoginResponseBytes)
 	if err != nil {
 		return 0, nil, fmt.Errorf("aikido/codex: %s: read response: %s: %w", path, err.Error(), llm.ErrServerError)
 	}

@@ -122,7 +122,7 @@ Status mapping and retry: [Errors-and-Retry](Errors-and-Retry.md).
 
 ## Codex (ChatGPT subscription)
 
-`llm/codex` talks to the Codex backend of a ChatGPT subscription the way the Codex CLI does, and bills the subscription instead of an API key. It supports system messages, user and assistant text, image input and `ResponseFormat`. Tools, tool results, audio input and `Thinking` fail with `llm.ErrInvalidRequest`; `MaximumTokens`, `Temperature`, `StopSequences`, `Modalities` and `ImageConfiguration` are ignored. So it serves one-shots and structured output, not agents with tools.
+`llm/codex` talks to the Codex backend of a ChatGPT subscription the way the Codex CLI does, and bills the subscription instead of an API key. It supports system messages, user and assistant text, image input (`URL`, or `Data` sent inline as a data URI; an image with neither is `llm.ErrInvalidRequest`) and `ResponseFormat`. Tools, tool results, audio input and `Thinking` fail with `llm.ErrInvalidRequest`; `MaximumTokens`, `Temperature`, `StopSequences`, `Modalities` and `ImageConfiguration` are ignored. So it serves one-shots and structured output, not agents with tools.
 
 Login:
 
@@ -148,4 +148,4 @@ From [llm/codex/example_test.go](../../llm/codex/example_test.go) (`ExampleNewCl
 	client, err := codex.NewClient(&codex.Options{Tokens: tokens, Originator: "my-app", BaseURL: backend.URL})
 ```
 
-The refresh token is single use: keep one `TokenSource` per login and process. A refresh token used twice (two processes, or this and the Codex CLI) revokes the login; `Token` then fails with `codex.ErrReauthenticationRequired` and the user logs in again. `client.Models(ctx)` lists the subscription's model ids.
+The refresh token is single use: keep one `TokenSource` per login and process. A refresh token used twice (two processes, or this and the Codex CLI) revokes the login; `Token` then fails with `codex.ErrReauthenticationRequired` and the user logs in again. Known limit: a refresh whose answer does not arrive (connection cut, timeout, a 200 without tokens) fails with `codex.ErrRefreshInterrupted`, because the issuer may have rotated the refresh token and the new one is lost. No client can repair that: `Stream` and `Models` never retry a failed refresh, and the next `Token` call tries the previous refresh token once more, which either works or fails with `codex.ErrReauthenticationRequired`; then the user has to sign in again. `client.Models(ctx)` lists the subscription's model ids. Reads are capped: a login endpoint answer over 1 MiB and a models catalog over 8 MiB are errors, a stream line over 4 MiB ends the stream with an error.

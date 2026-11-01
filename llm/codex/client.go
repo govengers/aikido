@@ -42,6 +42,8 @@ const (
 	// maximumStreamLineBytes fits a large structured-output delta in one SSE line.
 	maximumStreamLineBytes = 4 << 20
 	initialLineBufferBytes = 64 << 10
+	// maximumModelsResponseBytes caps the models catalog.
+	maximumModelsResponseBytes = 8 << 20
 )
 
 // Options configure the Client.
@@ -90,9 +92,10 @@ func NewClient(options *Options) (*Client, error) {
 
 // Stream sends one request and returns its events; EventEnd comes last, then
 // the channel closes. The caller must drain the channel or cancel ctx.
-// 429 and 5xx at stream start are retried, mid-stream errors are not. Errors
-// wrap the llm sentinels (llm.ErrInvalidRequest for unsupported request
-// features).
+// 429 and 5xx at stream start are retried, mid-stream errors and a failed
+// token refresh are not (a replayed refresh token can revoke the login, see
+// TokenSource). Errors wrap the llm sentinels (llm.ErrInvalidRequest for
+// unsupported request features).
 func (c *Client) Stream(ctx context.Context, request llm.Request) (<-chan llm.Event, error) {
 	start := time.Now()
 	body, err := buildBody(request)
@@ -152,7 +155,8 @@ func (c *Client) Complete(ctx context.Context, request llm.Request) (llm.Respons
 }
 
 // Models lists the model ids the subscription offers, in the backend's order,
-// hidden ones left out. Errors wrap the llm sentinels.
+// hidden ones left out. Errors wrap the llm sentinels; a catalog over 8 MiB
+// is an error.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
 	response, err := c.do(ctx, http.MethodGet, "/models?client_version="+clientVersion, nil, "application/json")
 	if err != nil {
@@ -165,7 +169,11 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 			Visibility string `json:"visibility"`
 		} `json:"models"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&catalog); err != nil {
+	raw, err := readAtMost(response.Body, maximumModelsResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("codex: models: %w", err)
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
 		return nil, fmt.Errorf("codex: models: %w", err)
 	}
 	var ids []string
@@ -182,7 +190,7 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 func (c *Client) do(ctx context.Context, method, path string, body []byte, accept string) (*http.Response, error) {
 	tokens, err := c.options.Tokens.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("codex: access token: %w", err)
+		return nil, &tokenError{err: err}
 	}
 	var reader io.Reader
 	if body != nil {
@@ -208,6 +216,20 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, accep
 		return nil, statusError(response)
 	}
 	return response, nil
+}
+
+// readAtMost reads reader to its end. It fails instead of truncating when
+// reader holds more than limit bytes, so an over-long answer is a clear error
+// rather than a confusing decode failure.
+func readAtMost(reader io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return raw, nil
 }
 
 // transportError wraps ctx.Err() when the request failed because ctx ended,
@@ -243,9 +265,24 @@ func statusSentinel(status int) error {
 	}
 }
 
+// tokenError is a failed TokenSource.Token inside do. retryPolicy never
+// retries it: the refresh may have consumed the refresh token, and replaying
+// it would revoke the login.
+type tokenError struct {
+	err error
+}
+
+func (e *tokenError) Error() string { return "codex: access token: " + e.err.Error() }
+
+func (e *tokenError) Unwrap() error { return e.err }
+
 func retryPolicy() retry.Policy {
 	policy := retry.DefaultPolicy()
 	policy.ShouldRetry = func(err error) bool {
+		var failedToken *tokenError
+		if errors.As(err, &failedToken) {
+			return false
+		}
 		return errors.Is(err, llm.ErrRateLimited) || errors.Is(err, llm.ErrServerError)
 	}
 	return policy
@@ -309,8 +346,9 @@ func buildBody(request llm.Request) ([]byte, error) {
 	return raw, nil
 }
 
-// toInputItem converts a user or assistant message; every other role and
-// every non-text, non-image part is rejected with llm.ErrInvalidRequest.
+// toInputItem converts a user or assistant message; every other role, every
+// non-text, non-image part and an image without URL and data are rejected
+// with llm.ErrInvalidRequest.
 func toInputItem(message llm.Message) (inputItem, error) {
 	textType := "input_text"
 	switch message.Role {
@@ -331,21 +369,29 @@ func toInputItem(message llm.Message) (inputItem, error) {
 		item.Content = append(item.Content, contentPart{Type: textType, Text: message.Content})
 	}
 	for _, image := range message.Images {
-		item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: imageURL(image)})
+		url, err := imageURL(image)
+		if err != nil {
+			return inputItem{}, err
+		}
+		item.Content = append(item.Content, contentPart{Type: "input_image", ImageURL: url})
 	}
 	return item, nil
 }
 
-// imageURL is the image's URL, or its data inlined as a data URL.
-func imageURL(image llm.ImagePart) string {
-	if image.URL != "" || len(image.Data) == 0 {
-		return image.URL
+// imageURL is the image's URL, or its data inlined as a data URL. An image
+// with neither is llm.ErrInvalidRequest, as in llm/openrouter.
+func imageURL(image llm.ImagePart) (string, error) {
+	if image.URL != "" {
+		return image.URL, nil
+	}
+	if len(image.Data) == 0 {
+		return "", fmt.Errorf("codex: image has neither URL nor data: %w", llm.ErrInvalidRequest)
 	}
 	contentType := image.ContentType
 	if contentType == "" {
 		contentType = http.DetectContentType(image.Data)
 	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Data)
+	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image.Data), nil
 }
 
 func toTextOptions(schema *llm.JSONSchema) *textOptions {
@@ -400,10 +446,15 @@ type streamReader struct {
 func processStream(ctx context.Context, body io.Reader, events chan<- llm.Event, start time.Time) {
 	reader := &streamReader{events: events, start: start}
 	defer reader.end(ctx)
-	reader.read(ctx, body)
-	if !reader.finished && ctx.Err() == nil {
-		reader.fail(ctx, "error", fmt.Errorf("codex: stream ended before completion: %w", llm.ErrServerError))
+	readError := reader.read(ctx, body)
+	if reader.finished || ctx.Err() != nil {
+		return
 	}
+	cause := "body ended"
+	if readError != nil {
+		cause = readError.Error() // LIB-010: the scanner and transport errors are not part of the API
+	}
+	reader.fail(ctx, "error", fmt.Errorf("codex: stream ended before completion: %s: %w", cause, llm.ErrServerError))
 }
 
 // end emits EventEnd. It recovers a panic of the stream goroutine, which would
@@ -416,8 +467,9 @@ func (r *streamReader) end(ctx context.Context) {
 }
 
 // read handles data lines until the response finished, the body ended or ctx
-// ended.
-func (r *streamReader) read(ctx context.Context, body io.Reader) {
+// ended. It returns why reading the body failed: a transport error, or
+// bufio.ErrTooLong for a line over maximumStreamLineBytes.
+func (r *streamReader) read(ctx context.Context, body io.Reader) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, initialLineBufferBytes), maximumStreamLineBytes)
 	for scanner.Scan() {
@@ -426,9 +478,10 @@ func (r *streamReader) read(ctx context.Context, body io.Reader) {
 			continue
 		}
 		if !r.handle(ctx, event) {
-			return
+			return nil
 		}
 	}
+	return scanner.Err()
 }
 
 // parseStreamLine decodes an SSE data line. "event:" lines repeat the type

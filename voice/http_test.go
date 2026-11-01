@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -375,5 +377,103 @@ func TestToWireUsage_CountsTranscriptionTokens(t *testing.T) {
 	})
 	if wire.PromptTokens != 110 || wire.CompletionTokens != 12 || wire.TranscriptionCostUSD != 0.0001 || wire.Transcription == nil || wire.Transcription.Provider != "Google" {
 		t.Errorf("wire usage = %+v", wire)
+	}
+}
+
+// stalledWriter is a ResponseWriter whose client stopped reading: a Write
+// blocks until the write deadline passes or, without a deadline, until the
+// test releases it.
+type stalledWriter struct {
+	header   http.Header
+	release  chan struct{}
+	mutex    sync.Mutex
+	deadline time.Time
+	writes   int
+}
+
+func (s *stalledWriter) Header() http.Header { return s.header }
+
+func (*stalledWriter) WriteHeader(int) {}
+
+func (*stalledWriter) Flush() {}
+
+func (s *stalledWriter) SetWriteDeadline(deadline time.Time) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.deadline = deadline
+	return nil
+}
+
+func (s *stalledWriter) Write([]byte) (int, error) {
+	s.mutex.Lock()
+	deadline := s.deadline
+	s.writes++
+	s.mutex.Unlock()
+	if deadline.IsZero() {
+		<-s.release
+		return 0, errors.New("released without a deadline")
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.release:
+	}
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (s *stalledWriter) writeCount() int {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.writes
+}
+
+// A client that stops reading must not block the handler: the write
+// deadline ends the stream, and the turn still drains into History.
+func TestHandler_StalledClientHitsTheWriteDeadline(t *testing.T) {
+	t.Parallel()
+	session, history := newSession(t, llmtest.NewStubClient(replyTurn(0, "Erster Satz. ", "Zweiter Satz.")))
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline:     newPipeline(t, &Options{Speech: &fakeSpeech{}}),
+		Session:      func(*http.Request) (Runner, error) { return session, nil },
+		WriteTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := &stalledWriter{header: http.Header{}, release: make(chan struct{})}
+	request := newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo","output":"speech"}`))
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		handler.ServeHTTP(writer, request)
+	}()
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		close(writer.release)
+		<-served
+		t.Fatal("handler blocked on a client that stopped reading")
+	}
+	if got := writer.writeCount(); got != 1 {
+		t.Errorf("writes = %d, want 1: nothing is written after a failed write", got)
+	}
+	messages, err := history.Read(context.Background(), "voice-test")
+	if err != nil || len(messages) != 2 || messages[1].Content != "Erster Satz. Zweiter Satz." {
+		t.Fatalf("history = %+v (%v), want the full reply", messages, err)
+	}
+}
+
+func TestNewHandler_DefaultsTheWriteTimeout(t *testing.T) {
+	t.Parallel()
+	handler, err := NewHandler(&HandlerOptions{
+		Pipeline: newPipeline(t, &Options{Speech: &fakeSpeech{}}),
+		Session:  func(*http.Request) (Runner, error) { return nil, errors.New("unused") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handler.options.WriteTimeout != defaultWriteTimeout {
+		t.Errorf("WriteTimeout = %v, want %v", handler.options.WriteTimeout, defaultWriteTimeout)
 	}
 }
