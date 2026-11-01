@@ -8,7 +8,6 @@ import (
 	"path"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"mvdan.cc/sh/v3/interp"
@@ -89,8 +88,9 @@ type Shell struct {
 	// root is the MountPoint as a path of the session Storage: "" for "/".
 	root string
 
-	mutex     sync.Mutex
-	directory string // the working directory, a workspace path
+	// turn holds one token while a call runs: calls are serialized.
+	turn      chan struct{}
+	directory string // the working directory, a path of the session Storage
 }
 
 // New returns a Shell over options.Storage. It returns an error for nil
@@ -131,7 +131,7 @@ func New(options *Options) (*Shell, error) {
 	root := strings.TrimPrefix(mountPoint, "/")
 	return &Shell{
 		options: configured, commands: commands, root: root, directory: root,
-		directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes),
+		directories: newDirectorySet(), scratch: newScratchStorage(maximumScratchBytes), turn: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -209,8 +209,20 @@ func (s *Shell) Run(ctx context.Context, script string) (Result, error) {
 
 // run executes script with separate stdout and stderr writers.
 func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer) (int, error) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	runContext, cancel := s.withTimeout(ctx)
+	defer cancel()
+	// Calls run one at a time; waiting for the turn counts against the
+	// timeout and ends with ctx.
+	select {
+	case s.turn <- struct{}{}:
+		defer func() { <-s.turn }()
+	case <-runContext.Done():
+		if ctx.Err() != nil {
+			return statusCommandFailure, ctx.Err()
+		}
+		fmt.Fprintf(stderr, "bash: timed out after %v waiting for the previous call to end\n", s.options.Timeout)
+		return statusTimedOut, nil
+	}
 	call, err := s.newSession()
 	if err != nil {
 		return 0, err
@@ -230,8 +242,6 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	if err != nil {
 		return 0, err
 	}
-	runContext, cancel := s.withTimeout(ctx)
-	defer cancel()
 	directory, runErr := runFile(runContext, runner, file)
 	s.directory = workspaceDirectory(directory)
 	if status, ok := exitStatusOf(runErr); ok {

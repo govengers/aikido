@@ -370,6 +370,35 @@ func TestOverOverlayAndReadOnlyMount(t *testing.T) {
 	}
 }
 
+// TestQueuedRunHonoursContextAndTimeout covers the review's S14: a Run
+// waiting for the previous call blocked on a mutex, deaf to its context and
+// outside its timeout.
+func TestQueuedRunHonoursContextAndTimeout(t *testing.T) {
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	block := Command{Name: "block", Summary: "holds the turn until released", Run: func(context.Context, *Invocation) error {
+		close(started)
+		<-release
+		return nil
+	}}
+	shell, _ := newTestShell(t, nil, &Options{Timeout: 100 * time.Millisecond, Commands: []Command{block}})
+	go func() {
+		defer close(finished)
+		_, _ = shell.Run(context.Background(), "block")
+	}()
+	<-started
+	defer func() { close(release); <-finished }()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := shell.Run(cancelled, "echo never"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued Run with a cancelled context: %v", err)
+	}
+	waiting := time.Now()
+	result := mustRun(t, shell, "echo late")
+	if result.ExitCode != statusTimedOut || !strings.Contains(result.Output, "waiting for the previous call") || time.Since(waiting) > time.Second {
+		t.Fatalf("queued Run past its timeout: %+v after %v", result, time.Since(waiting))
+	}
+}
+
 // hangingStorage blocks every write of non-empty content until its context
 // ends, like a remote Storage that stalls.
 type hangingStorage struct {
