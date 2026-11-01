@@ -40,21 +40,27 @@ func newClient(t *testing.T, fake *fakeOpenRouter) *openrouter.Client {
 	return client
 }
 
-// newSession is a local session with the VFS tools over storage.
-func newSession(t *testing.T, fake *fakeOpenRouter, storage vfs.Storage, history agent.History) *agent.Session {
+// newSession is a local session with the VFS tools over storage. Each
+// configure step may change the options (and register more tools on
+// options.Tools) before the session is built.
+func newSession(t *testing.T, fake *fakeOpenRouter, storage vfs.Storage, history agent.History, configure ...func(*agent.SessionOptions)) *agent.Session {
 	t.Helper()
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: storage}); err != nil {
 		t.Fatal(err)
 	}
-	session, err := agent.NewLocalSession(&agent.SessionOptions{
+	options := &agent.SessionOptions{
 		ID:           sessionID,
 		Client:       newClient(t, fake),
 		Tools:        registry,
 		History:      history,
 		Model:        sessionModel,
 		SystemPrompt: "You edit files.",
-	})
+	}
+	for _, step := range configure {
+		step(options)
+	}
+	session, err := agent.NewLocalSession(options)
 	if err != nil {
 		t.Fatal(err)
 	}

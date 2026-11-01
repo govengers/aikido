@@ -113,6 +113,53 @@ func assertNotesEditRequests(t *testing.T, fake *fakeOpenRouter) {
 	}
 }
 
+func TestAgentCLIAppliesAMultiEditAndAMoveToTheDirectory(t *testing.T) {
+	fake := newFakeOpenRouter(t)
+	fake.queue(
+		streamedToolCalls(scriptedToolCall{
+			id: "call_multi", name: "multi_edit",
+			arguments: `{"path":"draft.md","edits":[{"old_string":"# Draft","new_string":"# Release"},{"old_string":"status: draft","new_string":"status: final"}]}`,
+		}),
+		streamedToolCalls(scriptedToolCall{
+			id: "call_move", name: "move_file",
+			arguments: `{"source":"draft.md","destination":"release.md"}`,
+		}),
+		streamedText("Released."),
+	)
+	directory := t.TempDir()
+	writeFiles(t, directory, map[string]string{"draft.md": "# Draft\n\nstatus: draft\n"})
+
+	result := runCLI(t, fake, "agent", "--model", agentModel, "--dir", directory, "--apply", "Release the draft.")
+
+	result.requireSuccess(t)
+	if content := readFile(t, filepath.Join(directory, "release.md")); content != "# Release\n\nstatus: final\n" {
+		t.Errorf("release.md = %q; want both edits applied", content)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "draft.md")); !os.IsNotExist(err) {
+		t.Errorf("draft.md after the move: %v; want it gone", err)
+	}
+	for _, want := range []string{
+		"[tool-result] multi_edit ok", "[tool-result] move_file ok",
+		"create release.md", "delete draft.md", "applied the changes",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, result.stdout)
+		}
+	}
+	requests := fake.chatRequests()
+	if len(requests) != 3 {
+		t.Fatalf("chat requests = %d; want 3 (multi_edit, move_file, answer)", len(requests))
+	}
+	for _, tool := range []string{"multi_edit", "move_file"} {
+		if !slices.Contains(requests[0].toolNames(), tool) {
+			t.Errorf("tools offered = %v; want %s among them", requests[0].toolNames(), tool)
+		}
+	}
+	if edit, ok := requests[1].toolResult("call_multi"); !ok || !strings.Contains(edit, `"replacements":2`) {
+		t.Errorf("multi_edit result sent to the model = %q (found %v); want two replacements", edit, ok)
+	}
+}
+
 func TestAgentCLIRefusesWritesIntoAReadOnlyMount(t *testing.T) {
 	const guide = "# Guide\n\nDo not touch.\n"
 	fake := newFakeOpenRouter(t)
