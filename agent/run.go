@@ -2,11 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/govengers/aikido/llm"
@@ -199,9 +199,13 @@ func (s *Session) callModel(runContext context.Context, sink eventSink, state *r
 	callContext, cancelCall := context.WithTimeout(runContext, s.options.LLMCallTimeout)
 	defer cancelCall()
 
+	messages := state.messages
+	if !s.options.DisablePromptCaching {
+		messages = withCacheBreakpoints(messages)
+	}
 	providerEvents, err := s.options.Client.Stream(callContext, llm.Request{
 		Model:         s.options.Model,
-		Messages:      state.messages,
+		Messages:      messages,
 		Tools:         state.toolDefinitions,
 		MaximumTokens: s.options.MaximumTokens,
 		Temperature:   s.options.Temperature,
@@ -286,7 +290,8 @@ func (b *replyBuilder) message() llm.Message {
 // runToolCalls dispatches the calls of one model reply in order, reports each
 // call and result to the caller and adds the results to the conversation.
 // A failing tool does not end the run: the model sees the error and can
-// self-correct on the next turn.
+// self-correct on the next turn. The model's copy of a result is bounded by
+// MaximumToolResultBytes; the caller's EventToolResult is not.
 func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall) {
 	environment := tools.Environment{SessionID: s.options.ID, TurnID: uuid.New()}
 	for _, call := range calls {
@@ -297,18 +302,33 @@ func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runSt
 		state.record(llm.Message{
 			Role:       llm.RoleTool,
 			ToolCallID: call.ID,
-			Content:    toolResultJSON(toolResult),
+			Content:    boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes),
 		})
 	}
 }
 
-// dispatch routes a tool call. Without a registry every tool name is unknown;
-// the model self-corrects on the next turn.
+// dispatch routes a tool call under ToolCallTimeout. Without a registry every
+// tool name is unknown; the model self-corrects on the next turn.
 func (s *Session) dispatch(ctx context.Context, call llm.ToolCall, environment tools.Environment) (tools.Result, error) {
 	if s.options.Tools == nil {
 		return tools.Result{}, fmt.Errorf("%w: %s", tools.ErrUnknownTool, call.Name)
 	}
-	return s.options.Tools.Dispatch(ctx, call, environment)
+	callContext, cancelCall := withOptionalTimeout(ctx, s.options.ToolCallTimeout)
+	defer cancelCall()
+	result, err := s.options.Tools.Dispatch(callContext, call, environment)
+	if err != nil && ctx.Err() == nil && errors.Is(callContext.Err(), context.DeadlineExceeded) {
+		return tools.Result{}, fmt.Errorf("aikido/agent: tool %s timed out after %v: %w", call.Name, s.options.ToolCallTimeout, err)
+	}
+	return result, err
+}
+
+// withOptionalTimeout is context.WithTimeout, or no deadline at all for a
+// negative timeout.
+func withOptionalTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout < 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // finishRun flushes the run's messages to History (History runs only, also
@@ -351,44 +371,6 @@ func resolveEndReason(userContext, runContext context.Context, callContextError 
 		return EndReasonCancelled
 	}
 	return EndReasonError
-}
-
-func buildToolResult(call llm.ToolCall, result tools.Result, err error) ToolResult {
-	toolResult := ToolResult{
-		CallID: call.ID,
-		Name:   call.Name,
-		OK:     err == nil,
-	}
-	if err != nil {
-		toolResult.Error = err.Error()
-	} else {
-		toolResult.Content = result.Content
-	}
-	return toolResult
-}
-
-// toolResultJSON serializes a tool result for the model's tool message.
-func toolResultJSON(toolResult ToolResult) string {
-	if !toolResult.OK {
-		return errorJSON(toolResult.Error)
-	}
-	if toolResult.Content == nil {
-		return "null"
-	}
-	content, err := json.Marshal(toolResult.Content)
-	if err != nil {
-		return errorJSON("content marshal failed: " + err.Error())
-	}
-	return string(content)
-}
-
-// errorJSON renders {"error": message}.
-func errorJSON(message string) string {
-	// Marshalling a struct with one string field cannot fail.
-	encoded, _ := json.Marshal(struct {
-		Error string `json:"error"`
-	}{Error: message})
-	return string(encoded)
 }
 
 // eventSink delivers a run's events to the caller's channel. Once the

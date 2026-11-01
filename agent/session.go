@@ -3,7 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/govengers/aikido/llm"
@@ -12,10 +11,12 @@ import (
 
 // Defaults NewSession applies to unset SessionOptions fields.
 const (
-	defaultMaximumTurns   = 20
-	defaultRunTimeout     = 10 * time.Minute
-	defaultLLMCallTimeout = 180 * time.Second
-	defaultMaximumTokens  = 16384
+	defaultMaximumTurns           = 20
+	defaultRunTimeout             = 10 * time.Minute
+	defaultLLMCallTimeout         = 180 * time.Second
+	defaultMaximumTokens          = 16384
+	defaultToolCallTimeout        = 2 * time.Minute
+	defaultMaximumToolResultBytes = 64 << 10
 )
 
 // SessionOptions configure a Session. NewSession copies them, so changing
@@ -54,8 +55,29 @@ type SessionOptions struct {
 	// llm.ThinkingByEffort(llm.ThinkingEffortLow). Nil leaves the model default.
 	Thinking *llm.ThinkingConfiguration
 
-	// Logger is optional. The session writes nothing to it today.
-	Logger *slog.Logger
+	// ToolCallTimeout caps one tool call; zero means 2 minutes, negative
+	// means no cap. A call that fails after its deadline passed is reported
+	// to the model as timed out and the run continues. The cap reaches the
+	// handler as its context's deadline, so it binds only handlers that
+	// honour ctx.
+	ToolCallTimeout time.Duration
+	// MaximumToolResultBytes caps the JSON of one tool result the model sees
+	// (and History stores); zero means 64 KiB, negative means no cap. A
+	// longer result is replaced by {"truncated":true,"total_bytes":N,
+	// "notice":"...","content":"<prefix of the JSON>"}, itself within the cap
+	// unless the cap is too small for the notice. EventToolResult always
+	// carries the full result.
+	MaximumToolResultBytes int
+	// DisablePromptCaching stops the run from setting prompt-cache
+	// breakpoints. By default every model request marks the system prompt
+	// and its last message (if that has content) with llm.CacheBreakpoint
+	// (5 minute TTL), at most 2 of the 4 breakpoints Anthropic allows. A
+	// request whose messages already carry a breakpoint is sent unchanged,
+	// so a History that sets its own keeps control. Breakpoints are added to
+	// the request only, never to History. Providers that cache on their own
+	// or not at all (OpenAI, most open models) ignore them; the Anthropic
+	// and Gemini models on OpenRouter honour them.
+	DisablePromptCaching bool
 }
 
 // Session bundles a session ID, a model + system prompt, a tool registry, a
@@ -110,6 +132,12 @@ func withSessionDefaults(options SessionOptions) SessionOptions {
 	}
 	if options.MaximumTokens == 0 {
 		options.MaximumTokens = defaultMaximumTokens
+	}
+	if options.ToolCallTimeout == 0 {
+		options.ToolCallTimeout = defaultToolCallTimeout
+	}
+	if options.MaximumToolResultBytes == 0 {
+		options.MaximumToolResultBytes = defaultMaximumToolResultBytes
 	}
 	return options
 }

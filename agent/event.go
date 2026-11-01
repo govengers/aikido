@@ -57,7 +57,8 @@ type ToolResult struct {
 	Name string
 	// OK is false when the tool failed; Error then holds its message.
 	OK bool
-	// Content is the tool's result when OK; it is sent to the model as JSON.
+	// Content is the tool's full result when OK. The model gets it as JSON,
+	// cut at SessionOptions.MaximumToolResultBytes.
 	Content any
 	// Error is the failure message when not OK.
 	Error string

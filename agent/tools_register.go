@@ -28,20 +28,22 @@ type VFSToolOptions struct {
 	// negative means 1 MiB.
 	MaximumFileBytes int64
 
-	// ReadOnly disables registration of write_file, delete_file and
-	// edit_file. Use this for fixed-corpus deployments (e.g. an embedded
-	// knowledge base over vfs/embedfs). Search and list/read remain
-	// registered.
+	// ReadOnly disables registration of write_file, delete_file, edit_file,
+	// multi_edit and move_file. Use this for fixed-corpus deployments (e.g.
+	// an embedded knowledge base over vfs/embedfs). Search and list/read
+	// remain registered.
 	ReadOnly bool
 
-	// DisableExtended skips registration of grep, glob and edit_file, leaving
-	// the original read_file/write_file/list_files/delete_file/search set.
+	// DisableExtended skips registration of grep, glob, edit_file,
+	// multi_edit and move_file, leaving the original
+	// read_file/write_file/list_files/delete_file/search set.
 	DisableExtended bool
 }
 
 // RegisterVFSTools registers read_file, list_files, grep and glob into the
-// supplied registry, plus write_file, delete_file and edit_file when not
-// read-only (grep, glob and edit_file are skipped with DisableExtended). If
+// supplied registry, plus write_file, delete_file, edit_file, multi_edit and
+// move_file when not read-only (grep, glob, edit_file, multi_edit and
+// move_file are skipped with DisableExtended). If
 // options.Storage satisfies vfs.Searchable, it also registers search. Tool
 // handlers capture options.Storage via closure (ADR-021).
 //
@@ -89,7 +91,11 @@ func vfsTools(options VFSToolOptions) []vfsTool {
 			vfsTool{globDefinition(), globHandler(options)},
 		)
 		if !options.ReadOnly {
-			selected = append(selected, vfsTool{editFileDefinition(), editFileHandler(options)})
+			selected = append(selected,
+				vfsTool{editFileDefinition(), editFileHandler(options)},
+				vfsTool{multiEditDefinition(), multiEditHandler(options)},
+				vfsTool{moveFileDefinition(), moveFileHandler(options)},
+			)
 		}
 	}
 	if searchable, ok := options.Storage.(vfs.Searchable); ok {

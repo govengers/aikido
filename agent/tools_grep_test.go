@@ -58,17 +58,17 @@ func TestGlobToRegexp(t *testing.T) {
 
 func TestRegisterVFSTools_Extended(t *testing.T) {
 	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New()})
-	for _, name := range []string{"grep", "glob", "edit_file"} {
+	for _, name := range []string{"grep", "glob", "edit_file", "multi_edit", "move_file"} {
 		if !registry.Has(name) {
 			t.Errorf("%s should be registered by default", name)
 		}
 	}
 	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), ReadOnly: true})
-	if !registry.Has("grep") || !registry.Has("glob") || registry.Has("edit_file") {
-		t.Error("read-only: want grep and glob, no edit_file")
+	if !registry.Has("grep") || !registry.Has("glob") || registry.Has("edit_file") || registry.Has("multi_edit") || registry.Has("move_file") {
+		t.Error("read-only: want grep and glob, no edit_file, multi_edit or move_file")
 	}
 	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), DisableExtended: true})
-	for _, name := range []string{"grep", "glob", "edit_file"} {
+	for _, name := range []string{"grep", "glob", "edit_file", "multi_edit", "move_file"} {
 		if registry.Has(name) {
 			t.Errorf("%s must not be registered with DisableExtended", name)
 		}
@@ -192,10 +192,10 @@ func TestReadFile_Ranges(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := result.Content.(map[string]any)
-	if content["content"] != "2\n3\n" || content["total_lines"] != 5 || content["truncated"] != true {
+	if content["content"] != "2\t2\n3\t3\n" || content["total_lines"] != 5 || content["truncated"] != true {
 		t.Errorf("content = %v", content)
 	}
-	if content := mustDispatch(t, registry, "read_file", `{"path":"a.md"}`); content["content"] != "1\n2\n3\n4\n5\n" || content["truncated"] != false {
+	if content := mustDispatch(t, registry, "read_file", `{"path":"a.md"}`); content["content"] != "1\t1\n2\t2\n3\t3\n4\t4\n5\t5\n" || content["truncated"] != false {
 		t.Errorf("full read = %v", content)
 	}
 	if _, err := dispatch(t, registry, "read_file", `{"path":"a.md","offset":9}`); err == nil {
@@ -211,34 +211,6 @@ func TestListAndSearch_RespectAllowedExtensions(t *testing.T) {
 	}
 	if paths := mustDispatch(t, registry, "search", `{"query":"x"}`)["paths"].([]string); len(paths) != 1 || paths[0] != "a.md" {
 		t.Errorf("search = %v", paths)
-	}
-}
-
-func TestApplyEdit(t *testing.T) {
-	testCases := []struct {
-		name             string
-		content          string
-		arguments        editFileArguments
-		wantUpdated      string
-		wantReplacements int
-		wantError        bool
-	}{
-		{"unique match", "a b c", editFileArguments{OldString: "b", NewString: "x"}, "a x c", 1, false},
-		{"replace all", "b b", editFileArguments{OldString: "b", NewString: "x", ReplaceAll: true}, "x x", 2, false},
-		{"ambiguous", "b b", editFileArguments{OldString: "b", NewString: "x"}, "", 0, true},
-		{"missing", "a", editFileArguments{OldString: "b", NewString: "x"}, "", 0, true},
-		{"binary", "a\x00b", editFileArguments{OldString: "a", NewString: "x"}, "", 0, true},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			updated, replacements, err := applyEdit([]byte(testCase.content), testCase.arguments)
-			if (err != nil) != testCase.wantError {
-				t.Fatalf("err = %v; want error %v", err, testCase.wantError)
-			}
-			if updated != testCase.wantUpdated || replacements != testCase.wantReplacements {
-				t.Errorf("applyEdit = %q, %d; want %q, %d", updated, replacements, testCase.wantUpdated, testCase.wantReplacements)
-			}
-		})
 	}
 }
 

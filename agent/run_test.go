@@ -407,9 +407,8 @@ func TestRun_StreamDialError(t *testing.T) {
 	}
 }
 
-// Regression: a panicking tool handler used to crash the caller's process,
-// because the run goroutine did not recover (CON-001).
-func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
+// A panicking tool handler is a tool error the model sees; the run goes on.
+func TestRun_ToolPanicIsAToolError(t *testing.T) {
 	registry := tools.NewRegistry()
 	mustRegister(t, registry, "explode", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
 		panic("tool bug")
@@ -420,7 +419,31 @@ func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
 
 	events := runToEnd(t, session, "go")
 
-	if err := errorOf(events); err == nil || !strings.Contains(err.Error(), "tool bug") {
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 4 || !strings.Contains(stored[2].Content, "tool panicked: explode: tool bug") {
+		t.Errorf("stored = %+v; want the panic as the tool message", stored)
+	}
+}
+
+// panickingClient panics in Stream, a stand-in for any bug inside the run.
+type panickingClient struct{ dialErrorClient }
+
+func (panickingClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	panic("client bug")
+}
+
+// Regression: a panic inside the run used to crash the caller's process,
+// because the run goroutine did not recover (CON-001).
+func TestRun_PanicEndsRunWithError(t *testing.T) {
+	history := memory.New()
+	session := newTestSession(t, panickingClient{}, nil, history)
+
+	events := runToEnd(t, session, "go")
+
+	if err := errorOf(events); err == nil || !strings.Contains(err.Error(), "client bug") {
 		t.Errorf("EventError = %v; want the recovered panic", err)
 	}
 	if reason := endReasonOf(t, events); reason != EndReasonError {
@@ -429,9 +452,9 @@ func TestRun_ToolPanicEndsRunWithError(t *testing.T) {
 	if stored := storedMessages(t, history, "s-test"); len(stored) != 0 {
 		t.Errorf("History must not be updated after a panic; stored=%+v", stored)
 	}
-	// The panic released the session lock: the next run proceeds.
-	if reason := endReasonOf(t, runToEnd(t, session, "again")); reason != EndReasonStop {
-		t.Errorf("next run end reason = %q; want stop", reason)
+	// The panic released the session lock: the next run gets it and fails the same way.
+	if reason := endReasonOf(t, runToEnd(t, session, "again")); reason != EndReasonError {
+		t.Errorf("next run end reason = %q; want error", reason)
 	}
 }
 
