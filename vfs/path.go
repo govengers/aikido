@@ -33,9 +33,15 @@ func ValidatePath(path string) error {
 	if strings.Contains(path, "//") {
 		return fmt.Errorf("%w: double slash", ErrPathInvalid)
 	}
+	if strings.ContainsRune(path, '\\') {
+		return fmt.Errorf("%w: backslash", ErrPathInvalid)
+	}
 	for segment := range strings.SplitSeq(path, "/") {
-		if segment == ".." {
+		switch segment {
+		case "..":
 			return fmt.Errorf("%w: parent-directory segment", ErrPathInvalid)
+		case ".":
+			return fmt.Errorf("%w: current-directory segment", ErrPathInvalid)
 		}
 	}
 	return nil

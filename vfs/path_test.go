@@ -34,6 +34,10 @@ func TestValidatePath_Rejects(t *testing.T) {
 		{"parent traversal", "../etc/passwd", "parent"},
 		{"parent traversal mid", "a/../b", "parent"},
 		{"null byte", "a\x00b", "null"},
+		{"current directory segment", "a/./b.md", "current-directory"},
+		{"leading current directory", "./b.md", "current-directory"},
+		{"lone dot", ".", "current-directory"},
+		{"backslash", "a\\b.md", "backslash"},
 		{"oversized", strings.Repeat("a", MaximumPathBytes+1), "exceeds"},
 	}
 	for _, testCase := range testCases {

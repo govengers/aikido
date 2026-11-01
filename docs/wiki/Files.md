@@ -17,7 +17,7 @@ type Storage interface {
 
 - `ListFiles` returns every file sorted by path. `vfs.FileMetadata` holds `Path`, `ContentType`, `Size` (bytes) and `UpdatedAt` (zero when unknown).
 - Errors match `vfs.ErrPathInvalid`, `vfs.ErrFileNotFound` (read and delete of a missing file) or `vfs.ErrReadOnly` (a backend or mount that refuses writes). `vfs.ErrFileTooLarge` comes from the tools' `MaximumFileBytes`.
-- Paths are relative and `/`-separated: not empty, at most `vfs.MaximumPathBytes` (512), no NUL byte, no leading or trailing slash, no `//`, no `..` segment. `vfs.ValidatePath` checks exactly that and names the broken rule; backends call it on entry, the tools call it before the backend.
+- Paths are relative and `/`-separated: not empty, at most `vfs.MaximumPathBytes` (512), no NUL byte, no leading or trailing slash, no `//`, no `.` or `..` segment, no backslash. `vfs.ValidatePath` checks exactly that and names the broken rule; backends call it on entry, the tools call it before the backend.
 - Each call is atomic on its own; a run of the agent is not a transaction (see [Agent](Agent.md#files-are-the-authority-history-is-not-rewindable)).
 
 ```go

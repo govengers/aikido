@@ -17,8 +17,8 @@ type FileMetadata struct {
 // Storage is the base contract every VFS backend implements.
 //
 // Path semantics: paths are forward-slash separated, relative, no leading
-// slash, no `..` segments, no double slashes, no trailing slash, no null
-// bytes, length <= 512 bytes. See ValidatePath.
+// slash, no `.` or `..` segments, no backslashes, no double slashes, no
+// trailing slash, no null bytes, length <= 512 bytes. See ValidatePath.
 //
 // Atomicity: each call is atomic at the backend level. The agent loop is not
 // transactional in v1 (ADR-019).

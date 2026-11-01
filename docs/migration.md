@@ -109,6 +109,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | OpenRouter HTTP client | no timeout at all | the default client waits at most 10 minutes for response headers (no overall timeout); a custom `HTTPClient` is used as is |
 | Stream panics | a decoding panic crashed the process | `EventError` followed by `EventEnd` |
 | `retry.Do` | could retry context errors; `MaxDelay` 0 meant no cap; `Multiplier` 0 meant no growth | never retries `context.Canceled`/`DeadlineExceeded`; skips a wait that would end after the deadline and returns the last error; `MaximumDelay` 0 means 30 s; `Multiplier` below 1 means 2 |
+| `vfs.ValidatePath` | allowed `.` segments and backslashes (`./a.md` and `a.md` were two keys in memory but one file in osfs) | both are `vfs.ErrPathInvalid` |
 | `vfs/embedfs` content type | unknown extensions were `text/plain` | `application/octet-stream`, like `osfs` |
 | `voice.Handler` | a broken multipart upload was taken as a text turn | 400 |
 
