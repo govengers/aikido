@@ -856,6 +856,33 @@ func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
 	}
 }
 
+// Regression: an empty reply (here reasoning only) was stored as an
+// assistant message without content and resent on every later run, which
+// providers reject.
+func TestRun_EmptyReplyIsNotRecorded(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventThinking, Text: "long reasoning"},
+		{Kind: llm.EventEnd, FinishReason: "length"},
+	}}, textTurn("ok"))
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
+
+	if reason := endReasonOf(t, runToEnd(t, session, "one")); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
+	}
+	runToEnd(t, session, "two")
+
+	for _, message := range stub.Requests()[1].Messages {
+		if message.Role == llm.RoleAssistant && isEmptyReply(message) {
+			t.Errorf("second run sent an empty assistant message: %+v", stub.Requests()[1].Messages)
+		}
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 3 || stored[0].Content != "one" || stored[1].Content != "two" || stored[2].Content != "ok" {
+		t.Errorf("stored = %+v; want one, two, ok", stored)
+	}
+}
+
 // panickingUnlockLocker hands out an unlock function that panics.
 type panickingUnlockLocker struct{}
 

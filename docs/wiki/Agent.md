@@ -96,7 +96,7 @@ You own everything an event points to, image bytes included: changing it never a
 | `EndReasonCancelled` (`cancelled`) | the caller cancelled `ctx` | not touched |
 | `EndReasonError` (`error`) | provider error, `History` or `Locker` failure, a panic in the run | not touched |
 
-A failed run leaves History as it was, so a retry starts from a consistent transcript. `voice` adds `voice.EndReasonNoSpeech` ([Voice](Voice.md)).
+A failed run leaves History as it was, so a retry starts from a consistent transcript. A reply with no text, images or tool calls (for example reasoning that used up `MaximumTokens`) ends the run with `EndReasonStop` but is not stored or sent back to the model, since providers reject an assistant message without content. `voice` adds `voice.EndReasonNoSpeech` ([Voice](Voice.md)).
 
 ## Limits
 

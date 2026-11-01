@@ -33,7 +33,8 @@ type RunOptions struct {
 //
 // The user message and the assistant's response (including any tool calls and
 // tool results produced this turn) are accumulated for one variadic
-// History.Append at end of turn. The returned channel always ends with
+// History.Append at end of turn. A reply without text, images or tool calls
+// is not accumulated. The returned channel always ends with
 // EventEnd and is then closed; the returned error is always nil.
 //
 // On EndReasonError (including History I/O failure, Lock-acquire timeout or a
@@ -163,7 +164,12 @@ func (s *Session) execute(userContext, runContext context.Context, sink eventSin
 		if err != nil {
 			return failedRun(userContext, runContext, callContextError, err)
 		}
-		state.record(reply)
+		// An empty reply (no text, images or tool calls, e.g. reasoning that
+		// used up MaximumTokens) is not recorded: providers reject an
+		// assistant message without content on every later call.
+		if !isEmptyReply(reply) {
+			state.record(reply)
+		}
 		if len(reply.ToolCalls) == 0 {
 			return s.finishRun(userContext, runContext, state, plan, EndReasonStop)
 		}
@@ -308,6 +314,10 @@ func (b *replyBuilder) add(event llm.Event, sink eventSink) {
 	case llm.EventEnd:
 		// The provider closes the channel right after EventEnd; receiveReply ends there.
 	}
+}
+
+func isEmptyReply(reply llm.Message) bool {
+	return reply.Content == "" && len(reply.Images) == 0 && len(reply.ToolCalls) == 0
 }
 
 func (b *replyBuilder) message() llm.Message {
