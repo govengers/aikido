@@ -75,7 +75,7 @@ The returned error is always nil; everything arrives on the channel, which ends 
 |---|---|---|
 | `EventText` | `Text` | delta of the assistant reply |
 | `EventThinking` | `Text` | reasoning delta; never persisted |
-| `EventToolCall` | `ToolCall` | a call of the model, sent after the tool ran, right before its result |
+| `EventToolCall` | `ToolCall` | a call of the model, sent before it runs: all calls of one reply come first, in order, then their results in the same order, so an `EventToolCall` after an `EventToolResult` starts the next reply |
 | `EventToolResult` | `ToolResult` | `CallID`, `Name`, `OK`, `Content` (full result) or `Error`, and `ModelContent` (the JSON the model received, capped) |
 | `EventImage` | `Image` | an image of the reply |
 | `EventUsage` | `Usage` | one per model call the provider reported usage for, a failed call included (before its `EventError`): tokens, `CostUSD`, `Provider`, `Latency`, `Duration`, `TokensPerSecond` |

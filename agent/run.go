@@ -308,21 +308,24 @@ func (b *replyBuilder) message() llm.Message {
 	}
 }
 
-// runToolCalls dispatches the calls of one model reply in order, reports each
-// call and result to the caller and adds the results to the conversation.
-// A failing tool does not end the run: the model sees the error and can
-// self-correct on the next turn. The model's copy of a result is bounded by
-// MaximumToolResultBytes; the caller's EventToolResult is not.
+// runToolCalls reports every call of one model reply to the caller, then
+// dispatches them in order, reporting each result and adding it to the
+// conversation. Sending all calls before the first result marks the reply
+// boundary for Drain. A failing tool does not end the run: the model sees the
+// error and can self-correct on the next turn. The model's copy of a result
+// is bounded by MaximumToolResultBytes; the caller's EventToolResult is not.
 func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall) {
+	for _, call := range calls {
+		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
+	}
 	environment := tools.Environment{SessionID: s.options.ID, TurnID: uuid.New()}
 	for _, call := range calls {
 		result, err := s.dispatch(ctx, call, environment)
 		toolResult := buildToolResult(call, result, err)
 		toolResult.ModelContent = boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes)
-		// The caller owns what the events point to, so the conversation keeps
-		// its own copy, taken before they are sent.
+		// The caller owns what the event points to, so the conversation keeps
+		// its own copy, taken before it is sent.
 		message := llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: toolResult.ModelContent}
-		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
 		sink.send(Event{Kind: EventToolResult, ToolResult: &toolResult})
 		state.record(message)
 	}

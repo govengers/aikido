@@ -13,11 +13,14 @@ const (
 	// EventThinking carries streamed model reasoning in Text. It is not part
 	// of the persisted conversation.
 	EventThinking EventKind = "thinking"
-	// EventToolCall carries a tool call of the model in ToolCall. It is
-	// emitted after the tool ran, right before its EventToolResult.
+	// EventToolCall carries a tool call of the model in ToolCall. Every call
+	// of one model reply is emitted, in the reply's order, before any of
+	// them runs; their EventToolResults follow in the same order. An
+	// EventToolCall after an EventToolResult therefore starts a new reply.
 	EventToolCall EventKind = "tool_call"
-	// EventToolResult carries the outcome of the preceding EventToolCall in
-	// ToolResult.
+	// EventToolResult carries the outcome of one EventToolCall in
+	// ToolResult; ToolResult.CallID names the call. It is emitted once the
+	// tool ran.
 	EventToolResult EventKind = "tool_result"
 	// EventImage carries an image of the assistant reply in Image.
 	EventImage EventKind = "image"
