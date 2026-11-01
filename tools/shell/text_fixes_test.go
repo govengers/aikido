@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -112,8 +113,19 @@ func TestRunawayCommandsStop(t *testing.T) {
 			script: "sed -i '" + strings.Repeat("h;G;", 20) + strings.Repeat("p;", 40) + "' f; echo $?; cat f",
 			want:   "sed: couldn't edit f: File too large\n4\nx\n",
 		},
+		{name: "diff of disjoint files", files: disjointFiles(), script: `diff a b > /dev/null`, want: "bash: timed out after 1s; the script was stopped\n", status: 124},
 		{name: "awk output file cap", script: `env -i awk 'BEGIN{while(1) print "0123456789abcdef0123456789abcdef" > "f"}'; echo $?; ls`, want: "awk: File too large\n2\nf\n"},
 	}, &Options{Timeout: time.Second})
+}
+
+// disjointFiles are two files without a common line, diff's worst case.
+func disjointFiles() map[string]string {
+	var left, right strings.Builder
+	for index := range 40000 {
+		fmt.Fprintf(&left, "a%d\n", index)
+		fmt.Fprintf(&right, "b%d\n", index)
+	}
+	return map[string]string{"a": left.String(), "b": right.String()}
 }
 
 // TestCommandWritesFailLoudly: an output file a command cannot store makes

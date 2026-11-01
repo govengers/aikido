@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"context"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -100,7 +101,10 @@ func TestDiffLinesIsMinimalAndCorrect(t *testing.T) {
 	for range 500 {
 		oldLines := randomLines(random, alphabet)
 		newLines := randomLines(random, alphabet)
-		hunks := diffLines(oldLines, newLines)
+		hunks, err := diffLines(context.Background(), oldLines, newLines)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var rebuilt []string
 		changed, position := 0, 0
 		for _, hunk := range hunks {
