@@ -110,6 +110,8 @@ Additive; nothing to migrate, listed so you know it exists.
 | Stream panics | a decoding panic crashed the process | `EventError` followed by `EventEnd` |
 | `retry.Do` | could retry context errors; `MaxDelay` 0 meant no cap; `Multiplier` 0 meant no growth | never retries `context.Canceled`/`DeadlineExceeded`; skips a wait that would end after the deadline and returns the last error; `MaximumDelay` 0 means 30 s; `Multiplier` below 1 means 2 |
 | `vfs.ValidatePath` | allowed `.` segments and backslashes (`./a.md` and `a.md` were two keys in memory but one file in osfs) | both are `vfs.ErrPathInvalid` |
+| `vfs/osfs` file mode | a replaced file was recreated with 0644 (minus umask) | a replaced file keeps its mode; new files are exactly 0644 |
+| `vfs/embedfs` invalid paths | `WriteFile`/`DeleteFile` returned `vfs.ErrReadOnly` for any path | an invalid path is `vfs.ErrPathInvalid`, a valid one `vfs.ErrReadOnly` |
 | `vfs/embedfs` content type | unknown extensions were `text/plain` | `application/octet-stream`, like `osfs` |
 | `voice.Handler` | a broken multipart upload was taken as a text turn | 400 |
 
