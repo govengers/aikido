@@ -35,7 +35,7 @@
 	fmt.Println(response.FinishReason, response.Usage.CompletionTokens)
 ```
 
-The stream contract: an error before the first byte (authentication, invalid request, exhausted retries) is returned by `Stream` directly, later failures arrive as `EventError`; an OpenRouter stream that stops before both `[DONE]` and a finish reason was cut off and is an `EventError` with `llm.ErrServerError`. `EventEnd` is always last, then the client closes the channel; it closes early when `ctx` ends. Read until it closes or cancel `ctx`, otherwise the producer goroutine blocks. From [llm/openrouter/example_test.go](../../llm/openrouter/example_test.go) (`ExampleClient_Stream`):
+The stream contract: an error before the first byte (authentication, invalid request, exhausted retries) is returned by `Stream` directly, later failures arrive as `EventError`; an OpenRouter stream that stops before both `[DONE]` and a finish reason was cut off and is an `EventError` with `llm.ErrServerError`. A finish reason `error` without an error envelope is `llm.ErrServerError` too, on `Stream` and on `Complete` (which returns the partial response and its usage with it). `EventEnd` is always last, then the client closes the channel; it closes early when `ctx` ends. Read until it closes or cancel `ctx`, otherwise the producer goroutine blocks. From [llm/openrouter/example_test.go](../../llm/openrouter/example_test.go) (`ExampleClient_Stream`):
 
 ```go
 	// Drain until the channel closes; EventEnd is always the last event.

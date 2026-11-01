@@ -309,6 +309,37 @@ func TestComplete_ContentFilterErrorEnvelope(t *testing.T) {
 	}
 }
 
+// TestFinishReasonErrorWithoutEnvelope pins that finish_reason "error" without
+// an error envelope fails the call with ErrServerError on both paths, keeping
+// the partial text and the usage of the billed turn.
+func TestFinishReasonErrorWithoutEnvelope(t *testing.T) {
+	t.Parallel()
+	const usage = `"usage":{"prompt_tokens":7,"completion_tokens":3,"cost":0.01}`
+	t.Run("complete", func(t *testing.T) {
+		t.Parallel()
+		body := []byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"partial"},"finish_reason":"error"}],` + usage + `}`)
+		response, err := newTestClient(t, newTestServer(t, jsonHandler(body))).Complete(context.Background(), llm.Request{Model: "m"})
+		if !errors.Is(err, llm.ErrServerError) {
+			t.Errorf("err = %v, want ErrServerError", err)
+		}
+		if response.Text != "partial" || response.FinishReason != finishReasonError || response.Usage == nil || response.Usage.CostUSD != 0.01 {
+			t.Errorf("response = %+v, want the partial text, finish reason and usage", response)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		t.Parallel()
+		body := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n" +
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"error\"}]," + usage + "}\n\n"
+		summary := summarize(t, streamBody(t, []byte(body)))
+		if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrServerError) {
+			t.Errorf("errors = %v, want one ErrServerError", summary.errors)
+		}
+		if summary.text != "partial" || len(summary.usages) != 1 || summary.end == nil || summary.end.FinishReason != finishReasonError {
+			t.Errorf("summary = %+v, want the partial text, usage and finish reason", summary)
+		}
+	})
+}
+
 func TestComplete_5xxRetryThenSuccess(t *testing.T) {
 	t.Parallel()
 	successBody := []byte(`{
