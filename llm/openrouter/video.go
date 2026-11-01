@@ -23,7 +23,9 @@ var _ llm.VideoGenerator = (*Client)(nil)
 // the file under the same bearer token. It blocks for minutes; ctx bounds it.
 //
 // An invalid request fails with llm.ErrInvalidRequest before any request.
-// Each request retries like Complete's (429, 5xx). A refusal surfaces as
+// Polls and the download retry like Complete's (429, 5xx); the submit retries
+// a 429 only, since after anything else the job may already exist and be
+// billed. A refusal surfaces as
 // ErrContentFiltered: a failed job or a 400 whose message reads like
 // moderation, and a completed job without any output, which is how some
 // providers (Veo) report a silent safety rejection. Once the job exists the
@@ -65,14 +67,18 @@ func (c *Client) GenerateVideo(ctx context.Context, request llm.VideoRequest) (l
 	return response, nil
 }
 
-// submitVideo enqueues the job; the endpoint answers 202 with its id.
+// submitVideo enqueues the job; the endpoint answers 202 with its id. Only a
+// 429 proves the job was not created, so only a 429 is retried: after a 5xx,
+// a dropped connection or a 202 whose body did not arrive the job may exist
+// and be billed, and a second submit would bill a second clip (RES-004).
 func (c *Client) submitVideo(ctx context.Context, body []byte) (videoJob, error) {
 	raw, _, err := c.do(ctx, httpCall{
-		method:     http.MethodPost,
-		url:        c.baseURL + "/videos",
-		body:       body,
-		accept:     "application/json",
-		wantStatus: http.StatusAccepted,
+		method:      http.MethodPost,
+		url:         c.baseURL + "/videos",
+		body:        body,
+		accept:      "application/json",
+		wantStatus:  http.StatusAccepted,
+		shouldRetry: func(err error) bool { return errors.Is(err, llm.ErrRateLimited) },
 	})
 	if err != nil {
 		if errors.Is(err, llm.ErrInvalidRequest) && isRefusal(err.Error()) {

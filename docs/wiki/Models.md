@@ -68,7 +68,7 @@ Use `Complete` instead of `Stream` for image output: a base64 image in one SSE l
 | `HTTPReferer`, `XTitle` | empty | OpenRouter attribution headers |
 | `Provider` | none | default `*openrouter.ProviderPreferences` for chat and decision calls |
 | `ProviderOrder` | none | shorthand: one entry pins it (no fallbacks), several form a fallback chain; ignored when `Provider` is set |
-| `MaximumAttempts` | 3 | HTTP attempts per call on 429, 5xx and network errors, on every path; 1 disables retry |
+| `MaximumAttempts` | 3 | HTTP attempts per call on 429, 5xx and network errors, on every path (the video submit on 429 only); 1 disables retry |
 | `VideoPollInterval` | 3 s | `GenerateVideo` polling |
 
 Every chat request asks OpenRouter for usage accounting, so `CostUSD` is set on streamed and non-streamed calls alike.

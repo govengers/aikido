@@ -185,6 +185,63 @@ func TestGenerateVideo_SubmitErrors(t *testing.T) {
 	}
 }
 
+// TestGenerateVideo_SubmitRetriesOnlyRateLimits pins RES-004 for the
+// non-idempotent submit: only a 429 proves no job was created; a 5xx or a 202
+// whose body breaks off may hide a billed job and is not sent again.
+func TestGenerateVideo_SubmitRetriesOnlyRateLimits(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name        string
+		first       func(writer http.ResponseWriter)
+		wantSubmits int32
+		wantErr     error
+	}{
+		{name: "429 retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Retry-After", "0")
+			writer.WriteHeader(http.StatusTooManyRequests)
+		}, wantSubmits: 2},
+		{name: "503 not retried", first: func(writer http.ResponseWriter) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+		{name: "202 cut off not retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Content-Length", "100")
+			writer.WriteHeader(http.StatusAccepted)
+			_, _ = writer.Write([]byte(`{"id":"jo`))
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var submits atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /videos", func(writer http.ResponseWriter, _ *http.Request) {
+				if submits.Add(1) == 1 {
+					testCase.first(writer)
+					return
+				}
+				writer.WriteHeader(http.StatusAccepted)
+				_, _ = writer.Write([]byte(`{"id":"job1","status":"completed","unsigned_urls":["u"]}`))
+			})
+			mux.HandleFunc("GET /videos/job1/content", func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write(fakeMP4)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			if !errors.Is(err, testCase.wantErr) || (testCase.wantErr == nil && err != nil) {
+				t.Errorf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if got := submits.Load(); got != testCase.wantSubmits {
+				t.Errorf("submits = %d, want %d", got, testCase.wantSubmits)
+			}
+		})
+	}
+}
+
 // TestGenerateVideo_ClipAboveTheCap pins maximumVideoBytes: a clip declared
 // larger is refused before it is read, with the JobID kept.
 func TestGenerateVideo_ClipAboveTheCap(t *testing.T) {

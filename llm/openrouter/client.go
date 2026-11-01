@@ -74,9 +74,9 @@ type Options struct {
 
 	// MaximumAttempts is the total number of HTTP attempts per call on 429, 5xx
 	// and network errors, on every path (Stream, Complete, transcription,
-	// images, speech, each video submit/poll/download request). 0 keeps the
-	// default of 3; 1 disables retry, for callers that run their own job-level
-	// retry. Negative is treated as 1.
+	// images, speech, each video submit/poll/download request); the video
+	// submit retries on 429 only. 0 keeps the default of 3; 1 disables retry,
+	// for callers that run their own job-level retry. Negative is treated as 1.
 	MaximumAttempts int
 
 	// VideoPollInterval is how often GenerateVideo polls a running job.
@@ -241,6 +241,9 @@ type httpCall struct {
 	wantStatus int
 	// maximumBytes caps the answer's body; 0 means maximumResponseBytes.
 	maximumBytes int64
+	// shouldRetry narrows the retry predicate for a request that is not
+	// idempotent; nil retries every transient error.
+	shouldRetry func(error) bool
 }
 
 // postJSON sends one JSON body to path (relative to baseURL) and returns the
@@ -267,7 +270,11 @@ func (c *Client) do(ctx context.Context, call httpCall) ([]byte, http.Header, er
 		raw    []byte
 		header http.Header
 	)
-	err := retry.Do(ctx, c.retryPolicy(), func(_ int) error {
+	policy := c.retryPolicy()
+	if call.shouldRetry != nil {
+		policy.ShouldRetry = call.shouldRetry
+	}
+	err := retry.Do(ctx, policy, func(_ int) error {
 		response, err := c.send(ctx, call)
 		if err != nil {
 			return err

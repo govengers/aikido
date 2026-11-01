@@ -107,6 +107,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | Cancellation | a cancelled request could surface as `llm.ErrServerError` (and be retried) | `context.Canceled` / `context.DeadlineExceeded`, in `openrouter` and `codex`, on `Stream` and `Complete` |
 | Provider errors | sentinel-wrapped text | `*openrouter.APIError` with `StatusCode`, `Code`, `Message`; `errors.Is` on the sentinels and the `Error()` text are unchanged |
 | Undecodable answers | a 2xx whose body did not decode was `llm.ErrServerError` and retried | `llm.ErrInvalidResponse`, not transient, not retried (`Complete`, images, decisions, models, video) |
+| Video submit retry | `POST /videos` retried on 429, 5xx, network errors and a 202 whose body broke off, which could create and bill a second job | retried on 429 only; polls and the download keep the full rule |
 | Provider preferences | `NewClient` and `WithProvider` kept your `*ProviderPreferences`; changing it later changed routing | both keep a copy; build a new client or context to change routing |
 | OpenRouter stream end | a body that ended without `[DONE]` or a finish reason was a success with what had arrived; tool calls of a stream without a finish reason were dropped | a cut-off body is `EventError` (`llm.ErrServerError`); `[DONE]` without a finish reason still delivers the tool calls |
 | OpenRouter tool calls | complete calls without an index (`Complete`) or several at index 0 with their own ids (`Stream`) were merged into one call with broken arguments | one call each; a fragment with a new id starts a new call |
