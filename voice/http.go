@@ -46,7 +46,10 @@ type HandlerOptions struct {
 	// does not take a line within it counts as gone: the handler stops
 	// writing and drains the turn to its end. It is applied through
 	// http.ResponseController.SetWriteDeadline, so a ResponseWriter without
-	// deadline support writes without a cap. Default 30 seconds.
+	// deadline support writes without a cap. The deadline is cleared between
+	// lines, so a turn may wait longer than WriteTimeout for its next event
+	// (a long tool call). A writer without Flush gets every line unflushed.
+	// Default 30 seconds.
 	WriteTimeout time.Duration
 }
 
@@ -158,13 +161,21 @@ func (h *Handler) writeEvents(writer http.ResponseWriter, events <-chan Event) {
 }
 
 // writeLine writes and flushes one event under the write deadline and
-// reports whether the client is still connected.
+// reports whether the client is still connected. The deadline is cleared
+// after the line: armed while the turn waits (a long tool call), it would
+// reset a healthy HTTP/2 stream. A writer without deadlines or Flush (a
+// middleware wrapper) is written to as it is.
 func (h *Handler) writeLine(controller *http.ResponseController, encoder *json.Encoder, event Event) bool {
-	err := controller.SetWriteDeadline(time.Now().Add(h.options.WriteTimeout))
-	if err != nil && !errors.Is(err, http.ErrNotSupported) {
-		return false
-	}
-	return encoder.Encode(h.toWire(event)) == nil && controller.Flush() == nil
+	return stillConnected(controller.SetWriteDeadline(time.Now().Add(h.options.WriteTimeout))) &&
+		encoder.Encode(h.toWire(event)) == nil &&
+		stillConnected(controller.Flush()) &&
+		stillConnected(controller.SetWriteDeadline(time.Time{}))
+}
+
+// stillConnected reports whether a ResponseController call left the client
+// connected: it succeeded, or the writer does not support it.
+func stillConnected(err error) bool {
+	return err == nil || errors.Is(err, http.ErrNotSupported)
 }
 
 // writeError answers with a JSON error body. The status is already sent when

@@ -464,6 +464,67 @@ func TestHandler_StalledClientHitsTheWriteDeadline(t *testing.T) {
 	}
 }
 
+// deadlineRecorder is a ResponseRecorder that records every write deadline.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadlines []time.Time
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	d.deadlines = append(d.deadlines, deadline)
+	return nil
+}
+
+// The write deadline covers one line only: left armed while the turn waits
+// for its next event (a long tool call), it would reset a healthy HTTP/2
+// stream. Every deadline is cleared again after its line.
+func TestHandler_ClearsTheWriteDeadlineAfterEachLine(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandler(t, nil, llmtest.NewStubClient(replyTurn(0, firstAnswer+secondAnswer)), 0)
+	writer := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	handler.ServeHTTP(writer, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo","output":"speech"}`)))
+
+	lines := len(readLines(t, writer.Body))
+	if lines == 0 || len(writer.deadlines) != 2*lines {
+		t.Fatalf("%d deadlines for %d lines, want one set and one clear per line", len(writer.deadlines), lines)
+	}
+	for index, deadline := range writer.deadlines {
+		if armed := index%2 == 0; deadline.IsZero() == armed {
+			t.Errorf("deadline %d = %v, want armed before and cleared after each line", index, deadline)
+		}
+	}
+}
+
+// bareWriter is a ResponseWriter without Flush, deadlines or Unwrap, like a
+// logging or gzip middleware wrapper.
+type bareWriter struct {
+	header http.Header
+	body   bytes.Buffer
+}
+
+func (b *bareWriter) Header() http.Header { return b.header }
+
+func (*bareWriter) WriteHeader(int) {}
+
+func (b *bareWriter) Write(data []byte) (int, error) { return b.body.Write(data) }
+
+// A writer that cannot flush is not a disconnected client: every line,
+// "done" included, is written.
+func TestHandler_WriterWithoutFlushGetsEveryLine(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandler(t, nil, llmtest.NewStubClient(replyTurn(0, firstAnswer+secondAnswer)), 0)
+	writer := &bareWriter{header: http.Header{}}
+	handler.ServeHTTP(writer, newPost(t, "/voice", "application/json", strings.NewReader(`{"text":"Hallo","output":"speech"}`)))
+
+	var types []string
+	for _, line := range readLines(t, &writer.body) {
+		types = append(types, line["type"].(string))
+	}
+	if got := strings.Join(types, ","); got != "text,speech,speech,done" {
+		t.Errorf("types = %s, want every line", got)
+	}
+}
+
 func TestNewHandler_DefaultsTheWriteTimeout(t *testing.T) {
 	t.Parallel()
 	handler, err := NewHandler(&HandlerOptions{

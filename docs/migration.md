@@ -129,6 +129,7 @@ Additive; nothing to migrate, listed so you know it exists.
 | OpenRouter answer cut after a 2xx | a non-streaming answer (`Complete`, images, speech, decisions, models, video poll and download) whose body broke off mid-read was sent again, billing the work twice | `llm.ErrServerError` after one request; only failures before a status arrived, 429 and 5xx are retried. `CompleteWithRetry` still retries it, as you asked |
 | OpenRouter `Complete` with `finish_reason: "error"` | without an error envelope it was a success with the partial output | `llm.ErrServerError` with the partial response and its usage, as on `Stream` |
 | OpenRouter malformed stream chunk | a `data:` payload that was not valid JSON was skipped, so a stream missing text or a tool-call fragment could end as a success | `EventError` (`llm.ErrInvalidResponse`), pending tool calls dropped; the trailing usage still arrives |
+| `voice.Handler` behind a wrapper without `Flush` | a `ResponseWriter` without `Flush` or `Unwrap` (logging or gzip middleware) got one NDJSON line and never `done` | every line, unflushed; the per-line write deadline is cleared after each line, so a long tool call between lines does not reset the stream |
 
 ## Coming from v0.3.x (ASO Nexus Hub)
 
