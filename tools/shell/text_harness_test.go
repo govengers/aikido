@@ -273,13 +273,23 @@ func gnuRunner(t *testing.T) func(*testing.T, string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("no GNU tools on the host and no docker")
 	}
-	if err := exec.CommandContext(t.Context(), "docker", "image", "inspect", "debian:12").Run(); err != nil {
-		t.Skip("docker image debian:12 not present")
+	image := gnuImage()
+	if err := exec.CommandContext(t.Context(), "docker", "image", "inspect", image).Run(); err != nil {
+		t.Skipf("docker image %s not present", image)
 	}
 	return func(t *testing.T, directory string) {
 		t.Helper()
-		runOrFail(t, exec.CommandContext(t.Context(), "docker", "run", "--rm", "--init", "-v", directory+":/w", "-w", "/w", "debian:12", "bash", "/w/run.sh"), directory)
+		runOrFail(t, exec.CommandContext(t.Context(), "docker", "run", "--rm", "--init", "-v", directory+":/w", "-w", "/w", image, "bash", "/w/run.sh"), directory)
 	}
+}
+
+// gnuImage is the Docker image with GNU tools: debian:12 unless
+// AIKIDO_GNU_IMAGE names another (golang:1.26 runs natively on arm64).
+func gnuImage() string {
+	if image := os.Getenv("AIKIDO_GNU_IMAGE"); image != "" {
+		return image
+	}
+	return "debian:12"
 }
 
 func runOrFail(t *testing.T, command *exec.Cmd, directory string) {
