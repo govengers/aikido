@@ -42,6 +42,7 @@ func (s *session) parse(script, name string) (*syntax.File, error) {
 	if err := refuseUnsupported(file); err != nil {
 		return nil, err
 	}
+	s.noteFunctions(file)
 	s.substituteProcesses(file)
 	return file, nil
 }
@@ -115,6 +116,9 @@ func (s *session) processFileParts(substitution *syntax.ProcSubst) []syntax.Word
 // scripts are returned as they are, so error messages keep their text.
 func (s *session) rewriteScriptArgument(script, name string) (string, error) {
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), name)
+	if err == nil {
+		s.noteFunctions(file)
+	}
 	if err != nil || !containsProcessSubstitution(file) {
 		return script, nil //nolint:nilerr // a syntax error is the interpreter's to report, with its own wording
 	}

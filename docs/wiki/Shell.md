@@ -83,7 +83,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 
 Text commands (`grep`, `sed`, `head`, `tail`, `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `jq`, `awk`) are built in the same way; their flags appear in the tool description from their `Summary`. `grep -Z` (`--null`) ends every printed file name with a NUL byte, for `grep -rlZ x . | xargs -0 sed -i ...`; `grep -z` (`--null-data`) reads and writes NUL-terminated lines. `awk` sees the exported variables in `ENVIRON`.
 
-The interpreter itself provides the shell builtins: `cd`, `pwd`, `echo`, `printf`, `test` and `[`, `read`, `export`, `set`, `shift`, `exit`, `return`, `source`/`.`, `eval`, `local`, `declare`, `trap`, `wait`, `true`, `false`, `type`, `command`, `alias`, `getopts`, `pushd`/`popd`, `mapfile`. `xargs`, `find -exec` and `env` can start them too (`xargs echo`). `command -v` and `type` answer for registered commands as for builtins.
+The interpreter itself provides the shell builtins: `cd`, `pwd`, `echo`, `printf`, `test` and `[`, `read`, `export`, `set`, `shift`, `exit`, `return`, `source`/`.`, `eval`, `local`, `declare`, `trap`, `wait`, `true`, `false`, `type`, `command`, `alias`, `getopts`, `pushd`/`popd`, `mapfile`. `xargs`, `find -exec` and `env` can start them too (`xargs echo`). `command -v` and `type` answer for registered commands as for builtins, and know the functions a script defines.
 
 ## External
 
@@ -129,7 +129,7 @@ stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl 
 
 ## Security
 
-- Every file access of the interpreter goes through handlers over the Storage: redirects, `source`, globs, `test -f`, `cd`. The handlers resolve paths with `shell.Resolve`; nothing above the root resolves. `pwd -P` and `source name` (which would consult the host's symlinks and `PATH`) are rewritten before they run, and `command -v`/`type` answer registered commands without a host lookup. The interpreter would open paths named `sh-interp-*` in its temporary directory (`$TMPDIR`) on the host and create process substitution FIFOs there; the shell gives it a temporary directory no host call can open, so `/tmp/sh-interp-x` is an ordinary file of the virtual `/tmp` and no FIFO is ever created.
+- Every file access of the interpreter goes through handlers over the Storage: redirects, `source`, globs, `test -f`, `cd`. The handlers resolve paths with `shell.Resolve`; nothing above the root resolves. `pwd -P` and `source name` (which would consult the host's symlinks and `PATH`) are rewritten before they run, the same holds behind `builtin` and `command`, and `command -v`/`-V` and `type [-t|-p|-P]` are answered by the shell from its commands, the builtins, keywords and the functions its scripts define, never from the host PATH (no file is executable, so `type -P` finds nothing). The interpreter would open paths named `sh-interp-*` in its temporary directory (`$TMPDIR`) on the host and create process substitution FIFOs there; the shell gives it a temporary directory no host call can open, so `/tmp/sh-interp-x` is an ordinary file of the virtual `/tmp` and no FIFO is ever created.
 - The script and the built-in commands never see the host environment; `HOME` defaults to `/`.
 - Host programs run only as `External` commands, with the environment you give them.
 - Each `Run` is bounded by `Timeout` (commands honour the context; `sleep`, `External` and loops stop) and its output by `MaximumOutputBytes`. A panicking `Command` becomes `name: internal error: ...` with status 2, not a crashed process.

@@ -183,3 +183,16 @@ func TestHideHiddenPaths(t *testing.T) {
 		t.Fatal("the script wrote .git/hooks/pre-commit")
 	}
 }
+
+// TestLookupsDoNotProbeTheHost replays the review's S6 and S20: builtin
+// wrappers skipped the pwd -P rewrite (host symlinks), and command -v, type
+// and type -P searched the host PATH or stat'ed host paths.
+func TestLookupsDoNotProbeTheHost(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	script := "cd /tmp; builtin pwd -P; command pwd -P; PATH=/usr/bin:/bin; command -v curl sh ls cd f if; echo $?; f() { :; }; " +
+		"type -t f ls if nope; echo $?; type /bin/sh; command -v /usr/bin/python3; echo $?; type -P ls; echo $?; type -p ls; echo $?; type ls f"
+	want := "/tmp\n/tmp\nsh\nls\ncd\nf\nif\n1\nfunction\nbuiltin\nkeyword\n1\nbash: line 1: type: /bin/sh: not found\n1\n1\n0\nls is a shell builtin\nf is a function\n"
+	if result := mustRun(t, shell, script); result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}

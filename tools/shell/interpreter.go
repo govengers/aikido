@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -56,6 +57,9 @@ type session struct {
 	commands    map[string]Command
 	// processFiles counts the /dev/fd paths <(list) has used in this Run.
 	processFiles atomic.Int64
+	// functions holds the names of the functions the session's scripts
+	// define, for command -v and type.
+	functions sync.Map
 }
 
 func (s *session) files() workspace {
@@ -230,7 +234,7 @@ func (s *session) dispatch(ctx context.Context, name string, invocation *Invocat
 		if len(invocation.Arguments) == 0 {
 			return statusInternalError
 		}
-		return s.lookup(invocation)
+		return s.lookup(invocation, position)
 	}
 	if command, ok := s.commands[name]; ok {
 		return runCommand(ctx, command, invocation)
@@ -307,23 +311,6 @@ func runCommand(ctx context.Context, command Command, invocation *Invocation) (s
 	}
 	complain(invocation, command.Name, "%v", describe(err))
 	return statusCommandFailure
-}
-
-// lookup answers "command -v" and "type" for names that are all registered
-// commands: they behave like shell builtins.
-func (s *session) lookup(invocation *Invocation) uint8 {
-	kind, names := invocation.Arguments[0], invocation.Arguments[1:]
-	for _, name := range names {
-		switch kind {
-		case "command":
-			fmt.Fprintln(invocation.Stdout, name)
-		case "type -t":
-			fmt.Fprintln(invocation.Stdout, "builtin")
-		default:
-			fmt.Fprintf(invocation.Stdout, "%s is a shell builtin\n", name)
-		}
-	}
-	return 0
 }
 
 // rewrite is the interpreter's call handler. It runs before every simple
@@ -422,28 +409,6 @@ func (s *session) rewriteChangeDirectory(ctx context.Context, handler interp.Han
 		return []string{internalFailure, prefix + arguments[1] + ": " + errNotDirectory.Error(), "1"}
 	}
 	return arguments
-}
-
-// rewriteLookup sends "command -v names" and "type [-t] names" to the shell
-// when every name is a registered command; the builtins would search PATH on
-// the host.
-func (s *session) rewriteLookup(arguments []string) []string {
-	kind, names := arguments[0], arguments[1:]
-	switch {
-	case kind == "command" && len(names) > 1 && names[0] == "-v":
-		names = names[1:]
-	case kind == "type" && len(names) > 1 && names[0] == "-t":
-		kind, names = "type -t", names[1:]
-	case kind == "type" && len(names) > 0:
-	default:
-		return arguments
-	}
-	for _, name := range names {
-		if _, ok := s.commands[name]; !ok {
-			return arguments
-		}
-	}
-	return append([]string{internalLookup, kind}, names...)
 }
 
 // pathError is how a handler reports a file error: the interpreter prints
