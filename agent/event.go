@@ -75,7 +75,9 @@ type ToolResult struct {
 }
 
 // Event is one streaming event from a session run. Kind says which of the
-// other fields is set.
+// other fields is set. The caller owns everything an Event points to, image
+// bytes included: changing it does not affect the run, its next requests or
+// History.
 type Event struct {
 	Kind       EventKind
 	Text       string

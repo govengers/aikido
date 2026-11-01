@@ -864,3 +864,39 @@ func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
 		t.Errorf("events = %v; want %v", kinds, want)
 	}
 }
+
+// Regression: EventImage shared its Data with the recorded reply, so a caller
+// changing the bytes changed the next request and History.
+func TestRun_CallerMayChangePublishedImageBytes(t *testing.T) {
+	changed := make(chan struct{})
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "wait", func(ctx context.Context, _ json.RawMessage, _ tools.Environment) (tools.Result, error) {
+		select {
+		case <-changed:
+			return tools.Result{Content: "ok"}, nil
+		case <-ctx.Done():
+			return tools.Result{}, ctx.Err()
+		}
+	})
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventImage, Image: &llm.ImagePart{ContentType: "image/png", Data: []byte("png")}},
+		{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "wait", Arguments: "{}"}},
+		{Kind: llm.EventEnd},
+	}}, textTurn("done"))
+	history := memory.New()
+	session := newTestSession(t, stub, registry, history)
+
+	events, _ := session.Run(context.Background(), "draw")
+	for event := range events {
+		if event.Kind == EventImage {
+			event.Image.Data[0] = 'X'
+			close(changed)
+		}
+	}
+	if got := string(stub.Requests()[1].Messages[2].Images[0].Data); got != "png" {
+		t.Errorf("image resent to the model = %q; want png", got)
+	}
+	if got := string(storedMessages(t, history, "s-test")[1].Images[0].Data); got != "png" {
+		t.Errorf("image in History = %q; want png", got)
+	}
+}

@@ -82,6 +82,8 @@ The returned error is always nil; everything arrives on the channel, which ends 
 | `EventError` | `Err` | the error that ends the run; `EventEnd` follows |
 | `EventEnd` | `EndReason` | last event, exactly once |
 
+You own everything an event points to, image bytes included: changing it never alters the run, its next requests or History.
+
 ## End reasons
 
 `agent.EndReason` is a string type with stable values, safe to persist.

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -285,7 +286,10 @@ func (b *replyBuilder) add(event llm.Event, sink eventSink) {
 	case llm.EventImage:
 		if event.Image != nil {
 			b.images = append(b.images, *event.Image)
+			// The caller owns the event's copy, bytes included, so changing it
+			// cannot alter the reply the run records.
 			image := *event.Image
+			image.Data = bytes.Clone(image.Data)
 			sink.send(Event{Kind: EventImage, Image: &image})
 		}
 	case llm.EventUsage:
