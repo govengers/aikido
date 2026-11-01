@@ -206,15 +206,15 @@ func TestWrapText(t *testing.T) {
 }
 
 func TestBoundedOutputKeepsRunesWhole(t *testing.T) {
-	output := newBoundedOutput(10)
-	if _, err := output.Write([]byte("äääää" + strings.Repeat("x", 20) + "üüüüü")); err != nil {
+	output := newBoundedOutput(46) // 34 bytes of marker, 12 of content
+	if _, err := output.Write([]byte("äääää" + strings.Repeat("x", 40) + "üüüüü")); err != nil {
 		t.Fatal(err)
 	}
 	text, truncated := output.result()
 	if !truncated || !strings.HasPrefix(text, "ää") || !strings.HasSuffix(text, "üü") || strings.ContainsRune(text, '�') {
 		t.Fatalf("result = %q, %v", text, truncated)
 	}
-	if !strings.Contains(text, "[") || strings.Count(text, "\n") != 2 {
+	if !strings.Contains(text, "[") || strings.Count(text, "\n") != 2 || len(text) > 46 {
 		t.Fatalf("no single cut marker in %q", text)
 	}
 }

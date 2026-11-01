@@ -149,13 +149,20 @@ func (o *boundedOutput) result() (string, bool) {
 	if o.limit < 0 || o.total <= o.limit {
 		return string(o.head) + string(o.tail), false
 	}
-	tail := o.tail[len(o.tail)-(o.limit-o.limit/2):]
-	head := trimIncompleteRune(o.head)
+	// The marker counts against the limit; its length is bounded by the
+	// one for cutting everything.
+	budget := max(o.limit-len(cutMarker(o.total)), 0)
+	head := trimIncompleteRune(o.head[:min(len(o.head), budget/2)])
+	tail := o.tail[max(len(o.tail)-(budget-len(head)), 0):]
 	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
 		tail = tail[1:]
 	}
-	cut := o.total - len(head) - len(tail)
-	return fmt.Sprintf("%s\n... [%d bytes of output cut] ...\n%s", head, cut, tail), true
+	return string(head) + cutMarker(o.total-len(head)-len(tail)) + string(tail), true
+}
+
+// cutMarker replaces the middle of an output that was too long.
+func cutMarker(cut int) string {
+	return fmt.Sprintf("\n... [%d bytes of output cut] ...\n", cut)
 }
 
 // trimIncompleteRune drops a UTF-8 sequence the cut left unfinished at the

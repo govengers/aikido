@@ -194,12 +194,12 @@ func TestRunReturnsTheCallersCancellation(t *testing.T) {
 }
 
 func TestRunBoundsOutput(t *testing.T) {
-	shell, _ := newTestShell(t, nil, &Options{MaximumOutputBytes: 40})
+	shell, _ := newTestShell(t, nil, &Options{MaximumOutputBytes: 60})
 	result := mustRun(t, shell, "seq 1000")
 	if !result.Truncated || !strings.HasPrefix(result.Output, "1\n2\n3\n") || !strings.HasSuffix(result.Output, "999\n1000\n") {
 		t.Fatalf("result = %+v", result)
 	}
-	if !strings.Contains(result.Output, "bytes of output cut") {
+	if !strings.Contains(result.Output, "bytes of output cut") || len(result.Output) > 60 {
 		t.Fatalf("output %q has no cut marker", result.Output)
 	}
 	unbounded, _ := newTestShell(t, nil, &Options{MaximumOutputBytes: -1})

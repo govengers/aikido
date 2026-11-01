@@ -54,7 +54,8 @@ type Options struct {
 	// it. A script that runs out of time is stopped with exit status 124.
 	Timeout time.Duration
 	// MaximumOutputBytes bounds Result.Output (stdout and stderr together):
-	// the first and the last half are kept, the middle is cut with a marker.
+	// the first and the last half are kept, the middle is cut with a marker
+	// that counts against the limit.
 	// Zero means DefaultMaximumOutputBytes, negative keeps everything.
 	MaximumOutputBytes int
 	// ToolName is the name Register gives the tool; empty means
