@@ -647,7 +647,8 @@ type grepScan struct {
 	lastPrinted             int
 	afterRemaining          int
 	// recent are the last lines not selected, for -B; recentBytes is
-	// their size, held within the input budget.
+	// their size with retainedLineOverhead each, held within the input
+	// budget.
 	recent      []grepLine
 	recentBytes int
 	// stop ends the search of the file (-q, -l, -m, a binary match).
@@ -721,13 +722,17 @@ func (g *grepSearcher) scanLine(ctx context.Context, scan *grepScan, line grepLi
 	return nil
 }
 
+// retainedLineOverhead is what a kept -B line costs besides its text (its
+// grepLine and slice slot), so a run of empty lines counts too.
+const retainedLineOverhead = 64
+
 // keepBefore keeps an unselected line as -B context of a later match;
 // beyond the input budget it is errInputTooLarge.
 func (g *grepSearcher) keepBefore(scan *grepScan, line grepLine) error {
 	scan.recent = append(scan.recent, line)
-	scan.recentBytes += len(line.text)
+	scan.recentBytes += retainedLineOverhead + len(line.text)
 	if len(scan.recent) > g.settings.before {
-		scan.recentBytes -= len(scan.recent[0].text)
+		scan.recentBytes -= retainedLineOverhead + len(scan.recent[0].text)
 		scan.recent = scan.recent[1:]
 	}
 	if scan.recentBytes > maximumInputBytes {
