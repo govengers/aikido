@@ -26,7 +26,7 @@ type Command struct {
 	// e.g. "search text (-r -n -l -i -c -v -E -o -w)". Required.
 	Summary string
 	// Run executes one invocation. It returns nil for exit status 0, an
-	// ExitStatus for another status, and any other error for a failure the
+	// ExitError for another status, and any other error for a failure the
 	// shell reports on stderr with status 1. Run must honour ctx.
 	Run func(ctx context.Context, invocation *Invocation) error
 }
@@ -51,8 +51,8 @@ type Invocation struct {
 	Environment []string
 }
 
-// ExitStatus is a non-zero exit status a Command returns, like grep's 1 for
+// ExitError is a non-zero exit status a Command returns, like grep's 1 for
 // "no match".
-type ExitStatus uint8
+type ExitError uint8
 
-func (s ExitStatus) Error() string { return fmt.Sprintf("exit status %d", uint8(s)) }
+func (s ExitError) Error() string { return fmt.Sprintf("exit status %d", uint8(s)) }
