@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,59 @@ func TestRunAgent_ApplyIsRefusedWhenTheRunDidNotFinish(t *testing.T) {
 	}
 	if _, statError := os.Stat(filepath.Join(directory, "notes.md")); !os.IsNotExist(statError) {
 		t.Errorf("a failed run wrote notes.md: %v", statError)
+	}
+}
+
+// Regression: a refused --apply returned success when the run left no
+// changes.
+func TestRunAgent_ApplyIsRefusedWithoutChanges(t *testing.T) {
+	options := agentTestOptions()
+	options.directory, options.apply = newProjectDirectory(t), true
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventError, Err: llm.ErrServerError}, {Kind: llm.EventEnd}}})
+	var out bytes.Buffer
+	err := runAgent(context.Background(), options, &out, stub)
+	if err == nil || !strings.Contains(err.Error(), "--apply refused") || !errors.Is(err, llm.ErrServerError) {
+		t.Fatalf("runAgent error = %v; want the apply refusal and the run's error", err)
+	}
+	if got := out.String(); !strings.Contains(got, "--- no changes ---") || !strings.Contains(got, "not applied") {
+		t.Errorf("output:\n%s", got)
+	}
+}
+
+// Regression: a dry run that ended with an error exited zero.
+func TestRunAgent_FailedDryRunIsAnError(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventError, Err: llm.ErrServerError}, {Kind: llm.EventEnd}}})
+	err := runAgent(context.Background(), agentTestOptions(), &bytes.Buffer{}, stub)
+	if !errors.Is(err, llm.ErrServerError) || !strings.Contains(err.Error(), "the run ended with error") {
+		t.Fatalf("runAgent error = %v; want the run's error", err)
+	}
+}
+
+func TestRunFailure(t *testing.T) {
+	cause := errors.New("boom")
+	testCases := []struct {
+		endReason agent.EndReason
+		cause     error
+		want      string // empty: no failure
+	}{
+		{agent.EndReasonStop, nil, ""},
+		{agent.EndReasonMaximumTurns, nil, ""},
+		{agent.EndReasonError, cause, "the run ended with error: boom"},
+		{agent.EndReasonTimeout, nil, "the run ended with timeout"},
+		{agent.EndReasonCancelled, context.Canceled, "the run ended with cancelled: context canceled"},
+	}
+	for _, testCase := range testCases {
+		t.Run(string(testCase.endReason), func(t *testing.T) {
+			err := runFailure(testCase.endReason, testCase.cause)
+			switch {
+			case testCase.want == "" && err != nil:
+				t.Errorf("runFailure = %v; want nil", err)
+			case testCase.want != "" && (err == nil || err.Error() != testCase.want):
+				t.Errorf("runFailure = %v; want %q", err, testCase.want)
+			case testCase.cause != nil && !errors.Is(err, testCase.cause):
+				t.Errorf("runFailure = %v; want it to wrap %v", err, testCase.cause)
+			}
+		})
 	}
 }
 

@@ -133,6 +133,7 @@ func (w *workspace) close() {
 
 // report prints what the run left behind: the in-memory files, or the
 // directories' changes as a list and a unified diff, which apply then writes.
+// A refused --apply is an error even when there is nothing to write.
 func (w *workspace) report(ctx context.Context, out io.Writer, decision commitDecision) error {
 	if w.memory != nil {
 		// memory.Storage fails only on a done ctx, and then the run was
@@ -141,26 +142,25 @@ func (w *workspace) report(ctx context.Context, out io.Writer, decision commitDe
 			printWorkspace(out, files)
 		}
 	}
-	if len(w.overlays) == 0 {
-		return nil
-	}
 	changes, err := w.changes(ctx)
 	if err != nil {
 		return err
 	}
-	printChanges(out, changes)
-	if len(changes) == 0 {
-		return nil
+	if len(w.overlays) > 0 {
+		printChanges(out, changes)
 	}
-	if decision.refusedReason != "" {
+	switch {
+	case decision.refusedReason != "":
 		fmt.Fprintf(out, "\nnot applied: the run ended with %s, nothing written\n", decision.refusedReason)
 		return fmt.Errorf("--apply refused: the run ended with %s", decision.refusedReason)
-	}
-	if !decision.apply {
+	case len(changes) == 0:
+		return nil
+	case !decision.apply:
 		fmt.Fprintln(out, "\ndry run: nothing written; run again with --apply to write the changes")
 		return nil
+	default:
+		return w.commit(ctx, out)
 	}
-	return w.commit(ctx, out)
 }
 
 // changes lists every directory's changes with the paths the agent saw.

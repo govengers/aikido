@@ -105,13 +105,36 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 		return err
 	}
 	endReason := agent.EndReasonError
+	var runError error
 	for event := range events {
 		printAgentEvent(out, event)
-		if event.Kind == agent.EventEnd {
+		switch event.Kind {
+		case agent.EventError:
+			if runError == nil {
+				runError = event.Err
+			}
+		case agent.EventEnd:
 			endReason = event.EndReason
+		default:
 		}
 	}
-	return workspace.report(ctx, out, applyDecision(options.apply, endReason))
+	reportError := workspace.report(ctx, out, applyDecision(options.apply, endReason))
+	return errors.Join(runFailure(endReason, runError), reportError)
+}
+
+// runFailure is the error the command exits with when the run ended with an
+// error, a timeout or a cancel, dry run or not; cause is the run's EventError.
+// A run that stopped or hit the turn cap is no failure here.
+func runFailure(endReason agent.EndReason, cause error) error {
+	switch endReason {
+	case agent.EndReasonError, agent.EndReasonTimeout, agent.EndReasonCancelled:
+		if cause != nil {
+			return fmt.Errorf("the run ended with %s: %w", endReason, cause)
+		}
+		return fmt.Errorf("the run ended with %s", endReason)
+	default:
+		return nil
+	}
 }
 
 // applyDecision allows --apply only for a run the model finished itself: a run
