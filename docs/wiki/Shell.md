@@ -123,7 +123,7 @@ stdin, stdout and stderr are the script's, so `git log | grep fix` and `kubectl 
 - **Devices.** `/dev/null`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`; every other `/dev` path is missing.
 - **No execute bit.** `./build.sh` fails with exit 126 and a hint (`run it with: bash ./build.sh`); `bash build.sh` works. `test -x` is true for directories only. There is no `chmod`, no symlinks, no file modes.
 - **Ordering.** `ls`, `find` and globs sort by byte order (the C locale); GNU `find` prints in directory order instead, and GNU `ls` sorts by the locale.
-- **No process substitution, no coproc.** `<(...)` and `coproc` are refused with exit 2 and a hint (they need host FIFOs). Background jobs (`&`) run; `wait` waits for them, and the ones still running when the script ends are stopped, as when `bash -c` returns.
+- **Process substitution reads, without streaming.** `<(list)` runs `list` to completion, stores its output in memory as `/dev/fd/63` (then 64, ...) and substitutes that path, so `diff <(sort a) <(sort b)` and `while read l; do ...; done < <(find . -name '*.go')` work, in scripts, functions, nested `bash`, `eval`, `source` and `trap` alike. No host FIFO is involved. The producer ends before the consumer starts: nothing streams, an endless producer runs into the timeout, and the output is capped like any file (64 MiB). The files live for one `Run`, are readable by path only (`ls /dev/fd`, `find` and `grep -r` do not list them) and never reach the Storage. `>(list)` and `coproc` need a reader running next to the writer and are refused with exit 2 and a hint. Background jobs (`&`) run; `wait` waits for them, and the ones still running when the script ends are stopped, as when `bash -c` returns.
 
 ## Security
 

@@ -140,7 +140,7 @@ func removeEmptyDirectory(ctx context.Context, files workspace, directory, opera
 		return errNotFound
 	case found.kind != entryDirectory:
 		return errNotDirectory
-	case name == "" || name == scratchDirectory:
+	case isMountPoint(name):
 		return fileError("Device or resource busy")
 	}
 	listed, err := files.children(ctx, name)

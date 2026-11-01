@@ -34,6 +34,16 @@ const (
 // Shell, never the workspace.
 const scratchDirectory = "tmp"
 
+// processFileDirectory is the workspace path of /dev/fd, where <(list)
+// stores the output of list for one Run.
+const processFileDirectory = "dev/fd"
+
+// isMountPoint reports whether name is the root or a directory the shell
+// mounts: always a directory, never removable.
+func isMountPoint(name string) bool {
+	return name == "" || name == scratchDirectory || name == processFileDirectory
+}
+
 // maximumBufferedFileBytes caps one file a script writes through a redirect
 // or a command, so a runaway loop cannot exhaust memory before the timeout.
 const maximumBufferedFileBytes = 64 << 20
@@ -149,7 +159,7 @@ func workspaceOf(invocation *Invocation) workspace {
 // stat reports what name (a workspace path) is. A missing path is
 // entryMissing with a nil error; the error is for a failing Storage.
 func (w workspace) stat(ctx context.Context, name string) (entry, error) {
-	if name == "" || name == scratchDirectory {
+	if isMountPoint(name) {
 		return entry{kind: entryDirectory}, nil
 	}
 	if isDevice(name) {

@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"mvdan.cc/sh/v3/expand"
@@ -43,12 +44,14 @@ const (
 )
 
 // session is the state one script runs with: the call's storage (the
-// workspace with the /tmp scratch mounted), the shell's created directories
+// workspace with /tmp and /dev/fd mounted), the shell's created directories
 // and its command table. A nested bash shares it.
 type session struct {
 	storage     vfs.Storage
 	directories *directorySet
 	commands    map[string]Command
+	// processFiles counts the /dev/fd paths <(list) has used in this Run.
+	processFiles atomic.Int64
 }
 
 func (s *session) files() workspace {
@@ -119,29 +122,6 @@ func runFile(ctx context.Context, runner *interp.Runner, file *syntax.File) erro
 		_ = runner.Run(context.WithoutCancel(ctx), wait)
 	}
 	return err
-}
-
-// parseScript parses bash source and refuses the constructs the virtual
-// shell cannot run without host files. Errors are the message for stderr.
-func parseScript(script, name string) (*syntax.File, error) {
-	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), name)
-	if err != nil {
-		return nil, err
-	}
-	var unsupported error
-	syntax.Walk(file, func(node syntax.Node) bool {
-		switch typed := node.(type) {
-		case *syntax.ProcSubst:
-			unsupported = fmt.Errorf("%s: process substitution is not supported; use a pipe or a file in /tmp", typed.Pos())
-		case *syntax.CoprocClause:
-			unsupported = fmt.Errorf("%s: coproc is not supported", typed.Pos())
-		}
-		return unsupported == nil
-	})
-	if unsupported != nil {
-		return nil, unsupported
-	}
-	return file, nil
 }
 
 // exitStatusOf returns the exit status a Run error carries, and whether the
@@ -318,9 +298,11 @@ func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, er
 		if len(arguments) > 1 && !strings.Contains(arguments[1], "/") {
 			// Without a slash the builtin searches PATH on the host; the
 			// virtual shell sources from the working directory.
-			rewritten := append([]string{arguments[0], "./" + arguments[1]}, arguments[2:]...)
-			return rewritten, nil
+			arguments = append([]string{arguments[0], "./" + arguments[1]}, arguments[2:]...)
 		}
+		return s.rewriteSource(ctx, handler, arguments), nil
+	case "eval", "trap":
+		return s.rewriteScriptArguments(arguments), nil
 	case "pwd":
 		// -P resolves symlinks on the host; workspace paths have none.
 		return []string{"pwd"}, nil

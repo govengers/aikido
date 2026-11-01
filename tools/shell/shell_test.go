@@ -214,7 +214,7 @@ func TestRunSyntaxErrorAndUnsupported(t *testing.T) {
 		want   string
 	}{
 		{"echo (", "bash: 1:1: "},
-		{"diff <(echo a) <(echo b)", "process substitution is not supported"},
+		{"cat >(cat)", "process substitution >(...) is not supported"},
 		{"coproc cat", "coproc is not supported"},
 	}
 	for _, testCase := range testCases {

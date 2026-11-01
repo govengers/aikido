@@ -119,6 +119,34 @@ func TestBenchmarkCommands(t *testing.T) {
 			name: "cat -A to check indentation", files: map[string]string{"top.go": "package top\n\nfunc f() {\n\treturn\n}\n"},
 			script: "cat -A top.go | tail -2", want: "^Ireturn$\n}$\n",
 		},
+		{
+			name: "diff of two process substitutions", files: lines,
+			script: `diff <(cat LINES.md) LINES.md && echo MATCH; diff <(sort -r LINES.md) <(sort LINES.md) | head -1`,
+			want:   "MATCH\n1d0\n",
+		},
+		{
+			name: "while read from a process substitution", files: map[string]string{"pkg/a.go": "", "pkg/b.go": "", "c.txt": ""},
+			script: `n=0; while IFS= read -r f; do n=$((n+1)); echo "$f"; done < <(find . -name '*.go'); echo "$n files"`,
+			want:   "./pkg/a.go\n./pkg/b.go\n2 files\n",
+		},
+	}, nil)
+}
+
+// TestProcessSubstitution covers <(list) in every place the interpreter
+// parses a script: the script, functions, nested bash, eval, source, trap.
+func TestProcessSubstitution(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "path and empty list", script: "echo <(true) <()", want: "/dev/fd/63 /dev/null\n"},
+		{name: "nested", script: "cat <(cat <(echo inner))", want: "inner\n"},
+		{name: "in a function and a loop", script: `f() { cat <(echo "f $1"); }; for i in 1 2; do f $i; done`, want: "f 1\nf 2\n"},
+		{name: "exit stays inside", script: "cat <(echo a; exit 3; echo b); echo $?", want: "a\n0\n"},
+		{name: "stderr passes through", script: "cat <(echo err >&2) 2>/dev/null; cat <(nosuch)", want: "bash: line 1: nosuch: command not found\n"},
+		{name: "nested bash", script: `bash -c 'wc -l < <(printf "a\nb\n")'`, want: "2\n"},
+		{name: "eval", script: `eval 'cat <(echo from eval)'`, want: "from eval\n"},
+		{name: "source with arguments", files: map[string]string{"lib.sh": "cat <(echo \"sourced $1\")\n"}, script: "source lib.sh one; . ./lib.sh two", want: "sourced one\nsourced two\n"},
+		{name: "trap", script: `trap -- 'cat <(echo trapped)' ERR; false; trap - ERR; false`, want: "trapped\n", status: 1},
+		{name: "files stay out of listings and the workspace", script: "cat <(echo x) >/dev/null; ls /; ls /dev/fd; find . | wc -l", want: "1\n"},
+		{name: "write side refused in eval", script: "eval 'tee >(cat)'; echo $?", want: "bash: eval: 1:5: process substitution >(...) is not supported; write to a file in /tmp and run the command on it\n2\n"},
 	}, nil)
 }
 

@@ -99,7 +99,7 @@ func readInput(ctx context.Context, invocation *Invocation, operand string) ([]b
 // readFile reads a workspace file; a directory is errIsDirectory, other
 // failures are in GNU wording.
 func readFile(ctx context.Context, files workspace, name string) ([]byte, error) {
-	if name == "" || name == scratchDirectory {
+	if isMountPoint(name) {
 		return nil, errIsDirectory
 	}
 	content, _, err := files.storage.ReadFile(ctx, name)

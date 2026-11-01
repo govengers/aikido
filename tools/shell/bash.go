@@ -52,7 +52,7 @@ func runBash(ctx context.Context, name string, invocation *Invocation) error {
 		}
 		script = string(content)
 	}
-	file, err := parseScript(script, scriptName)
+	file, err := invocation.session.parse(script, scriptName)
 	if err != nil {
 		complain(invocation, name, "%v", err)
 		return ExitError(statusUnsupported)
@@ -117,7 +117,7 @@ func (b bashArguments) withOperands(operands []string) (bashArguments, error) {
 // -exec and env, which start commands by name: a nested interpreter runs
 // "$@".
 func (s *session) runBuiltin(ctx context.Context, name string, invocation *Invocation) uint8 {
-	file, err := parseScript(`"$@"`, "")
+	file, err := s.parse(`"$@"`, "")
 	if err != nil {
 		complain(invocation, name, "%v", err)
 		return statusInternalError

@@ -13,6 +13,7 @@ import (
 	"mvdan.cc/sh/v3/interp"
 
 	"github.com/govengers/aikido/vfs"
+	"github.com/govengers/aikido/vfs/memory"
 	"github.com/govengers/aikido/vfs/mount"
 )
 
@@ -166,14 +167,14 @@ func (s *Shell) Run(ctx context.Context, script string) (Result, error) {
 func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer) (int, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	file, err := parseScript(script, "")
-	if err != nil {
-		fmt.Fprintf(stderr, "bash: %v\n", err)
-		return statusUnsupported, nil
-	}
 	call, err := s.newSession()
 	if err != nil {
 		return 0, err
+	}
+	file, err := call.parse(script, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "bash: %v\n", err)
+		return statusUnsupported, nil
 	}
 	s.recoverDirectory(ctx, call, stderr)
 	runner, err := call.newRunner(runnerStart{
@@ -203,14 +204,16 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 	return statusCommandFailure, nil
 }
 
-// newSession mounts the Shell's /tmp over the workspace for one Run.
+// newSession mounts the Shell's /tmp and a fresh /dev/fd for the files of
+// <(list) over the workspace for one Run.
 func (s *Shell) newSession() (*session, error) {
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{
 		{Prefix: "", Storage: s.options.Storage},
 		{Prefix: scratchDirectory, Storage: s.scratch},
+		{Prefix: processFileDirectory, Storage: processFileStorage{memory.New()}},
 	}})
 	if err != nil {
-		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp: %w", err)
+		return nil, fmt.Errorf("aikido/tools/shell: mount /tmp and /dev/fd: %w", err)
 	}
 	return &session{storage: storage, directories: s.directories, commands: s.commands}, nil
 }
