@@ -292,6 +292,9 @@ func (d *differ) compareChild(ctx context.Context, left, right string, child dif
 		return 0, err
 	}
 	switch {
+	case d.settings.recursive && (leftEntry.directory || leftEntry.missing) && (rightEntry.directory || rightEntry.missing):
+		// With -N a directory on one side only compares with an empty one.
+		return d.compareDirectories(ctx, leftPath, rightPath)
 	case leftEntry.directory && rightEntry.directory:
 		if !d.settings.recursive {
 			fmt.Fprintf(&d.output, "Common subdirectories: %s and %s\n", leftPath, rightPath)

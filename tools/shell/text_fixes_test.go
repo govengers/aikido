@@ -88,6 +88,7 @@ var reviewCases = []scriptCase{
 	{name: "awk print without parent", script: `env -i awk 'BEGIN{print "x" > "nodir/f"}'; echo $?`, want: "awk: can't redirect to `nodir/f' (No such file or directory)\n2\n"},
 	{name: "awk print stores the file", script: `env -i awk 'BEGIN{print "x" > "f"; print "y" >> "f"}'; cat f`, want: "x\ny\n"},
 	{name: "diff -r sees a made directory", script: `mkdir -p a/empty b; diff -r a b; echo $?; mkdir b/empty; diff -r a b; echo $?`, want: "Only in a: empty\n1\n0\n"},
+	{name: "diff -rN descends into a one-sided directory", script: `mkdir -p c/sub d; echo hi > c/sub/f; diff -rN c d; echo $?`, want: "diff -rN c/sub/f d/sub/f\n1d0\n< hi\n1\n"},
 	{name: "sed interval above the cap", script: `echo x | sed 's/x\{1001\}//'`, want: "sed: -e expression #1, char 13: Regular expression too big\n", status: 1},
 }
 
