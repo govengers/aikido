@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ledger-sync
+description: nightly ledger export to the bank over SFTP
+type: application
+version: 3.2.1
+appVersion: "3.2.1"

@@ -1,13 +1,24 @@
-# Harness benchmark: aikido vs aikido+bash vs opencode. See README.md.
-# Needs OPENROUTER_API_KEY (or CLAUDE_OPENROUTER_API_KEY), go, bash, jq, opencode.
+# Harness benchmark: aikido vs aikido+bash vs opencode (coding suite) and
+# claude-code vs opencode vs aikido-worker (worker suite). See README.md.
+# Needs OPENROUTER_API_KEY (or CLAUDE_OPENROUTER_API_KEY), go, bash, jq, opencode; the worker suite also git, perl, claude.
 
 models := "anthropic/claude-haiku-5.5,z-ai/glm-5.3"
 
 default: validate
 
-# Prove every checker: fails on the untouched fixture, passes on solve.sh. No LLM calls.
+# Prove every checker of both suites: fails on the untouched fixture, passes on solve.sh. No LLM calls.
 validate:
     go run ./cmd/bench -validate
+    go run ./cmd/bench -suite worker -validate
+
+# Worker suite: 1 incident x claude-code and opencode x haiku x 1 rep, about $0.03.
+smoke-worker:
+    go run ./cmd/bench -suite worker -harness claude-code,opencode -task incident-crashloop -run-id smoke-worker-$(date +%Y%m%d-%H%M%S)
+
+# Worker suite matrix: 4 tasks x claude-code, opencode, aikido-worker x haiku x reps (default 3 = 36 runs).
+# aikido-worker is skipped with a message until `aikido agent` has --direct/--shell/--allow/--env/--system-file.
+bench-worker reps="3" *args:
+    go run ./cmd/bench -suite worker -reps {{reps}} -run-id worker-$(date +%Y%m%d-%H%M%S) {{args}}
 
 # 2 tasks x 3 harnesses x 1 model x 1 rep, a few cents.
 smoke:

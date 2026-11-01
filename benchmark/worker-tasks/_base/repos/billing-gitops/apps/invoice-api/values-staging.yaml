@@ -1,0 +1,6 @@
+# invoice-api staging
+namespace: billing-staging
+replicas: 1
+paymentGateway:
+  # old mock URL was http://pgm.billing-staging.svc:8080
+  url: http://payment-gateway-mock.billing-staging.svc:8080

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: shop-api
+description: acme shop API (cart, checkout, catalogue)
+type: application
+version: 2.13.0
+appVersion: "2.13.4"
+dependencies:
+  - name: common-service
+    version: 2.3.1
+    repository: oci://registry.acme.example/charts

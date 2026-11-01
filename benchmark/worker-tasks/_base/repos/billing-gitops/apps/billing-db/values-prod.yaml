@@ -1,0 +1,5 @@
+# billing-db prod: own namespace so the NetworkPolicy can fence it
+namespace: billing-data
+instances: 3
+storage:
+  size: 50Gi

@@ -1,0 +1,10 @@
+# shared defaults for every stage; resources live in the stage files
+image:
+  repository: registry.acme.example/shop/shop-api
+service:
+  port: 8080
+env:
+  LOG_FORMAT: text
+  ORDERS_DB_HOST: orders-db.shop.svc
+db:
+  maxOpenConns: 20

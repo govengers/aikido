@@ -1,0 +1,21 @@
+{
+  "now": "2026-11-01T10:00:00Z",
+  "context": "eu1",
+  "namespaces": {
+    "billing-prod": {
+      "pods": [
+        {"row": {"NAME": "invoice-api-7c9f8d6b5-4kz2m", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "5d"}, "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "invoice-api-7c9f8d6b5-4kz2m", "namespace": "billing-prod", "labels": {"app": "invoice-api"}}}, "logs": {"invoice-api": "2026-11-01T09:58:12Z INFO  POST /invoices 201 88ms\n"}}
+      ]
+    },
+    "billing-staging": {
+      "pods": [
+        {"row": {"NAME": "dunning-mailer-6b8d7f9c4-r2v5n", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "40h"}, "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "dunning-mailer-6b8d7f9c4-r2v5n", "namespace": "billing-staging", "labels": {"app": "dunning-mailer"}}}, "logs": {"dunning-mailer": "2026-11-01T09:00:00Z INFO  dunning run: 3 reminders queued\n"}}
+      ]
+    },
+    "billing-data": {
+      "pods": [
+        {"row": {"NAME": "billing-db-1", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "33d"}, "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "billing-db-1", "namespace": "billing-data", "labels": {"app": "billing-db"}}}, "logs": {"postgres": "2026-11-01T09:55:00Z LOG  checkpoint complete\n"}}
+      ]
+    }
+  }
+}

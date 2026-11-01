@@ -1,0 +1,8 @@
+# ledger-sync prod
+namespace: billing-prod
+schedule: "0 2 * * *"
+backoffLimit: 1
+sftp:
+  host: sftp.bank.example
+  # pinned host key; the bank rotates it, see the worker journal
+  hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ3q2025Q3bankHostKeyPinnedSinceSeptember0"

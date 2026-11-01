@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shop-web
+description: acme storefront
+type: application
+version: 4.2.1
+appVersion: "4.2.1"

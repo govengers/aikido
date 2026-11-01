@@ -1,0 +1,28 @@
+{
+  "now": "2026-11-01T09:30:00Z",
+  "context": "eu1",
+  "namespaces": {
+    "shop-staging": {
+      "pods": [
+        {
+          "row": {"NAME": "shop-api-58c4d9b7f9-m3p8d", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "9d", "IP": "10.42.0.51", "NODE": "eu1-worker-1"},
+          "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "shop-api-58c4d9b7f9-m3p8d", "namespace": "shop-staging", "labels": {"app": "shop-api", "pod-template-hash": "58c4d9b7f9"}}, "spec": {"containers": [{"name": "shop-api", "image": "registry.acme.example/shop/shop-api:2.13.4", "resources": {"limits": {"cpu": "500m", "memory": "256Mi"}, "requests": {"cpu": "100m", "memory": "192Mi"}}}, {"name": "metrics-exporter", "image": "registry.acme.example/shop/metrics-exporter:0.8.0", "resources": {"limits": {"memory": "64Mi"}}}]}, "status": {"phase": "Running"}},
+          "describe": "Name:             shop-api-58c4d9b7f9-m3p8d\nNamespace:        shop-staging\nNode:             eu1-worker-1/10.40.0.11\nLabels:           app=shop-api\n                  pod-template-hash=58c4d9b7f9\nStatus:           Running\nControlled By:    ReplicaSet/shop-api-58c4d9b7f9\nContainers:\n  shop-api:\n    Image:          registry.acme.example/shop/shop-api:2.13.4\n    State:          Running\n      Started:      Fri, 23 Oct 2026 14:05:40 +0000\n    Ready:          True\n    Restart Count:  0\n    Limits:\n      cpu:     500m\n      memory:  256Mi\n    Requests:\n      cpu:      100m\n      memory:   192Mi\n  metrics-exporter:\n    Image:          registry.acme.example/shop/metrics-exporter:0.8.0\n    State:          Running\n    Limits:\n      memory:  64Mi\nQoS Class:          Burstable\nEvents:             <none>\n",
+          "logs": {"shop-api": "2026-11-01T09:29:30Z INFO  memstats heap_alloc=188MiB heap_sys=204MiB num_gc=1650\n", "metrics-exporter": "2026-11-01T09:29:00Z INFO  scrape ok\n"}
+        }
+      ],
+      "deployments": [
+        {"row": {"NAME": "shop-api", "READY": "1/1", "UP-TO-DATE": "1", "AVAILABLE": "1", "AGE": "41d", "CONTAINERS": "shop-api,metrics-exporter", "IMAGES": "registry.acme.example/shop/shop-api:2.13.4,registry.acme.example/shop/metrics-exporter:0.8.0", "SELECTOR": "app=shop-api"}, "object": {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "shop-api", "namespace": "shop-staging", "labels": {"app": "shop-api"}}, "spec": {"replicas": 1}}}
+      ]
+    },
+    "shop-prod": {
+      "pods": [
+        {
+          "row": {"NAME": "shop-api-58c4d9b7f9-x8k2c", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "9d", "IP": "10.42.1.21", "NODE": "eu1-worker-2"},
+          "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "shop-api-58c4d9b7f9-x8k2c", "namespace": "shop-prod", "labels": {"app": "shop-api"}}, "spec": {"containers": [{"name": "shop-api", "image": "registry.acme.example/shop/shop-api:2.13.4", "resources": {"limits": {"cpu": "1", "memory": "256Mi"}}}]}, "status": {"phase": "Running"}},
+          "logs": {"shop-api": "2026-11-01T09:29:31Z INFO  memstats heap_alloc=93MiB heap_sys=104MiB num_gc=2611\n"}
+        }
+      ]
+    }
+  }
+}

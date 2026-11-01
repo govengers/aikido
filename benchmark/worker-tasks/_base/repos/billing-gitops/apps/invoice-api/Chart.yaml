@@ -1,0 +1,10 @@
+apiVersion: v2
+name: invoice-api
+description: acme invoice API and PDF renderer
+type: application
+version: 1.8.0
+appVersion: "2026.10.2"
+dependencies:
+  - name: common-service
+    version: 2.3.1
+    repository: oci://registry.acme.example/charts

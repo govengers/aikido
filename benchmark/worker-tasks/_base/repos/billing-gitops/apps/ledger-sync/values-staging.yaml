@@ -1,0 +1,6 @@
+# ledger-sync staging: exports to the bank's test endpoint
+namespace: billing-staging
+schedule: "0 3 * * *"
+sftp:
+  host: sftp-test.bank.example
+  hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7test0nlyKeyForStagingDoNotUseInProd00"

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,10 +29,33 @@ const (
 // what it can observe.
 type harnessRunner func(ctx context.Context, run *job, observed *metrics) error
 
-var harnesses = map[string]harnessRunner{
-	"aikido":      runAikido(false),
-	"aikido-bash": runAikido(true),
-	"opencode":    runOpencode,
+// harness is one agent setup; prepare (optional) runs once before any job,
+// fills the template's binary paths and returns an error when the harness
+// cannot run here, which skips it.
+type harness struct {
+	run     harnessRunner
+	prepare func(ctx context.Context, binaries string, template *job) error
+}
+
+// suite is a task set with the harnesses that run it.
+type suite struct {
+	tasksDirectory   string
+	defaultHarnesses string
+	harnesses        map[string]harness
+	fakeTools        bool // build fake kubectl and logcli and put them first on PATH
+}
+
+var suites = map[string]suite{
+	"coding": {tasksDirectory: "tasks", defaultHarnesses: "aikido,aikido-bash,opencode", harnesses: map[string]harness{
+		"aikido":      {run: runAikido(false)},
+		"aikido-bash": {run: runAikido(true)},
+		"opencode":    {run: runOpencode, prepare: prepareOpencode},
+	}},
+	"worker": {tasksDirectory: "worker-tasks", fakeTools: true, defaultHarnesses: "claude-code,opencode,aikido-worker", harnesses: map[string]harness{
+		"claude-code":   {run: runClaudeCode, prepare: prepareClaudeCode},
+		"opencode":      {run: runOpencode, prepare: prepareOpencode},
+		"aikido-worker": {run: runAikidoWorker, prepare: prepareAikidoWorker},
+	}},
 }
 
 type task struct {
@@ -39,6 +63,7 @@ type task struct {
 	Directory string
 	Category  string
 	Prompt    string
+	Worker    bool // has setup.sh: repos, remotes and cluster state instead of a fixture copy
 }
 
 type job struct {
@@ -47,11 +72,16 @@ type job struct {
 	Task           task
 	Repetition     int
 	Root           string // per-run scratch directory, outside the work directory
-	WorkDirectory  string // the fixture copy the agent works in
+	WorkDirectory  string // the fixture copy (worker suite: the worker clone) the agent works in
 	LogDirectory   string // transcript and logs, kept in the results directory
 	Timeout        time.Duration
 	APIKey         string
 	OpencodeBinary string
+	ClaudeBinary   string
+	AikidoBinary   string
+	ToolsDirectory string   // worker suite: fake kubectl and logcli, first on PATH
+	Env            []string // worker suite: the environment every process of the run gets on top of childEnv
+	runner         harnessRunner
 }
 
 func (j *job) id() string {
@@ -106,26 +136,36 @@ type Result struct {
 
 func main() {
 	var (
-		harnessFlag      = flag.String("harness", "aikido,aikido-bash,opencode", "comma-separated harnesses")
+		suiteFlag        = flag.String("suite", "coding", "task suite: coding (tasks/) or worker (worker-tasks/)")
+		harnessFlag      = flag.String("harness", "", "comma-separated harnesses (default: all of the suite)")
 		modelFlag        = flag.String("model", "anthropic/claude-haiku-5.5", "comma-separated OpenRouter model ids")
 		taskGlob         = flag.String("task", "*", "comma-separated globs over task names")
 		repetitions      = flag.Int("reps", 1, "repetitions per (harness, model, task)")
 		parallel         = flag.Int("parallel", 4, "concurrent runs")
 		timeout          = flag.Duration("timeout", 10*time.Minute, "wall-clock limit per run")
-		tasksDirectory   = flag.String("tasks", "tasks", "task directory")
+		tasksDirectory   = flag.String("tasks", "", "task directory (default: the suite's)")
 		resultsDirectory = flag.String("results", "results", "results directory")
 		runID            = flag.String("run-id", time.Now().Format("20060102-150405"), "name of the results subdirectory")
-		opencodeBinary   = flag.String("opencode", "opencode", "opencode binary")
 		keep             = flag.Bool("keep", false, "keep the work directories (paths are logged)")
 		validate         = flag.Bool("validate", false, "check that every check.sh fails on the fixture and passes on solve.sh; no LLM calls")
 		summarize        = flag.String("summarize", "", "rewrite summary.md of an existing results directory and exit")
 	)
+	var template job
+	flag.StringVar(&template.OpencodeBinary, "opencode", "opencode", "opencode binary")
+	flag.StringVar(&template.ClaudeBinary, "claude", "claude", "claude binary (worker suite)")
 	flag.Parse()
 	ctx := context.Background()
 
 	if *summarize != "" {
 		exitOn(writeSummary(*summarize))
 		return
+	}
+	selected, ok := suites[*suiteFlag]
+	if !ok {
+		exitOn(fmt.Errorf("unknown suite %q (coding, worker)", *suiteFlag))
+	}
+	if *tasksDirectory == "" {
+		*tasksDirectory = selected.tasksDirectory
 	}
 	tasks, err := loadTasks(*tasksDirectory, *taskGlob)
 	exitOn(err)
@@ -136,28 +176,63 @@ func main() {
 		return
 	}
 
-	harnessNames := splitList(*harnessFlag)
-	for _, name := range harnessNames {
-		if harnesses[name] == nil {
-			exitOn(fmt.Errorf("unknown harness %q", name))
-		}
-	}
-	apiKey, err := openRouterKey()
-	exitOn(err)
-	if strings.Contains(*harnessFlag, "opencode") {
-		binary, err := exec.LookPath(*opencodeBinary)
-		exitOn(err)
-		*opencodeBinary = binary
-	}
-
 	runDirectory := filepath.Join(*resultsDirectory, *runID)
 	exitOn(os.MkdirAll(filepath.Join(runDirectory, "runs"), directoryPermissions))
-	exitOn(writeRunInfo(ctx, runDirectory, *opencodeBinary))
+	if *harnessFlag == "" {
+		*harnessFlag = selected.defaultHarnesses
+	}
+	template.Timeout = *timeout
+	harnessNames, err := prepareHarnesses(ctx, selected, splitList(*harnessFlag), filepath.Join(runDirectory, "bin"), &template)
+	exitOn(err)
+	template.APIKey, err = openRouterKey()
+	exitOn(err)
+	exitOn(writeRunInfo(ctx, runDirectory, *suiteFlag, &template))
 
-	jobs := planJobs(tasks, harnessNames, splitList(*modelFlag), *repetitions, job{Timeout: *timeout, APIKey: apiKey, OpencodeBinary: *opencodeBinary})
+	jobs := planJobs(tasks, harnessNames, splitList(*modelFlag), *repetitions, template)
+	for _, planned := range jobs {
+		planned.runner = selected.harnesses[planned.Harness].run
+	}
 	exitOn(runJobs(ctx, runDirectory, jobs, *parallel, *keep))
 	exitOn(writeSummary(runDirectory))
 	fmt.Fprintf(os.Stderr, "results: %s\n", filepath.Join(runDirectory, "summary.md"))
+}
+
+// prepareHarnesses checks the harness names against the suite, builds the
+// worker suite's fake tools into binaries, and runs each harness's prepare;
+// a harness that cannot run here is skipped with a message.
+func prepareHarnesses(ctx context.Context, selected suite, names []string, binaries string, template *job) ([]string, error) {
+	for _, name := range names {
+		if _, ok := selected.harnesses[name]; !ok {
+			return nil, fmt.Errorf("unknown harness %q for this suite", name)
+		}
+	}
+	if selected.fakeTools {
+		tools, err := buildFakeTools(ctx, binaries)
+		if err != nil {
+			return nil, err
+		}
+		template.ToolsDirectory = tools
+	}
+	var ready []string
+	for _, name := range names {
+		if prepare := selected.harnesses[name].prepare; prepare != nil {
+			if err := prepare(ctx, binaries, template); err != nil {
+				fmt.Fprintf(os.Stderr, "skip %s: %v\n", name, err)
+				continue
+			}
+		}
+		ready = append(ready, name)
+	}
+	if len(ready) == 0 {
+		return nil, errors.New("no harness can run")
+	}
+	return ready, nil
+}
+
+func prepareOpencode(_ context.Context, _ string, template *job) error {
+	binary, err := exec.LookPath(template.OpencodeBinary)
+	template.OpencodeBinary = binary
+	return err
 }
 
 func openRouterKey() (string, error) {
@@ -246,9 +321,7 @@ func execute(ctx context.Context, run *job, keep bool) (result Result) {
 		defer os.RemoveAll(root)
 	}
 	run.Root = root
-	run.WorkDirectory = filepath.Join(root, "work")
-	fixture := filepath.Join(run.Task.Directory, "fixture")
-	if err := os.CopyFS(run.WorkDirectory, os.DirFS(fixture)); err != nil {
+	if err := prepareWorkspace(ctx, run); err != nil {
 		return fail(err)
 	}
 
@@ -256,7 +329,7 @@ func execute(ctx context.Context, run *job, keep bool) (result Result) {
 	defer cancel()
 	var observed metrics
 	start := time.Now()
-	runError := harnesses[run.Harness](runContext, run, &observed)
+	runError := run.runner(runContext, run, &observed)
 	result.WallSeconds = time.Since(start).Seconds()
 	if runError == nil && runContext.Err() != nil {
 		runError = fmt.Errorf("timeout after %s", run.Timeout)
@@ -272,13 +345,16 @@ func execute(ctx context.Context, run *job, keep bool) (result Result) {
 	result.CacheReadTokens, result.CacheWriteTokens, result.CostUSD = observed.CacheReadTokens, observed.CacheWriteTokens, observed.CostUSD
 	result.ToolCalls, result.ToolErrors, result.EndReason = observed.ToolCalls, observed.ToolErrors, observed.EndReason
 
-	// Measure the agent's edits before check.sh adds hidden tests.
-	result.FilesChanged, result.BytesChanged, err = diffTrees(fixture, run.WorkDirectory)
-	if err != nil && result.Error == "" {
-		result.Error = err.Error()
+	// Measure the agent's edits before check.sh adds hidden tests. The worker
+	// suite's checks read the remotes instead (see worker-tasks/lib.sh).
+	if !run.Task.Worker {
+		result.FilesChanged, result.BytesChanged, err = diffTrees(filepath.Join(run.Task.Directory, "fixture"), run.WorkDirectory)
+		if err != nil && result.Error == "" {
+			result.Error = err.Error()
+		}
 	}
 	// The check gets its own timeout, not what is left of the run's.
-	pass, output := runScript(ctx, run.Task, "check.sh", run.WorkDirectory)
+	pass, output := runScript(ctx, run.Task, "check.sh", run.WorkDirectory, scriptEnvironment(run))
 	_ = os.WriteFile(filepath.Join(run.LogDirectory, "check.log"), []byte(output), filePermissions)
 	result.Pass = pass
 	if !pass {
@@ -298,7 +374,8 @@ func loadTasks(directory, glob string) ([]task, error) {
 	}
 	var tasks []task
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		// _-prefixed directories hold shared material (worker-tasks/_base), not tasks.
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "_") {
 			continue
 		}
 		matched, err := matchesAny(entry.Name(), splitList(glob))
@@ -308,23 +385,31 @@ func loadTasks(directory, glob string) ([]task, error) {
 		if !matched {
 			continue
 		}
-		taskDirectory := filepath.Join(absolute, entry.Name())
-		taskFiles := os.DirFS(taskDirectory)
-		prompt, err := fs.ReadFile(taskFiles, "task.md")
+		loaded, err := readTask(filepath.Join(absolute, entry.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("task %s: %w", entry.Name(), err)
 		}
-		category, err := fs.ReadFile(taskFiles, "category")
-		if err != nil {
-			return nil, fmt.Errorf("task %s: %w", entry.Name(), err)
-		}
-		tasks = append(tasks, task{Name: entry.Name(), Directory: taskDirectory, Category: strings.TrimSpace(string(category)), Prompt: string(prompt)})
+		tasks = append(tasks, loaded)
 	}
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("no task in %s matches %q", directory, glob)
 	}
 	sort.Slice(tasks, func(left, right int) bool { return tasks[left].Name < tasks[right].Name })
 	return tasks, nil
+}
+
+func readTask(directory string) (task, error) {
+	taskFiles := os.DirFS(directory)
+	prompt, err := fs.ReadFile(taskFiles, "task.md")
+	if err != nil {
+		return task{}, err
+	}
+	category, err := fs.ReadFile(taskFiles, "category")
+	if err != nil {
+		return task{}, err
+	}
+	_, setupError := fs.Stat(taskFiles, "setup.sh")
+	return task{Name: filepath.Base(directory), Directory: directory, Category: strings.TrimSpace(string(category)), Prompt: string(prompt), Worker: setupError == nil}, nil
 }
 
 // matchesAny reports whether name matches one of the globs. Every glob is
@@ -341,14 +426,15 @@ func matchesAny(name string, globs []string) (bool, error) {
 	return matched, nil
 }
 
-// runScript runs a task script (check.sh or solve.sh) in directory.
-func runScript(ctx context.Context, benchmarkTask task, script, directory string) (bool, string) {
+// runScript runs a task script (setup.sh, check.sh or solve.sh) in directory,
+// with extra on top of childEnv.
+func runScript(ctx context.Context, benchmarkTask task, script, directory string, extra []string) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	//nolint:gosec // G204: the script is a file of the benchmark's own task directory
 	command := exec.CommandContext(ctx, "bash", filepath.Join(benchmarkTask.Directory, script))
 	command.Dir = directory
-	command.Env = append(childEnv(directory), "TASK_DIR="+benchmarkTask.Directory)
+	command.Env = append(append(childEnv(directory), extra...), "TASK_DIR="+benchmarkTask.Directory)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		output = append(output, []byte("\nexit: "+err.Error()+"\n")...)
@@ -359,9 +445,17 @@ func runScript(ctx context.Context, benchmarkTask task, script, directory string
 // validateTasks proves each checker rejects the untouched fixture and accepts
 // the reference solution.
 func validateTasks(ctx context.Context, tasks []task) bool {
+	toolsDirectory := ""
+	if slices.ContainsFunc(tasks, func(candidate task) bool { return candidate.Worker }) {
+		scratch, err := os.MkdirTemp("", "aikido-bench-tools-")
+		exitOn(err)
+		defer os.RemoveAll(scratch)
+		toolsDirectory, err = buildFakeTools(ctx, scratch)
+		exitOn(err)
+	}
 	allValid := true
 	for _, benchmarkTask := range tasks {
-		fixtureFailure, problem := validateTask(ctx, benchmarkTask)
+		fixtureFailure, problem := validateTask(ctx, benchmarkTask, toolsDirectory)
 		status, detail := "ok  ", "fixture: "+oneLine(fixtureFailure)
 		if problem != "" {
 			status, detail, allValid = "BAD ", problem, false
@@ -373,9 +467,9 @@ func validateTasks(ctx context.Context, tasks []task) bool {
 
 // validateTask returns the first failure line of check.sh on the fixture, and
 // a problem when check.sh passes the fixture or fails the solution.
-func validateTask(ctx context.Context, benchmarkTask task) (fixtureFailure, problem string) {
+func validateTask(ctx context.Context, benchmarkTask task, toolsDirectory string) (fixtureFailure, problem string) {
 	for _, solve := range []bool{false, true} {
-		passed, output, err := checkFreshCopy(ctx, benchmarkTask, solve)
+		passed, output, err := checkFreshCopy(ctx, &job{Task: benchmarkTask, ToolsDirectory: toolsDirectory}, solve)
 		if err != nil {
 			return fixtureFailure, err.Error()
 		}
@@ -389,30 +483,39 @@ func validateTask(ctx context.Context, benchmarkTask task) (fixtureFailure, prob
 	return fixtureFailure, ""
 }
 
-// checkFreshCopy runs check.sh on a fresh copy of the fixture, after solve.sh
-// when solve is set.
-func checkFreshCopy(ctx context.Context, benchmarkTask task, solve bool) (passed bool, output string, err error) {
-	directory, err := os.MkdirTemp("", "aikido-bench-validate-")
+// checkFreshCopy runs check.sh on a freshly prepared workspace (the fixture
+// copy, or the worker suite's repos), after solve.sh when solve is set. run
+// carries the task and the tools directory.
+func checkFreshCopy(ctx context.Context, run *job, solve bool) (passed bool, output string, err error) {
+	run.Root, err = os.MkdirTemp("", "aikido-bench-validate-")
 	if err != nil {
 		return false, "", err
 	}
-	defer os.RemoveAll(directory)
-	if err := os.CopyFS(directory, os.DirFS(filepath.Join(benchmarkTask.Directory, "fixture"))); err != nil {
+	defer os.RemoveAll(run.Root)
+	if err := prepareWorkspace(ctx, run); err != nil {
 		return false, "", err
 	}
 	if solve {
-		if solved, solveOutput := runScript(ctx, benchmarkTask, "solve.sh", directory); !solved {
+		if solved, solveOutput := runScript(ctx, run.Task, "solve.sh", run.WorkDirectory, scriptEnvironment(run)); !solved {
 			return false, "", errors.New("solve.sh failed: " + tail(solveOutput, 400))
 		}
 	}
-	passed, output = runScript(ctx, benchmarkTask, "check.sh", directory)
+	passed, output = runScript(ctx, run.Task, "check.sh", run.WorkDirectory, scriptEnvironment(run))
 	return passed, output, nil
 }
 
-func writeRunInfo(ctx context.Context, runDirectory, opencodeBinary string) error {
-	info := map[string]any{"args": os.Args[1:], "started": time.Now().Format(time.RFC3339), "system_prompt": systemPrompt}
-	if version, err := exec.CommandContext(ctx, opencodeBinary, "--version").Output(); err == nil {
-		info["opencode_version"] = strings.TrimSpace(string(version))
+func writeRunInfo(ctx context.Context, runDirectory, suiteName string, template *job) error {
+	info := map[string]any{"args": os.Args[1:], "started": time.Now().Format(time.RFC3339), "suite": suiteName}
+	if suiteName == "coding" {
+		info["system_prompt"] = systemPrompt // the worker suite's system prompt is the fixture's CLAUDE.md
+	} else {
+		info["claude_isolation"] = claudeIsolation
+	}
+	for name, binary := range map[string]string{"opencode_version": template.OpencodeBinary, "claude_version": template.ClaudeBinary} {
+		//nolint:gosec // G204: the operator's -opencode and -claude binaries
+		if version, err := exec.CommandContext(ctx, binary, "--version").Output(); err == nil {
+			info[name] = strings.TrimSpace(string(version))
+		}
 	}
 	if commit, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").Output(); err == nil {
 		info["aikido_commit"] = strings.TrimSpace(string(commit))
