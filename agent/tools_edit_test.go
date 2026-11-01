@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/govengers/aikido/tools"
 	"github.com/govengers/aikido/vfs"
 	"github.com/govengers/aikido/vfs/osfs"
 	"github.com/govengers/aikido/vfs/overlay"
@@ -360,21 +363,107 @@ func TestNumberLines(t *testing.T) {
 		name         string
 		lines        []string
 		start, end   int
+		skip         int
 		wantNumbered string
-		wantRendered int
+		wantNext     int
 	}{
-		{"width follows the last line number", ten, 8, 10, " 9\tx\n10\tx\n", 10},
-		{"empty window", nil, 0, 0, "", 0},
-		{"an overlong first line is still returned", []string{long, "z\n"}, 0, 2, "1\t" + long, 1},
-		{"stops at the byte budget", []string{"a\n", long}, 0, 2, "1\ta\n", 1},
+		{"width follows the last line number", ten, 8, 10, 0, " 9\tx\n10\tx\n", 10},
+		{"empty window", nil, 0, 0, 0, "", 0},
+		{"stops at the byte budget", []string{"a\n", long}, 0, 2, 0, "1\ta\n", 1},
+		{"skips into the first line", []string{"abcdef\n", "z\n"}, 0, 2, 3, "1\tdef\n2\tz\n", 2},
+		{"budget counts JSON escapes", []string{"a\n", strings.Repeat("<", readMaximumBytes/2)}, 0, 2, 0, "1\ta\n", 1},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			numbered, rendered := numberLines(testCase.lines, testCase.start, testCase.end)
-			if numbered != testCase.wantNumbered || rendered != testCase.wantRendered {
-				t.Errorf("numberLines = %.40q, %d; want %.40q, %d", numbered, rendered, testCase.wantNumbered, testCase.wantRendered)
+			numbered, next := numberLines(testCase.lines, testCase.start, testCase.end, testCase.skip)
+			if numbered != testCase.wantNumbered || next != testCase.wantNext {
+				t.Errorf("numberLines = %.40q, %d; want %.40q, %d", numbered, next, testCase.wantNumbered, testCase.wantNext)
 			}
 		})
+	}
+}
+
+// readFileResult dispatches read_file and checks that the model would get
+// the result whole, under the default tool result cap.
+func readFileResult(t *testing.T, registry *tools.Registry, arguments string) map[string]any {
+	t.Helper()
+	content := mustDispatch(t, registry, "read_file", arguments)
+	if encoded := toolResultJSON(ToolResult{OK: true, Content: content}); len(encoded) > defaultMaximumToolResultBytes {
+		t.Fatalf("read_file %s: %d bytes of JSON; the model would get a cut payload", arguments, len(encoded))
+	}
+	return content
+}
+
+// Regression: the window was budgeted on raw bytes, so escape-heavy content
+// passed the tool result cap once encoded and reached the model cut.
+func TestReadFile_BudgetsTheEncodedSize(t *testing.T) {
+	line := strings.Repeat(`"<\`, 30) + "\n"
+	options := seeded(t, VFSToolOptions{}, map[string]string{"quotes.md": strings.Repeat(line, 400)})
+	registry := newRegistryWithVFS(t, options)
+
+	content := readFileResult(t, registry, `{"path":"quotes.md"}`)
+	read := strings.Count(content["content"].(string), "\n")
+	if content["truncated"] != true || read == 0 || read >= 400 {
+		t.Fatalf("read %d lines, truncated %v; want a partial window", read, content["truncated"])
+	}
+	next := readFileResult(t, registry, fmt.Sprintf(`{"path":"quotes.md","offset":%d}`, read+1))
+	if !strings.HasPrefix(next["content"].(string), fmt.Sprintf("%d\t", read+1)) {
+		t.Errorf("continuation starts with %.20q; want line %d", next["content"], read+1)
+	}
+}
+
+// Regression: a line longer than the window was returned whole and then cut
+// by the tool result cap, with no way to read the rest.
+func TestReadFile_LongLineContinuesByColumn(t *testing.T) {
+	line := strings.Repeat(`é"x`, 30000)
+	options := seeded(t, VFSToolOptions{}, map[string]string{"long.md": line + "\nnext\n"})
+	registry := newRegistryWithVFS(t, options)
+	cutNotice := regexp.MustCompile(`\n\[line 1 is cut here; read on with offset 1 and column (\d+)\]$`)
+
+	var rebuilt strings.Builder
+	arguments := `{"path":"long.md"}`
+	for range 20 {
+		numbered := readFileResult(t, registry, arguments)["content"].(string)
+		piece := strings.TrimPrefix(numbered, "1\t")
+		match := cutNotice.FindStringSubmatch(piece)
+		if match == nil {
+			if !strings.HasSuffix(piece, "\n2\tnext\n") {
+				t.Fatalf("last window = %.40q...; want the rest of line 1 and line 2", piece)
+			}
+			rebuilt.WriteString(strings.TrimSuffix(piece, "\n2\tnext\n"))
+			if rebuilt.String() != line {
+				t.Fatalf("rebuilt line has %d bytes; want the %d of line 1", rebuilt.Len(), len(line))
+			}
+			return
+		}
+		rebuilt.WriteString(strings.TrimSuffix(piece, match[0]))
+		if column, _ := strconv.Atoi(match[1]); column != rebuilt.Len()+1 {
+			t.Fatalf("notice column %d; want %d", column, rebuilt.Len()+1)
+		}
+		arguments = fmt.Sprintf(`{"path":"long.md","column":%s}`, match[1])
+	}
+	t.Fatal("line 1 did not end within 20 reads")
+}
+
+func TestColumnBytes(t *testing.T) {
+	lines := []string{"aé\n", "b\n"}
+	testCases := []struct {
+		offset, column, want int
+		wantError            bool
+	}{
+		{1, 0, 0, false},
+		{1, 1, 0, false},
+		{1, 2, 1, false},
+		{1, 3, 1, false}, // inside é: back to its start
+		{1, 4, 3, false},
+		{1, 5, 0, true},
+		{3, 2, 0, true},
+	}
+	for _, testCase := range testCases {
+		got, err := columnBytes(lines, testCase.offset, testCase.column)
+		if got != testCase.want || (err != nil) != testCase.wantError {
+			t.Errorf("columnBytes(%d, %d) = %d, %v; want %d, error %v", testCase.offset, testCase.column, got, err, testCase.want, testCase.wantError)
+		}
 	}
 }
 

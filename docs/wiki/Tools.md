@@ -61,7 +61,7 @@ In an agent run all three are tool errors: the model sees them and the run conti
 
 | Tool | Parameters (required in bold) | Result and rules |
 |---|---|---|
-| `read_file` | **`path`**, `offset` (1-based line), `limit` (lines, default 2000) | `content` with every line prefixed by its number and a tab, plus `content_type`, `size`, `offset`, `total_lines`, `truncated`. Stops at 2000 lines or 40 KiB (at least one line); continue at the next line number. An offset past the end is an error |
+| `read_file` | **`path`**, `offset` (1-based line), `limit` (lines, default 2000), `column` (1-based byte in the `offset` line) | `content` with every line prefixed by its number and a tab, plus `content_type`, `size`, `offset`, `total_lines`, `truncated`. Stops at 2000 lines or at 40 KiB of `content` as JSON-encoded (escapes counted), so the result always fits the default 64 KiB tool result cap; continue at the next line number. A line too long for one call is cut and ends in a notice `[line N is cut here; read on with offset N and column C]`. An offset past the end, or a column past the end of its line, is an error |
 | `list_files` | none | `files`: `path`, `size`, `updated_at`, sorted by path |
 | `write_file` | **`path`**, **`content`**, `content_type` | creates or replaces; the content type defaults from the extension, `text/markdown` for unknown ones |
 | `delete_file` | **`path`** | fails for a missing file |
