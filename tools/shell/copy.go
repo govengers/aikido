@@ -207,24 +207,46 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	if err != nil {
 		return err
 	}
+	clashes := directoryClashes{planned: planned, checked: map[string]bool{}}
 	var problems []error
+	// report collects one problem per message: every file below a
+	// directory that clashes with a target file reports the same one.
+	report := func(err error) {
+		for _, known := range problems {
+			if known.Error() == err.Error() {
+				return
+			}
+		}
+		problems = append(problems, err)
+	}
 	for _, file := range below {
 		relative := strings.TrimPrefix(file.Path, planned.source+"/")
+		if err := clashes.check(ctx, files, path.Dir(relative)); err != nil {
+			report(err)
+			continue
+		}
 		inner := transfer{
 			source: file.Path, sourceOperand: path.Join(planned.sourceOperand, relative),
 			target: path.Join(planned.target, relative), targetOperand: path.Join(planned.targetOperand, relative),
 		}
 		if err := m.transferBelow(ctx, files, inner, file.ContentType); err != nil {
-			problems = append(problems, err)
+			report(err)
+		}
+	}
+	var subdirectories []string
+	for _, directory := range files.directories.list() {
+		if rest, ok := relativeTo(directory, planned.source); ok {
+			if err := clashes.check(ctx, files, rest); err != nil {
+				report(err)
+			}
+			subdirectories = append(subdirectories, rest)
 		}
 	}
 	if len(problems) > 0 {
 		return errors.Join(problems...)
 	}
-	for _, directory := range files.directories.list() {
-		if rest, ok := relativeTo(directory, planned.source); ok {
-			files.directories.add(path.Join(planned.target, rest))
-		}
+	for _, rest := range subdirectories {
+		files.directories.add(path.Join(planned.target, rest))
 	}
 	files.directories.add(planned.target)
 	if m.move {
@@ -233,20 +255,14 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	return nil
 }
 
-// transferBelow copies or moves one file of a recursive transfer, with the
-// checks GNU makes per destination: no file over a directory or below a
-// file, and -n keeps an existing file.
+// transferBelow copies or moves one file of a recursive transfer whose
+// directories passed directoryClashes, with the checks GNU makes per
+// destination: no file over a directory, and -n keeps an existing file.
 func (m transferMode) transferBelow(ctx context.Context, files workspace, inner transfer, contentType string) error {
 	targetEntry, err := files.stat(ctx, inner.target)
-	if err != nil {
-		return err
-	}
-	parent, err := files.stat(ctx, parentOf(inner.target))
 	switch {
 	case err != nil:
 		return err
-	case parent.kind == entryFile:
-		return fmt.Errorf("cannot overwrite non-directory '%s' with directory '%s'", path.Dir(inner.targetOperand), path.Dir(inner.sourceOperand))
 	case targetEntry.kind == entryDirectory:
 		return fmt.Errorf("cannot overwrite directory '%s' with non-directory", inner.targetOperand)
 	case m.noClobber && targetEntry.kind != entryMissing:
@@ -261,6 +277,40 @@ func (m transferMode) transferBelow(ctx context.Context, files workspace, inner 
 	}
 	if err != nil {
 		return m.targetError(inner, err)
+	}
+	return nil
+}
+
+// directoryClashes finds the directories of a recursive transfer that would
+// land on a non-directory below the target: GNU refuses to write beneath a
+// file at any depth, Storage would not.
+type directoryClashes struct {
+	planned transfer
+	checked map[string]bool // target directories known not to be files
+}
+
+// check returns GNU's error for the first directory on the relative path
+// rest (from the top) whose target is not a directory.
+func (c directoryClashes) check(ctx context.Context, files workspace, rest string) error {
+	if rest == "." {
+		return nil
+	}
+	prefix := ""
+	for segment := range strings.SplitSeq(rest, "/") {
+		prefix = path.Join(prefix, segment)
+		target := path.Join(c.planned.target, prefix)
+		if c.checked[target] {
+			continue
+		}
+		found, err := files.stat(ctx, target)
+		switch {
+		case err != nil:
+			return err
+		case found.kind == entryFile || found.kind == entryDevice:
+			return fmt.Errorf("cannot overwrite non-directory '%s' with directory '%s'",
+				path.Join(c.planned.targetOperand, prefix), path.Join(c.planned.sourceOperand, prefix))
+		}
+		c.checked[target] = true
 	}
 	return nil
 }
