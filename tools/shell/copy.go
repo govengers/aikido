@@ -79,7 +79,9 @@ func runTransfers(ctx context.Context, invocation *Invocation, mode transferMode
 	var status error
 	for _, planned := range transfers {
 		if err := mode.run(ctx, files, invocation.Directory, planned); err != nil {
-			complain(invocation, mode.command, "%v", err)
+			for _, problem := range splitErrors(err) {
+				complain(invocation, mode.command, "%v", problem)
+			}
 			status = errFailed
 			continue
 		}
@@ -200,18 +202,19 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	if err != nil {
 		return err
 	}
+	var problems []error
 	for _, file := range below {
-		target := path.Join(planned.target, strings.TrimPrefix(file.Path, planned.source+"/"))
-		content, err := readFile(ctx, files, file.Path)
-		if err == nil {
-			err = files.storage.WriteFile(ctx, target, content, file.ContentType)
+		relative := strings.TrimPrefix(file.Path, planned.source+"/")
+		inner := transfer{
+			source: file.Path, sourceOperand: path.Join(planned.sourceOperand, relative),
+			target: path.Join(planned.target, relative), targetOperand: path.Join(planned.targetOperand, relative),
 		}
-		if err == nil && m.move {
-			err = files.storage.DeleteFile(ctx, file.Path)
+		if err := m.transferBelow(ctx, files, inner, file.ContentType); err != nil {
+			problems = append(problems, err)
 		}
-		if err != nil {
-			return m.targetError(planned, err)
-		}
+	}
+	if len(problems) > 0 {
+		return errors.Join(problems...)
 	}
 	for _, directory := range files.directories.list() {
 		if rest, ok := relativeTo(directory, planned.source); ok {
@@ -221,6 +224,38 @@ func (m transferMode) transferDirectory(ctx context.Context, files workspace, pl
 	files.directories.add(planned.target)
 	if m.move {
 		files.directories.removeTree(planned.source)
+	}
+	return nil
+}
+
+// transferBelow copies or moves one file of a recursive transfer, with the
+// checks GNU makes per destination: no file over a directory or below a
+// file, and -n keeps an existing file.
+func (m transferMode) transferBelow(ctx context.Context, files workspace, inner transfer, contentType string) error {
+	targetEntry, err := files.stat(ctx, inner.target)
+	if err != nil {
+		return err
+	}
+	parent, err := files.stat(ctx, parentOf(inner.target))
+	switch {
+	case err != nil:
+		return err
+	case parent.kind == entryFile:
+		return fmt.Errorf("cannot overwrite non-directory '%s' with directory '%s'", path.Dir(inner.targetOperand), path.Dir(inner.sourceOperand))
+	case targetEntry.kind == entryDirectory:
+		return fmt.Errorf("cannot overwrite directory '%s' with non-directory", inner.targetOperand)
+	case m.noClobber && targetEntry.kind != entryMissing:
+		return nil
+	}
+	content, err := readFile(ctx, files, inner.source)
+	if err == nil {
+		err = files.storage.WriteFile(ctx, inner.target, content, contentType)
+	}
+	if err == nil && m.move {
+		err = files.storage.DeleteFile(ctx, inner.source)
+	}
+	if err != nil {
+		return m.targetError(inner, err)
 	}
 	return nil
 }
@@ -254,4 +289,13 @@ func (m transferMode) targetError(planned transfer, err error) error {
 		return fmt.Errorf("cannot move '%s' to '%s': %w", planned.sourceOperand, planned.targetOperand, describe(err))
 	}
 	return fmt.Errorf("cannot create regular file '%s': %w", planned.targetOperand, describe(err))
+}
+
+// splitErrors returns the errors errors.Join combined, or err alone.
+func splitErrors(err error) []error {
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		return joined.Unwrap()
+	}
+	return []error{err}
 }

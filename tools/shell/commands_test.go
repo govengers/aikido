@@ -58,6 +58,16 @@ func TestFileCommandCases(t *testing.T) {
 		{name: "cp onto a directory name inside a directory", files: map[string]string{"a": "1", "d/a/x": "2"}, script: "cp a d", want: "cp: cannot overwrite directory 'd/a' with non-directory\n", status: 1},
 		{name: "touch -c", files: files, script: "touch -c new; ls", want: "a.txt\ndir\n"},
 		{
+			name: "cp -rn checks every destination (review S13)",
+			files: map[string]string{
+				"src/a.txt": "new\n", "src/c.txt": "c\n", "src/sub/b.txt": "b\n",
+				"dst/src/a.txt": "old\n", "dst/src/c.txt/x": "x\n", "dst/src/sub": "file\n",
+			},
+			script: "cp -rn src dst; echo $?; cat dst/src/a.txt; cp -r src dst 2>/dev/null; cat dst/src/a.txt",
+			want: "cp: cannot overwrite directory 'dst/src/c.txt' with non-directory\n" +
+				"cp: cannot overwrite non-directory 'dst/src/sub' with directory 'src/sub'\n1\nold\nnew\n",
+		},
+		{
 			name: "a trailing slash names a directory (review S31)", files: files,
 			script: "cp a.txt out/; mv a.txt out/; cp dir/b.txt a.txt/; touch b/; touch a.txt/; echo x > c/; echo x > a.txt/; cp a.txt dir/ && ls; ls dir",
 			want: "cp: cannot create regular file 'out/': Not a directory\nmv: cannot move 'a.txt' to 'out/': Not a directory\n" +
