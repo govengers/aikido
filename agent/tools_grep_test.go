@@ -2,27 +2,30 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/govengers/aikido/tools"
+	"github.com/govengers/aikido/vfs"
 	vfsmem "github.com/govengers/aikido/vfs/memory"
 )
 
-func seeded(t *testing.T, opts VFSToolOptions, files map[string]string) *VFSToolOptions {
+func seeded(t *testing.T, options VFSToolOptions, files map[string]string) *VFSToolOptions {
 	t.Helper()
-	storage := vfsmem.NewStorage()
-	for p, c := range files {
-		if err := storage.WriteFile(context.Background(), p, []byte(c), ""); err != nil {
+	storage := vfsmem.New()
+	for filePath, content := range files {
+		if err := storage.WriteFile(context.Background(), filePath, []byte(content), ""); err != nil {
 			t.Fatal(err)
 		}
 	}
-	opts.Storage = storage
-	return &opts
+	options.Storage = storage
+	return &options
 }
 
 func TestGlobToRegexp(t *testing.T) {
-	cases := []struct {
+	testCases := []struct {
 		glob, path string
 		want       bool
 	}{
@@ -37,174 +40,286 @@ func TestGlobToRegexp(t *testing.T) {
 		{"*.{md,txt}", "x.txt", true},
 		{"*.{md,txt}", "x.json", false},
 		{"a.md", "aXmd", false},
+		{"café/*.md", "café/a.md", true},
+		{"caf?/*.md", "café/a.md", true},
+		{"{über,unter}/*.md", "über/a.md", true},
 	}
-	for _, c := range cases {
-		re, err := globToRegexp(c.glob)
+	for _, testCase := range testCases {
+		pattern, err := globToRegexp(testCase.glob)
 		if err != nil {
-			t.Fatalf("%q: %v", c.glob, err)
+			t.Fatalf("%q: %v", testCase.glob, err)
 		}
-		if got := re.MatchString(c.path); got != c.want {
-			t.Errorf("glob %q on %q = %v; want %v", c.glob, c.path, got, c.want)
+		if got := pattern.MatchString(testCase.path); got != testCase.want {
+			t.Errorf("glob %q on %q = %v; want %v", testCase.glob, testCase.path, got, testCase.want)
 		}
 	}
-	if _, err := globToRegexp("{a,b"); err == nil {
-		t.Error("unclosed brace should error")
+	for _, invalid := range []string{"{a,b", ""} {
+		if _, err := globToRegexp(invalid); err == nil {
+			t.Errorf("glob %q should error", invalid)
+		}
 	}
 }
 
 func TestRegisterVFSTools_Extended(t *testing.T) {
-	reg := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage()})
-	for _, n := range []string{"grep", "glob", "edit_file"} {
-		if !reg.Has(n) {
-			t.Errorf("%s should be registered by default", n)
+	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New()})
+	for _, name := range []string{"grep", "glob", "edit_file", "multi_edit", "move_file"} {
+		if !registry.Has(name) {
+			t.Errorf("%s should be registered by default", name)
 		}
 	}
-	reg = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage(), ReadOnly: true})
-	if !reg.Has("grep") || !reg.Has("glob") || reg.Has("edit_file") {
-		t.Error("read-only: want grep and glob, no edit_file")
+	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), ReadOnly: true})
+	if !registry.Has("grep") || !registry.Has("glob") || registry.Has("edit_file") || registry.Has("multi_edit") || registry.Has("move_file") {
+		t.Error("read-only: want grep and glob, no edit_file, multi_edit or move_file")
 	}
-	reg = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.NewStorage(), DisableExtended: true})
-	for _, n := range []string{"grep", "glob", "edit_file"} {
-		if reg.Has(n) {
-			t.Errorf("%s must not be registered with DisableExtended", n)
+	registry = newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), DisableExtended: true})
+	for _, name := range []string{"grep", "glob", "edit_file", "multi_edit", "move_file"} {
+		if registry.Has(name) {
+			t.Errorf("%s must not be registered with DisableExtended", name)
 		}
 	}
 }
 
 func TestGrep_ContentContextAndPolicy(t *testing.T) {
-	opts := seeded(t, VFSToolOptions{HideHiddenPaths: true, AllowedExtensions: []string{".md"}}, map[string]string{
+	options := seeded(t, VFSToolOptions{HideHiddenPaths: true, AllowedExtensions: []string{".md"}}, map[string]string{
 		"a.md":       "one\ntwo needle\nthree\nfour\nfive needle\n",
 		"_hidden.md": "needle\n",
 		"b.txt":      "needle\n",
 		"bin.md":     "needle\x00\n",
 	})
-	reg := newRegistryWithVFS(t, opts)
-	res, err := dispatch(t, reg, "grep", `{"pattern":"NEEDLE","case_insensitive":true,"context":1}`)
+	registry := newRegistryWithVFS(t, options)
+	result, err := dispatch(t, registry, "grep", `{"pattern":"NEEDLE","case_insensitive":true,"context":1}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := strings.Join(res.Content.(map[string]any)["matches"].([]string), "|")
+	got := strings.Join(result.Content.(map[string]any)["matches"].([]string), "|")
 	want := "a.md-1-one|a.md:2:two needle|a.md-3-three|a.md-4-four|a.md:5:five needle"
 	if got != want {
 		t.Errorf("matches = %q; want %q", got, want)
 	}
 }
 
+func TestGrep_EndAnchorMatchesBeforeLineTerminator(t *testing.T) {
+	options := seeded(t, VFSToolOptions{}, map[string]string{
+		"a.md": "TODO:\nTODO: later\n\r\nend\r\n",
+	})
+	registry := newRegistryWithVFS(t, options)
+	for _, testCase := range []struct{ pattern, want string }{
+		{`TODO:$`, "a.md:1:TODO:"},
+		{`^\s*$`, "a.md:3:"},
+		{`^end$`, "a.md:4:end"},
+	} {
+		result, err := dispatch(t, registry, "grep", fmt.Sprintf(`{"pattern":%q}`, testCase.pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(result.Content.(map[string]any)["matches"].([]string), "|"); got != testCase.want {
+			t.Errorf("grep %s = %q; want %q", testCase.pattern, got, testCase.want)
+		}
+	}
+}
+
 func TestGrep_ModesAndCaps(t *testing.T) {
 	var many strings.Builder
-	for i := 0; i < grepMaxLines+10; i++ {
-		fmt.Fprintf(&many, "hit %d %s\n", i, strings.Repeat("x", grepMaxLineChars))
+	for line := range grepMaximumLines + 10 {
+		fmt.Fprintf(&many, "hit %d %s\n", line, strings.Repeat("x", grepMaximumLineChars))
 	}
-	opts := seeded(t, VFSToolOptions{}, map[string]string{
+	options := seeded(t, VFSToolOptions{}, map[string]string{
 		"big.md":   many.String(),
 		"small.md": "hit\nhit\n",
 		"none.md":  "miss\n",
 	})
-	reg := newRegistryWithVFS(t, opts)
+	registry := newRegistryWithVFS(t, options)
 
-	res, err := dispatch(t, reg, "grep", `{"pattern":"hit"}`)
+	result, err := dispatch(t, registry, "grep", `{"pattern":"hit"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := res.Content.(map[string]any)
-	matches := c["matches"].([]string)
-	if len(matches) != grepMaxLines || c["truncated"] != true {
-		t.Errorf("len = %d truncated = %v; want %d true", len(matches), c["truncated"], grepMaxLines)
+	content := result.Content.(map[string]any)
+	matches := content["matches"].([]string)
+	if len(matches) != grepMaximumLines || content["truncated"] != true {
+		t.Errorf("len = %d truncated = %v; want %d true", len(matches), content["truncated"], grepMaximumLines)
 	}
-	if !strings.HasSuffix(matches[0], "…") || len([]rune(matches[0])) > grepMaxLineChars+20 {
+	if !strings.HasSuffix(matches[0], "…") || len([]rune(matches[0])) > grepMaximumLineChars+20 {
 		t.Errorf("long line not clipped: %d runes", len([]rune(matches[0])))
 	}
 
-	res, _ = dispatch(t, reg, "grep", `{"pattern":"hit","output_mode":"files_with_matches"}`)
-	if got := strings.Join(res.Content.(map[string]any)["files"].([]string), ","); got != "big.md,small.md" {
+	files := mustDispatch(t, registry, "grep", `{"pattern":"hit","output_mode":"files_with_matches"}`)
+	if got := strings.Join(files["files"].([]string), ","); got != "big.md,small.md" {
 		t.Errorf("files = %q", got)
 	}
-	res, _ = dispatch(t, reg, "grep", `{"pattern":"hit","output_mode":"count","path_glob":"small.*"}`)
-	counts := res.Content.(map[string]any)["counts"].([]map[string]any)
+	counts := mustDispatch(t, registry, "grep", `{"pattern":"hit","output_mode":"count","path_glob":"small.*"}`)["counts"].([]map[string]any)
 	if len(counts) != 1 || counts[0]["count"] != 2 {
 		t.Errorf("counts = %v", counts)
 	}
-	if _, err := dispatch(t, reg, "grep", `{"pattern":"("}`); err == nil {
-		t.Error("invalid regexp should error")
+	for _, arguments := range []string{`{"pattern":"("}`, `{"pattern":"x","output_mode":"lines"}`, `{"pattern":"x","path_glob":"{a"}`, `not json`} {
+		if _, err := dispatch(t, registry, "grep", arguments); err == nil {
+			t.Errorf("grep %s should error", arguments)
+		}
 	}
 }
 
 func TestGlob(t *testing.T) {
-	opts := seeded(t, VFSToolOptions{HideHiddenPaths: true}, map[string]string{
+	options := seeded(t, VFSToolOptions{HideHiddenPaths: true}, map[string]string{
 		"a.md": "", "d/b.md": "", "d/c.txt": "", ".x/y.md": "",
 	})
-	reg := newRegistryWithVFS(t, opts)
-	res, err := dispatch(t, reg, "glob", `{"pattern":"**/*.md"}`)
+	registry := newRegistryWithVFS(t, options)
+	result, err := dispatch(t, registry, "glob", `{"pattern":"**/*.md"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(res.Content.(map[string]any)["paths"].([]string), ","); got != "a.md,d/b.md" {
+	if got := strings.Join(result.Content.(map[string]any)["paths"].([]string), ","); got != "a.md,d/b.md" {
 		t.Errorf("paths = %q", got)
 	}
 }
 
 func TestEditFile(t *testing.T) {
-	opts := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "foo bar foo\n", "bin.md": "x\x00"})
-	reg := newRegistryWithVFS(t, opts)
+	options := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "foo bar foo\n", "bin.md": "x\x00"})
+	registry := newRegistryWithVFS(t, options)
 	ctx := context.Background()
 
-	if _, err := dispatch(t, reg, "edit_file", `{"path":"a.md","old_string":"foo","new_string":"baz"}`); err == nil || !strings.Contains(err.Error(), "2 times") {
+	if _, err := dispatch(t, registry, "edit_file", `{"path":"a.md","old_string":"foo","new_string":"baz"}`); err == nil || !strings.Contains(err.Error(), "2 times") {
 		t.Errorf("ambiguous match err = %v", err)
 	}
-	if _, err := dispatch(t, reg, "edit_file", `{"path":"a.md","old_string":"nope","new_string":"x"}`); err == nil {
+	if _, err := dispatch(t, registry, "edit_file", `{"path":"a.md","old_string":"nope","new_string":"x"}`); err == nil {
 		t.Error("missing old_string should error")
 	}
-	if _, err := dispatch(t, reg, "edit_file", `{"path":"a.md","old_string":"","new_string":"x"}`); err == nil {
+	if _, err := dispatch(t, registry, "edit_file", `{"path":"a.md","old_string":"","new_string":"x"}`); err == nil {
 		t.Error("empty old_string should error")
 	}
-	if _, err := dispatch(t, reg, "edit_file", `{"path":"bin.md","old_string":"x","new_string":"y"}`); err == nil {
+	if _, err := dispatch(t, registry, "edit_file", `{"path":"bin.md","old_string":"x","new_string":"y"}`); err == nil {
 		t.Error("binary file should error")
 	}
-	if _, err := dispatch(t, reg, "edit_file", `{"path":"a.md","old_string":"bar","new_string":"qux"}`); err != nil {
+	if _, err := dispatch(t, registry, "edit_file", `{"path":"a.md","old_string":"bar","new_string":"qux"}`); err != nil {
 		t.Fatal(err)
 	}
-	res, err := dispatch(t, reg, "edit_file", `{"path":"a.md","old_string":"foo","new_string":"baz","replace_all":true}`)
+	result, err := dispatch(t, registry, "edit_file", `{"path":"a.md","old_string":"foo","new_string":"baz","replace_all":true}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Content.(map[string]any)["replacements"] != 2 {
-		t.Errorf("replacements = %v", res.Content)
+	if result.Content.(map[string]any)["replacements"] != 2 {
+		t.Errorf("replacements = %v", result.Content)
 	}
-	got, _, _ := opts.Storage.ReadFile(ctx, "a.md")
+	got, _, err := options.Storage.ReadFile(ctx, "a.md")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(got) != "baz qux baz\n" {
 		t.Errorf("content = %q", got)
 	}
 }
 
 func TestReadFile_Ranges(t *testing.T) {
-	opts := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "1\n2\n3\n4\n5\n"})
-	reg := newRegistryWithVFS(t, opts)
-	res, err := dispatch(t, reg, "read_file", `{"path":"a.md","offset":2,"limit":2}`)
+	options := seeded(t, VFSToolOptions{}, map[string]string{"a.md": "1\n2\n3\n4\n5\n"})
+	registry := newRegistryWithVFS(t, options)
+	result, err := dispatch(t, registry, "read_file", `{"path":"a.md","offset":2,"limit":2}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := res.Content.(map[string]any)
-	if c["content"] != "2\n3\n" || c["total_lines"] != 5 || c["truncated"] != true {
-		t.Errorf("content = %v", c)
+	content := result.Content.(map[string]any)
+	if content["content"] != "2\t2\n3\t3\n" || content["total_lines"] != 5 || content["truncated"] != true {
+		t.Errorf("content = %v", content)
 	}
-	res, _ = dispatch(t, reg, "read_file", `{"path":"a.md"}`)
-	if c := res.Content.(map[string]any); c["content"] != "1\n2\n3\n4\n5\n" || c["truncated"] != false {
-		t.Errorf("full read = %v", c)
+	if content := mustDispatch(t, registry, "read_file", `{"path":"a.md"}`); content["content"] != "1\t1\n2\t2\n3\t3\n4\t4\n5\t5\n" || content["truncated"] != false {
+		t.Errorf("full read = %v", content)
 	}
-	if _, err := dispatch(t, reg, "read_file", `{"path":"a.md","offset":9}`); err == nil {
+	if _, err := dispatch(t, registry, "read_file", `{"path":"a.md","offset":9}`); err == nil {
 		t.Error("offset past end should error")
 	}
 }
 
 func TestListAndSearch_RespectAllowedExtensions(t *testing.T) {
-	opts := seeded(t, VFSToolOptions{AllowedExtensions: []string{".md"}}, map[string]string{"a.md": "x", "b.txt": "x"})
-	reg := newRegistryWithVFS(t, opts)
-	res, _ := dispatch(t, reg, "list_files", `{}`)
-	if files := res.Content.(map[string]any)["files"].([]map[string]any); len(files) != 1 || files[0]["path"] != "a.md" {
+	options := seeded(t, VFSToolOptions{AllowedExtensions: []string{".md"}}, map[string]string{"a.md": "x", "b.txt": "x"})
+	registry := newRegistryWithVFS(t, options)
+	if files := mustDispatch(t, registry, "list_files", `{}`)["files"].([]map[string]any); len(files) != 1 || files[0]["path"] != "a.md" {
 		t.Errorf("list_files = %v", files)
 	}
-	res, _ = dispatch(t, reg, "search", `{"query":"x"}`)
-	if paths := res.Content.(map[string]any)["paths"].([]string); len(paths) != 1 || paths[0] != "a.md" {
+	if paths := mustDispatch(t, registry, "search", `{"query":"x"}`)["paths"].([]string); len(paths) != 1 || paths[0] != "a.md" {
 		t.Errorf("search = %v", paths)
+	}
+}
+
+func TestParseGrepMode(t *testing.T) {
+	testCases := []struct {
+		outputMode string
+		want       grepMode
+		wantError  bool
+	}{
+		{"", grepModeContent, false},
+		{"content", grepModeContent, false},
+		{"files_with_matches", grepModeFiles, false},
+		{"count", grepModeCount, false},
+		{"lines", "", true},
+	}
+	for _, testCase := range testCases {
+		got, err := parseGrepMode(testCase.outputMode)
+		if got != testCase.want || (err != nil) != testCase.wantError {
+			t.Errorf("parseGrepMode(%q) = %q, %v; want %q, error %v", testCase.outputMode, got, err, testCase.want, testCase.wantError)
+		}
+	}
+}
+
+func TestGrep_ScanBudgetTruncates(t *testing.T) {
+	options := seeded(t, VFSToolOptions{MaximumFileBytes: grepScanBudget}, map[string]string{
+		"a.md": strings.Repeat("x", grepScanBudget),
+		"b.md": "needle\n",
+	})
+	registry := newRegistryWithVFS(t, options)
+	content := mustDispatch(t, registry, "grep", `{"pattern":"needle"}`)
+	if matches := content["matches"].([]string); len(matches) != 0 || content["truncated"] != true {
+		t.Errorf("content = %v; want no matches and truncated after the budget", content)
+	}
+}
+
+// inflatedStorage lists one file with a larger size than it holds.
+type inflatedStorage struct {
+	vfs.Storage
+	path string
+	size int64
+}
+
+func (s inflatedStorage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
+	files, err := s.Storage.ListFiles(ctx)
+	for index := range files {
+		if files[index].Path == s.path {
+			files[index].Size = s.size
+		}
+	}
+	return files, err
+}
+
+func TestGrep_SkipsOversizedFilesUnread(t *testing.T) {
+	testCases := []struct {
+		name             string
+		maximumFileBytes int64
+		listedSize       int64
+		wantMatches      string
+	}{
+		{"over MaximumFileBytes is skipped", 16, 17, "small.md:1:needle"},
+		{"over the scan budget ends the scan", 2 * grepScanBudget, grepScanBudget + 1, ""},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			seededOptions := seeded(t, VFSToolOptions{MaximumFileBytes: testCase.maximumFileBytes}, map[string]string{
+				"big.md":   "needle\n",
+				"small.md": "needle\n",
+			})
+			seededOptions.Storage = faultyStorage{
+				Storage:       inflatedStorage{Storage: seededOptions.Storage, path: "big.md", size: testCase.listedSize},
+				readErrorPath: "big.md",
+				readError:     errors.New("big.md must not be read"),
+			}
+			content := mustDispatch(t, newRegistryWithVFS(t, seededOptions), "grep", `{"pattern":"needle"}`)
+			if got := strings.Join(content["matches"].([]string), "|"); got != testCase.wantMatches || content["truncated"] != true {
+				t.Errorf("content = %v; want matches %q and truncated", content, testCase.wantMatches)
+			}
+		})
+	}
+}
+
+func TestRegisterVFSTools_DuplicateName(t *testing.T) {
+	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New()})
+	err := RegisterVFSTools(registry, &VFSToolOptions{Storage: vfsmem.New()})
+	if !errors.Is(err, tools.ErrDuplicateTool) {
+		t.Errorf("err = %v; want tools.ErrDuplicateTool", err)
 	}
 }

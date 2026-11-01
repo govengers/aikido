@@ -4,25 +4,28 @@ import "encoding/json"
 
 // Object builds a JSON Schema "object" from a property map and a list of
 // required property names. Output is deterministic (properties are emitted in
-// the order Go's encoding/json sorts map keys, which is alphabetical).
-func Object(props map[string]any, required ...string) json.RawMessage {
-	if props == nil {
-		props = map[string]any{}
+// the order Go's encoding/json sorts map keys, which is alphabetical). Nil
+// properties produce an object without properties.
+//
+// Object panics if properties hold a value encoding/json cannot encode (a
+// channel, a function): schemas are literals written at registration time,
+// so that is a programmer error (ERR-001).
+func Object(properties map[string]any, required ...string) json.RawMessage {
+	if properties == nil {
+		properties = map[string]any{}
 	}
-	obj := map[string]any{
+	schema := map[string]any{
 		"type":       "object",
-		"properties": props,
+		"properties": properties,
 	}
 	if len(required) > 0 {
-		obj["required"] = required
+		schema["required"] = required
 	}
-	b, err := json.Marshal(obj)
+	encoded, err := json.Marshal(schema)
 	if err != nil {
-		// json.Marshal of a string-keyed map should never fail; panic is fine
-		// for programmer error here.
 		panic("aikido/tools: Object marshal failed: " + err.Error())
 	}
-	return b
+	return encoded
 }
 
 // String builds a string-typed property schema.

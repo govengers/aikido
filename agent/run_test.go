@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,38 +17,98 @@ import (
 	"github.com/govengers/aikido/tools"
 )
 
-func newTestSession(t *testing.T, client llm.Client, reg *tools.Registry, hist History, opts ...func(*SessionOptions)) *Session {
+// testTimeout bounds waits that only expire when the code under test is broken.
+const testTimeout = 5 * time.Second
+
+func newTestSession(t *testing.T, client llm.Client, registry *tools.Registry, history History, configure ...func(*SessionOptions)) *Session {
 	t.Helper()
-	if hist == nil {
-		hist = memory.NewHistory()
+	if history == nil {
+		history = memory.New()
 	}
-	o := &SessionOptions{
+	options := &SessionOptions{
 		ID:           "s-test",
 		Client:       client,
-		Tools:        reg,
-		History:      hist,
+		Tools:        registry,
+		History:      history,
 		Locker:       NewLocalLocker(),
 		Model:        "test/model",
 		SystemPrompt: "you are a test",
 		MaximumTurns: 5,
 	}
-	for _, opt := range opts {
-		opt(o)
+	for _, apply := range configure {
+		apply(options)
 	}
-	s, err := NewSession(o)
+	session, err := NewSession(options)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	return s
+	return session
 }
 
-func collectEvents(t *testing.T, ch <-chan Event) []Event {
+func collectEvents(t *testing.T, events <-chan Event) []Event {
 	t.Helper()
-	var out []Event
-	for ev := range ch {
-		out = append(out, ev)
+	var collected []Event
+	for event := range events {
+		collected = append(collected, event)
 	}
-	return out
+	return collected
+}
+
+// runToEnd runs userText on session and returns every event of the run.
+func runToEnd(t *testing.T, session *Session, userText string) []Event {
+	t.Helper()
+	events, err := session.Run(context.Background(), userText)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return collectEvents(t, events)
+}
+
+// endReasonOf returns the EndReason of the run's EventEnd and fails the test
+// when the run has no EventEnd or it is not the last event.
+func endReasonOf(t *testing.T, events []Event) EndReason {
+	t.Helper()
+	if len(events) == 0 || events[len(events)-1].Kind != EventEnd {
+		t.Fatalf("run did not end with EventEnd: %+v", events)
+	}
+	return events[len(events)-1].EndReason
+}
+
+// errorOf returns the error of the run's EventError, nil if there is none.
+func errorOf(events []Event) error {
+	for _, event := range events {
+		if event.Kind == EventError {
+			return event.Err
+		}
+	}
+	return nil
+}
+
+func mustRegister(t *testing.T, registry *tools.Registry, name string, handler tools.Handler) {
+	t.Helper()
+	if err := registry.Register(llm.ToolDefinition{Name: name}, handler); err != nil {
+		t.Fatalf("register %s: %v", name, err)
+	}
+}
+
+func storedMessages(t *testing.T, history History, sessionID string) []llm.Message {
+	t.Helper()
+	messages, err := history.Read(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("History.Read: %v", err)
+	}
+	return messages
+}
+
+func textTurn(text string) llmtest.TurnScript {
+	return llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventTextDelta, Text: text}, {Kind: llm.EventEnd}}}
+}
+
+func toolCallTurn(callID, name, arguments string) llmtest.TurnScript {
+	return llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: callID, Name: name, Arguments: arguments}},
+		{Kind: llm.EventEnd},
+	}}
 }
 
 func TestRun_HappyPath_TextOnly(t *testing.T) {
@@ -56,27 +118,20 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 5, CompletionTokens: 3}},
 		{Kind: llm.EventEnd},
 	}})
-	hist := memory.NewHistory()
-	s := newTestSession(t, stub, nil, hist)
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
 
-	ch, err := s.Run(context.Background(), "say hi")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "say hi")
 
 	var text strings.Builder
-	var sawUsage, sawEnd bool
-	var endReason EndReason
-	for _, ev := range events {
-		switch ev.Kind {
+	var sawUsage bool
+	for _, event := range events {
+		switch event.Kind {
 		case EventText:
-			text.WriteString(ev.Text)
+			text.WriteString(event.Text)
 		case EventUsage:
 			sawUsage = true
-		case EventEnd:
-			sawEnd = true
-			endReason = ev.EndReason
+		default:
 		}
 	}
 	if text.String() != "Hello world" {
@@ -85,12 +140,12 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 	if !sawUsage {
 		t.Error("missing EventUsage")
 	}
-	if !sawEnd || endReason != EndReasonStop {
-		t.Errorf("end = %v reason=%q", sawEnd, endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
 	}
 
 	// History flushed once: user + assistant.
-	stored, _ := hist.Read(context.Background(), "s-test")
+	stored := storedMessages(t, history, "s-test")
 	if len(stored) != 2 {
 		t.Fatalf("len(stored) = %d; want 2 (user+assistant)", len(stored))
 	}
@@ -103,575 +158,830 @@ func TestRun_HappyPath_TextOnly(t *testing.T) {
 }
 
 func TestRun_ToolCallThenEnd(t *testing.T) {
-	reg := tools.NewRegistry()
-	if err := reg.Register(llm.ToolDefinition{Name: "echo"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
-		var v map[string]any
-		_ = json.Unmarshal(args, &v)
-		return tools.Result{Content: map[string]any{"echoed": v["msg"]}}, nil
-	}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "echo", func(_ context.Context, arguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
+		var parsed map[string]any
+		if err := json.Unmarshal(arguments, &parsed); err != nil {
+			return tools.Result{}, err
+		}
+		return tools.Result{Content: map[string]any{"echoed": parsed["msg"]}}, nil
+	})
 	stub := llmtest.NewStubClient(
-		// turn 1: model emits one tool call
 		llmtest.TurnScript{Events: []llm.Event{
 			{Kind: llm.EventTextDelta, Text: "thinking..."},
 			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "echo", Arguments: `{"msg":"hi"}`}},
 			{Kind: llm.EventEnd},
 		}},
-		// turn 2: model wraps up
-		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventTextDelta, Text: "done"},
-			{Kind: llm.EventEnd},
-		}},
+		textTurn("done"),
 	)
-	hist := memory.NewHistory()
-	s := newTestSession(t, stub, reg, hist)
+	history := memory.New()
+	session := newTestSession(t, stub, registry, history)
 
-	ch, _ := s.Run(context.Background(), "do it")
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "do it")
 
 	var sawToolCall, sawToolResult bool
-	var endReason EndReason
-	for _, ev := range events {
-		switch ev.Kind {
+	for _, event := range events {
+		switch event.Kind {
 		case EventToolCall:
 			sawToolCall = true
-			if ev.ToolCall == nil || ev.ToolCall.Name != "echo" {
-				t.Errorf("tool call wrong: %+v", ev.ToolCall)
+			if event.ToolCall == nil || event.ToolCall.Name != "echo" {
+				t.Errorf("tool call wrong: %+v", event.ToolCall)
 			}
 		case EventToolResult:
 			sawToolResult = true
-			if !ev.ToolResult.OK {
-				t.Errorf("tool result not OK: %+v", ev.ToolResult)
+			if !event.ToolResult.OK {
+				t.Errorf("tool result not OK: %+v", event.ToolResult)
 			}
-		case EventEnd:
-			endReason = ev.EndReason
+		default:
 		}
 	}
 	if !sawToolCall || !sawToolResult {
 		t.Errorf("tool events: call=%v result=%v", sawToolCall, sawToolResult)
 	}
-	if endReason != EndReasonStop {
-		t.Errorf("endReason = %q; want stop", endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
 	}
 
-	// Verify exactly one History.Append called (variadic): user + asst1 + tool + asst2 = 4 messages.
-	stored, _ := hist.Read(context.Background(), "s-test")
+	// One History.Append (variadic): user + assistant 1 + tool + assistant 2.
+	stored := storedMessages(t, history, "s-test")
 	if len(stored) != 4 {
-		t.Errorf("stored len = %d; want 4 (user + asst1 + tool + asst2). msgs=%+v", len(stored), stored)
+		t.Errorf("stored len = %d; want 4 (user + asst1 + tool + asst2). messages=%+v", len(stored), stored)
+	}
+	if want := `{"echoed":"hi"}`; stored[2].Role != llm.RoleTool || stored[2].Content != want {
+		t.Errorf("tool message = %+v; want content %s", stored[2], want)
 	}
 }
 
 func TestRun_ToolErrorContinues(t *testing.T) {
-	reg := tools.NewRegistry()
+	registry := tools.NewRegistry()
 	sentinel := errors.New("tool exploded")
-	_ = reg.Register(llm.ToolDefinition{Name: "boom"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
+	mustRegister(t, registry, "boom", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
 		return tools.Result{}, sentinel
 	})
-	stub := llmtest.NewStubClient(
-		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "boom"}},
-			{Kind: llm.EventEnd},
-		}},
-		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventTextDelta, Text: "i recovered"},
-			{Kind: llm.EventEnd},
-		}},
-	)
-	s := newTestSession(t, stub, reg, nil)
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	stub := llmtest.NewStubClient(toolCallTurn("c1", "boom", ""), textTurn("i recovered"))
+	session := newTestSession(t, stub, registry, nil)
 
-	var sawToolResultFail bool
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventToolResult && ev.ToolResult != nil && !ev.ToolResult.OK {
-			sawToolResultFail = true
-			if !strings.Contains(ev.ToolResult.Error, "exploded") {
-				t.Errorf("tool error = %q", ev.ToolResult.Error)
+	events := runToEnd(t, session, "go")
+
+	var sawFailedResult bool
+	for _, event := range events {
+		if event.Kind == EventToolResult && event.ToolResult != nil && !event.ToolResult.OK {
+			sawFailedResult = true
+			if !strings.Contains(event.ToolResult.Error, "exploded") {
+				t.Errorf("tool error = %q", event.ToolResult.Error)
 			}
 		}
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
 	}
-	if !sawToolResultFail {
+	if !sawFailedResult {
 		t.Error("expected EventToolResult with OK=false")
 	}
-	if endReason != EndReasonStop {
-		t.Errorf("end = %q; want stop (loop continues despite tool error)", endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop (loop continues despite tool error)", reason)
+	}
+}
+
+func TestRun_UnknownToolWithoutRegistryContinues(t *testing.T) {
+	stub := llmtest.NewStubClient(toolCallTurn("c1", "ghost", "{}"), textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil)
+
+	events := runToEnd(t, session, "go")
+
+	var toolResult *ToolResult
+	for _, event := range events {
+		if event.Kind == EventToolResult {
+			toolResult = event.ToolResult
+		}
+	}
+	if toolResult == nil || toolResult.OK || !strings.Contains(toolResult.Error, "ghost") {
+		t.Errorf("tool result = %+v; want a failed result naming the unknown tool", toolResult)
+	}
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
 	}
 }
 
 func TestRun_MidStreamErrorSkipsHistoryAppend(t *testing.T) {
+	providerError := errors.New("provider blew up")
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventTextDelta, Text: "partial"},
-		{Kind: llm.EventError, Err: errors.New("provider blew up")},
+		{Kind: llm.EventError, Err: providerError},
 		{Kind: llm.EventEnd},
 	}})
-	hist := memory.NewHistory()
-	s := newTestSession(t, stub, nil, hist)
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
 
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "go")
 
-	var sawErr bool
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventError {
-			sawErr = true
-		}
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	if err := errorOf(events); !errors.Is(err, providerError) {
+		t.Errorf("EventError = %v; want the provider error", err)
 	}
-	if !sawErr {
-		t.Error("expected EventError")
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
 	}
-	if endReason != EndReasonError {
-		t.Errorf("end = %q; want error", endReason)
-	}
-	stored, _ := hist.Read(context.Background(), "s-test")
-	if len(stored) != 0 {
+	if stored := storedMessages(t, history, "s-test"); len(stored) != 0 {
 		t.Errorf("History.Append should NOT have been called on mid-stream error; stored=%+v", stored)
 	}
 }
 
-func TestRun_MaxTurnsHitsCap(t *testing.T) {
+func TestRun_MaximumTurnsHitsCap(t *testing.T) {
 	// Always emit a tool call so the loop never reaches stop.
-	reg := tools.NewRegistry()
-	_ = reg.Register(llm.ToolDefinition{Name: "loop"}, func(ctx context.Context, args json.RawMessage, env tools.Environment) (tools.Result, error) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "loop", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
 		return tools.Result{Content: "ok"}, nil
 	})
 	turns := make([]llmtest.TurnScript, 10)
-	for i := range turns {
-		turns[i] = llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c", Name: "loop"}},
-			{Kind: llm.EventEnd},
-		}}
+	for index := range turns {
+		turns[index] = toolCallTurn("c", "loop", "")
 	}
 	stub := llmtest.NewStubClient(turns...)
-	hist := memory.NewHistory()
-	s := newTestSession(t, stub, reg, hist, func(o *SessionOptions) { o.MaximumTurns = 3 })
+	history := memory.New()
+	session := newTestSession(t, stub, registry, history, func(options *SessionOptions) { options.MaximumTurns = 3 })
 
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "go")
 
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	if reason := endReasonOf(t, events); reason != EndReasonMaximumTurns {
+		t.Errorf("end reason = %q; want max_turns", reason)
 	}
-	if endReason != EndReasonMaximumTurns {
-		t.Errorf("end = %q; want max_turns", endReason)
-	}
-	// History flushed: user + 3 turns of (asst + tool) = 1 + 6 = 7 messages.
-	stored, _ := hist.Read(context.Background(), "s-test")
-	if len(stored) != 7 {
+	// History flushed: user + 3 turns of (assistant + tool) = 1 + 6 = 7 messages.
+	if stored := storedMessages(t, history, "s-test"); len(stored) != 7 {
 		t.Errorf("stored len = %d; want 7", len(stored))
 	}
 }
 
 func TestRun_RunTimeout(t *testing.T) {
-	s := newTestSession(t, blockingClient{}, nil, nil, func(o *SessionOptions) {
-		o.RunTimeout = 80 * time.Millisecond
-		o.LLMCallTimeout = 10 * time.Second // make sure outer timeout fires first
+	session := newTestSession(t, blockingClient{}, nil, nil, func(options *SessionOptions) {
+		options.RunTimeout = 80 * time.Millisecond
+		options.LLMCallTimeout = 10 * time.Second // make sure the outer timeout fires first
 	})
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
-
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
-	}
-	if endReason != EndReasonTimeout {
-		t.Errorf("end = %q; want timeout", endReason)
+	if reason := endReasonOf(t, runToEnd(t, session, "go")); reason != EndReasonTimeout {
+		t.Errorf("end reason = %q; want timeout", reason)
 	}
 }
 
 func TestRun_LLMCallTimeout(t *testing.T) {
-	s := newTestSession(t, blockingClient{}, nil, nil, func(o *SessionOptions) {
-		o.RunTimeout = 5 * time.Second
-		o.LLMCallTimeout = 80 * time.Millisecond
+	session := newTestSession(t, blockingClient{}, nil, nil, func(options *SessionOptions) {
+		options.RunTimeout = 5 * time.Second
+		options.LLMCallTimeout = 80 * time.Millisecond
 	})
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
-
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
-	}
-	if endReason != EndReasonTimeout {
-		t.Errorf("end = %q; want timeout", endReason)
+	if reason := endReasonOf(t, runToEnd(t, session, "go")); reason != EndReasonTimeout {
+		t.Errorf("end reason = %q; want timeout", reason)
 	}
 }
 
 func TestRun_Cancellation(t *testing.T) {
-	s := newTestSession(t, blockingClient{}, nil, nil, func(o *SessionOptions) {
-		o.RunTimeout = 5 * time.Second
+	streaming := make(chan struct{})
+	session := newTestSession(t, blockingClient{streaming: streaming}, nil, nil, func(options *SessionOptions) {
+		options.RunTimeout = 5 * time.Second
 	})
 	ctx, cancel := context.WithCancel(context.Background())
-	ch, _ := s.Run(ctx, "go")
-	go func() {
-		time.Sleep(40 * time.Millisecond)
-		cancel()
-	}()
-	events := collectEvents(t, ch)
+	defer cancel()
+	events, _ := session.Run(ctx, "go")
+	<-streaming
+	cancel()
 
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
-	}
-	if endReason != EndReasonCancelled {
-		t.Errorf("end = %q; want cancelled", endReason)
+	if reason := endReasonOf(t, collectEvents(t, events)); reason != EndReasonCancelled {
+		t.Errorf("end reason = %q; want cancelled", reason)
 	}
 }
 
 func TestRun_StrictHistoryReadError(t *testing.T) {
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
-		{Kind: llm.EventTextDelta, Text: "hi"},
-		{Kind: llm.EventEnd},
-	}})
+	stub := llmtest.NewStubClient(textTurn("hi"))
 	sentinel := errors.New("read boom")
-	hist := errorHistory{errOnRead: sentinel}
-	s := newTestSession(t, stub, nil, hist)
+	session := newTestSession(t, stub, nil, errorHistory{readError: sentinel})
 
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "go")
 
-	var sawErr bool
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventError && ev.Err != nil && strings.Contains(ev.Err.Error(), "read boom") {
-			sawErr = true
-		}
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	if err := errorOf(events); !errors.Is(err, sentinel) {
+		t.Errorf("EventError = %v; want the History error", err)
 	}
-	if !sawErr {
-		t.Error("expected EventError carrying the History error")
-	}
-	if endReason != EndReasonError {
-		t.Errorf("end = %q; want error", endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
 	}
 }
 
 func TestRun_StrictHistoryAppendError(t *testing.T) {
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
-		{Kind: llm.EventTextDelta, Text: "hi"},
-		{Kind: llm.EventEnd},
-	}})
+	stub := llmtest.NewStubClient(textTurn("hi"))
 	sentinel := errors.New("append boom")
-	hist := errorHistory{errOnAppend: sentinel}
-	s := newTestSession(t, stub, nil, hist)
+	session := newTestSession(t, stub, nil, errorHistory{appendError: sentinel})
 
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	events := runToEnd(t, session, "go")
 
-	var endReason EndReason
-	var sawErr bool
-	for _, ev := range events {
-		if ev.Kind == EventError && strings.Contains(ev.Err.Error(), "append boom") {
-			sawErr = true
-		}
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	if err := errorOf(events); !errors.Is(err, sentinel) {
+		t.Errorf("EventError = %v; want the History error", err)
 	}
-	if !sawErr {
-		t.Error("expected EventError")
-	}
-	if endReason != EndReasonError {
-		t.Errorf("end = %q; want error", endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
 	}
 }
 
 func TestRun_StrictLockerError(t *testing.T) {
-	stub := llmtest.NewStubClient()
 	sentinel := errors.New("lock boom")
-	o := &SessionOptions{
-		ID: "s-test", Client: stub, Model: "m",
-		History: memory.NewHistory(), Locker: errorLocker{err: sentinel},
-	}
-	s, err := NewSession(o)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
+	session := newTestSession(t, llmtest.NewStubClient(), nil, nil, func(options *SessionOptions) {
+		options.Locker = errorLocker{err: sentinel}
+	})
 
-	var sawErr bool
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventError && strings.Contains(ev.Err.Error(), "lock boom") {
-			sawErr = true
-		}
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	events := runToEnd(t, session, "go")
+
+	if err := errorOf(events); !errors.Is(err, sentinel) {
+		t.Errorf("EventError = %v; want the Locker error", err)
 	}
-	if !sawErr {
-		t.Error("expected EventError")
-	}
-	if endReason != EndReasonError {
-		t.Errorf("end = %q; want error", endReason)
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
 	}
 }
 
 func TestRun_StreamDialError(t *testing.T) {
 	sentinel := errors.New("dial fail")
-	hist := memory.NewHistory()
-	s, err := NewSession(&SessionOptions{
-		ID: "s", Client: dialErrClient{err: sentinel}, Model: "m",
-		History: hist, Locker: NewLocalLocker(),
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+	history := memory.New()
+	session := newTestSession(t, dialErrorClient{err: sentinel}, nil, history)
+
+	events := runToEnd(t, session, "go")
+
+	if err := errorOf(events); !errors.Is(err, sentinel) {
+		t.Errorf("EventError = %v; want the dial error", err)
 	}
-	ch, _ := s.Run(context.Background(), "go")
-	events := collectEvents(t, ch)
-	var endReason EndReason
-	for _, ev := range events {
-		if ev.Kind == EventEnd {
-			endReason = ev.EndReason
-		}
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
 	}
-	if endReason != EndReasonError {
-		t.Errorf("end = %q; want error", endReason)
-	}
-	stored, _ := hist.Read(context.Background(), "s")
-	if len(stored) != 0 {
+	if stored := storedMessages(t, history, "s-test"); len(stored) != 0 {
 		t.Error("History should not be appended on dial error")
 	}
 }
 
-func TestRun_LocalLocker_SerializesSameID_AcrossDistinctSessions(t *testing.T) {
-	// Two distinct *Session, same ID, sharing one Locker → must serialize.
+// A panicking tool handler is a tool error the model sees; the run goes on.
+func TestRun_ToolPanicIsAToolError(t *testing.T) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "explode", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		panic("tool bug")
+	})
+	stub := llmtest.NewStubClient(toolCallTurn("c1", "explode", "{}"), textTurn("after the panic"))
+	history := memory.New()
+	session := newTestSession(t, stub, registry, history)
+
+	events := runToEnd(t, session, "go")
+
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 4 || !strings.Contains(stored[2].Content, "tool panicked: explode: tool bug") {
+		t.Errorf("stored = %+v; want the panic as the tool message", stored)
+	}
+}
+
+// panickingClient panics in Stream, a stand-in for any bug inside the run.
+type panickingClient struct{ dialErrorClient }
+
+func (panickingClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	panic("client bug")
+}
+
+// Regression: a panic inside the run used to crash the caller's process,
+// because the run goroutine did not recover (CON-001).
+func TestRun_PanicEndsRunWithError(t *testing.T) {
+	history := memory.New()
+	session := newTestSession(t, panickingClient{}, nil, history)
+
+	events := runToEnd(t, session, "go")
+
+	if err := errorOf(events); err == nil || !strings.Contains(err.Error(), "client bug") {
+		t.Errorf("EventError = %v; want the recovered panic", err)
+	}
+	if reason := endReasonOf(t, events); reason != EndReasonError {
+		t.Errorf("end reason = %q; want error", reason)
+	}
+	if stored := storedMessages(t, history, "s-test"); len(stored) != 0 {
+		t.Errorf("History must not be updated after a panic; stored=%+v", stored)
+	}
+	// The panic released the session lock: the next run gets it and fails the same way.
+	if reason := endReasonOf(t, runToEnd(t, session, "again")); reason != EndReasonError {
+		t.Errorf("next run end reason = %q; want error", reason)
+	}
+}
+
+// Regression: a caller that cancelled and stopped reading used to leave the
+// run goroutine blocked on a full channel forever, holding the session lock
+// (CON-005).
+func TestRun_AbandonedRunReleasesTheLock(t *testing.T) {
+	floodEvents := make([]llm.Event, 0, 2*eventBufferSize)
+	for range 2 * eventBufferSize {
+		floodEvents = append(floodEvents, llm.Event{Kind: llm.EventTextDelta, Text: "x"})
+	}
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: floodEvents}, textTurn("second"))
+	session := newTestSession(t, stub, nil, nil)
+
+	abandonedContext, cancel := context.WithCancel(context.Background())
+	abandoned, _ := session.Run(abandonedContext, "flood")
+	for len(abandoned) < cap(abandoned) {
+		runtime.Gosched() // wait until the run is blocked on the full channel
+	}
+	cancel()
+
+	ctx, cancelSecond := context.WithTimeout(context.Background(), testTimeout)
+	defer cancelSecond()
+	second, _ := session.Run(ctx, "next")
+	if reason := endReasonOf(t, collectEvents(t, second)); reason != EndReasonStop {
+		t.Errorf("run after an abandoned run ended with %q; want stop", reason)
+	}
+	collectEvents(t, abandoned)
+}
+
+func TestRun_LocalLockerSerializesSameIDAcrossSessions(t *testing.T) {
 	locker := NewLocalLocker()
-	hist := memory.NewHistory()
-
-	mkClient := func(delay time.Duration) llm.Client {
-		return &delayClient{delay: delay}
-	}
-	mkSession := func(client llm.Client) *Session {
-		s, err := NewSession(&SessionOptions{
-			ID: "shared", Client: client, Model: "m",
-			History: hist, Locker: locker, MaximumTurns: 1,
+	history := memory.New()
+	newSharedSession := func(client llm.Client) *Session {
+		return newTestSession(t, client, nil, history, func(options *SessionOptions) {
+			options.ID = "shared"
+			options.Locker = locker
+			options.MaximumTurns = 1
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
 	}
-	s1 := mkSession(mkClient(120 * time.Millisecond))
-	s2 := mkSession(mkClient(0))
+	firstStreaming := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	first := newSharedSession(gatedClient{streaming: firstStreaming, release: releaseFirst})
+	second := newSharedSession(llmtest.NewStubClient(textTurn("x")))
 
-	start := time.Now()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		ch, _ := s1.Run(context.Background(), "first")
-		for range ch {
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		time.Sleep(20 * time.Millisecond) // give s1 a head start to grab the lock
-		ch, _ := s2.Run(context.Background(), "second")
-		for range ch {
-		}
-	}()
-	wg.Wait()
-	elapsed := time.Since(start)
+	firstEvents, _ := first.Run(context.Background(), "first")
+	<-firstStreaming // first holds the lock now
+	secondEvents, _ := second.Run(context.Background(), "second")
+	close(releaseFirst)
 
-	// If serialized, total wall-time >= 120ms (s1's delay).
-	if elapsed < 100*time.Millisecond {
-		t.Errorf("Run calls did not serialize: total=%v, expected >= 100ms", elapsed)
+	if reason := endReasonOf(t, collectEvents(t, firstEvents)); reason != EndReasonStop {
+		t.Errorf("first run ended with %q", reason)
 	}
-
-	// History should contain both turns from both sessions, in serialized order.
-	stored, _ := hist.Read(context.Background(), "shared")
-	if len(stored) != 4 { // 2x (user + assistant)
-		t.Errorf("stored len = %d; want 4", len(stored))
+	if reason := endReasonOf(t, collectEvents(t, secondEvents)); reason != EndReasonStop {
+		t.Errorf("second run ended with %q", reason)
+	}
+	// Serialized: the second run read History only after the first appended.
+	stored := storedMessages(t, history, "shared")
+	if len(stored) != 4 || stored[0].Content != "first" || stored[2].Content != "second" {
+		t.Errorf("stored = %+v; want first's user+assistant, then second's", stored)
 	}
 }
 
-func TestRun_LocalLocker_DifferentIDsRunInParallel(t *testing.T) {
+func TestRun_LocalLockerRunsDifferentIDsInParallel(t *testing.T) {
 	locker := NewLocalLocker()
-	hist := memory.NewHistory()
-	mk := func(id string) *Session {
-		s, _ := NewSession(&SessionOptions{
-			ID: id, Client: &delayClient{delay: 120 * time.Millisecond}, Model: "m",
-			History: hist, Locker: locker,
+	streaming := make(chan struct{}, 2)
+	release := make(chan struct{})
+	client := gatedClient{streaming: streaming, release: release}
+	sessions := make([]*Session, 0, 2)
+	for _, id := range []string{"a", "b"} {
+		sessions = append(sessions, newTestSession(t, client, nil, nil, func(options *SessionOptions) {
+			options.ID = id
+			options.Locker = locker
+		}))
+	}
+
+	var runs sync.WaitGroup
+	collected := make([][]Event, len(sessions))
+	for index, session := range sessions {
+		events, _ := session.Run(context.Background(), "go")
+		runs.Go(func() {
+			collected[index] = collectEvents(t, events)
 		})
-		return s
 	}
-	a := mk("a")
-	b := mk("b")
-
-	start := time.Now()
-	var wg sync.WaitGroup
-	wg.Add(2)
-	for _, s := range []*Session{a, b} {
-		s := s
-		go func() {
-			defer wg.Done()
-			ch, _ := s.Run(context.Background(), "go")
-			for range ch {
-			}
-		}()
-	}
-	wg.Wait()
-	elapsed := time.Since(start)
-	// If parallel, total ≈ 120ms (not 240ms).
-	if elapsed > 220*time.Millisecond {
-		t.Errorf("different IDs should run in parallel: elapsed=%v", elapsed)
-	}
-}
-
-// delayClient sends one EventTextDelta after `delay`, then ends.
-type delayClient struct{ delay time.Duration }
-
-func (d *delayClient) Complete(ctx context.Context, _ llm.Request) (llm.Response, error) {
-	select {
-	case <-ctx.Done():
-		return llm.Response{}, ctx.Err()
-	case <-time.After(d.delay):
-	}
-	return llm.Response{Text: "x"}, nil
-}
-
-func (d *delayClient) Stream(ctx context.Context, _ llm.Request) (<-chan llm.Event, error) {
-	ch := make(chan llm.Event, 2)
-	go func() {
-		defer close(ch)
+	for range sessions {
 		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(d.delay):
+		case <-streaming:
+		case <-time.After(testTimeout):
+			t.Fatal("both sessions should stream at the same time")
 		}
-		select {
-		case ch <- llm.Event{Kind: llm.EventTextDelta, Text: "x"}:
-		case <-ctx.Done():
-			return
+	}
+	close(release)
+	runs.Wait()
+	for index, events := range collected {
+		if reason := endReasonOf(t, events); reason != EndReasonStop {
+			t.Errorf("session %d ended with %q", index, reason)
 		}
-		select {
-		case ch <- llm.Event{Kind: llm.EventEnd}:
-		case <-ctx.Done():
-		}
-	}()
-	return ch, nil
+	}
 }
 
 func TestNewLocalSession_AutoSuppliesDefaults(t *testing.T) {
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
-		{Kind: llm.EventTextDelta, Text: "hi"},
-		{Kind: llm.EventEnd},
-	}})
-	s, err := NewLocalSession(&SessionOptions{
-		ID: "x", Client: stub, Model: "m",
-	})
+	stub := llmtest.NewStubClient(textTurn("hi"))
+	session, err := NewLocalSession(&SessionOptions{ID: "x", Client: stub, Model: "m"})
 	if err != nil {
 		t.Fatalf("NewLocalSession: %v", err)
 	}
-	if s.opts.History == nil {
+	if session.options.History == nil {
 		t.Error("History should be auto-supplied")
 	}
-	if s.opts.Locker == nil {
+	if session.options.Locker == nil {
 		t.Error("Locker should be auto-supplied")
 	}
-	ch, _ := s.Run(context.Background(), "say hi")
-	for range ch {
+	if reason := endReasonOf(t, runToEnd(t, session, "say hi")); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
 	}
 }
 
 func TestNewLocalSession_RespectsProvided(t *testing.T) {
-	customHist := memory.NewHistory()
-	customLock := NewLocalLocker()
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventEnd}}})
-	s, err := NewLocalSession(&SessionOptions{
+	customHistory := memory.New()
+	customLocker := NewLocalLocker()
+	stub := llmtest.NewStubClient()
+	session, err := NewLocalSession(&SessionOptions{
 		ID: "x", Client: stub, Model: "m",
-		History: customHist, Locker: customLock,
+		History: customHistory, Locker: customLocker,
 	})
 	if err != nil {
 		t.Fatalf("NewLocalSession: %v", err)
 	}
-	if s.opts.History != customHist {
+	if session.options.History != customHistory {
 		t.Error("custom History was overwritten")
 	}
-	if s.opts.Locker != customLock {
+	if session.options.Locker != customLocker {
 		t.Error("custom Locker was overwritten")
 	}
 }
 
-func TestRunWithOptions_SystemSuffixIsPerRun(t *testing.T) {
-	turn := func() llmtest.TurnScript {
-		return llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventTextDelta, Text: "ok"}, {Kind: llm.EventEnd}}}
+func TestNewLocalSession_NilOptions(t *testing.T) {
+	if _, err := NewLocalSession(nil); err == nil {
+		t.Error("expected an error for nil options")
 	}
-	stub := llmtest.NewStubClient(turn(), turn())
-	hist := memory.NewHistory()
-	s := newTestSession(t, stub, nil, hist)
+}
 
-	ch, _ := s.RunWithOptions(context.Background(), "one", &RunOptions{SystemSuffix: "Answer briefly."})
-	collectEvents(t, ch)
-	ch, _ = s.Run(context.Background(), "two")
-	collectEvents(t, ch)
+func TestRunWithOptions_SystemSuffixIsPerRun(t *testing.T) {
+	stub := llmtest.NewStubClient(textTurn("ok"), textTurn("ok"))
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
 
-	reqs := stub.Requests()
-	if got := reqs[0].Messages[0].Content; got != "you are a test\n\nAnswer briefly." {
+	events, _ := session.RunWithOptions(context.Background(), "one", &RunOptions{SystemSuffix: "Answer briefly."})
+	collectEvents(t, events)
+	runToEnd(t, session, "two")
+
+	requests := stub.Requests()
+	if got := requests[0].Messages[0].Content; got != "you are a test\n\nAnswer briefly." {
 		t.Errorf("first system = %q", got)
 	}
-	if got := reqs[1].Messages[0].Content; got != "you are a test" {
+	if got := requests[1].Messages[0].Content; got != "you are a test" {
 		t.Errorf("second system = %q", got)
 	}
-	msgs, _ := hist.Read(context.Background(), "s-test")
-	for _, m := range msgs {
-		if m.Role == llm.RoleSystem || strings.Contains(m.Content, "Answer briefly") {
-			t.Errorf("suffix leaked into history: %+v", m)
+	for _, message := range storedMessages(t, history, "s-test") {
+		if message.Role == llm.RoleSystem || strings.Contains(message.Content, "Answer briefly") {
+			t.Errorf("suffix leaked into history: %+v", message)
 		}
 	}
 }
 
 func TestSessionOptions_ThinkingReachesEveryCall(t *testing.T) {
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventTextDelta, Text: "ok"}, {Kind: llm.EventEnd}}})
-	s := newTestSession(t, stub, nil, nil, func(o *SessionOptions) {
-		o.Thinking = llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	stub := llmtest.NewStubClient(textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Thinking = llm.ThinkingByEffort(llm.ThinkingEffortLow)
 	})
-	ch, _ := s.Run(context.Background(), "hi")
-	collectEvents(t, ch)
+	runToEnd(t, session, "hi")
 	if got := stub.Requests()[0].Thinking.Effort(); got != llm.ThinkingEffortLow {
 		t.Fatalf("effort = %q, want low", got)
 	}
 }
 
 func TestRunOptions_ThinkingOverridesSession(t *testing.T) {
-	turn := func() llmtest.TurnScript {
-		return llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventTextDelta, Text: "ok"}, {Kind: llm.EventEnd}}}
-	}
-	stub := llmtest.NewStubClient(turn(), turn())
-	s := newTestSession(t, stub, nil, nil, func(o *SessionOptions) {
-		o.Thinking = llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	stub := llmtest.NewStubClient(textTurn("ok"), textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Thinking = llm.ThinkingByEffort(llm.ThinkingEffortLow)
 	})
-	ch, _ := s.RunWithOptions(context.Background(), "hard one", &RunOptions{Thinking: llm.ThinkingByEffort(llm.ThinkingEffortHigh)})
-	collectEvents(t, ch)
-	ch, _ = s.Run(context.Background(), "easy one")
-	collectEvents(t, ch)
+	events, _ := session.RunWithOptions(context.Background(), "hard one", &RunOptions{Thinking: llm.ThinkingByEffort(llm.ThinkingEffortHigh)})
+	collectEvents(t, events)
+	runToEnd(t, session, "easy one")
 
-	reqs := stub.Requests()
-	if got := reqs[0].Thinking.Effort(); got != llm.ThinkingEffortHigh {
+	requests := stub.Requests()
+	if got := requests[0].Thinking.Effort(); got != llm.ThinkingEffortHigh {
 		t.Errorf("run with override: effort = %q, want high", got)
 	}
-	if got := reqs[1].Thinking.Effort(); got != llm.ThinkingEffortLow {
+	if got := requests[1].Thinking.Effort(); got != llm.ThinkingEffortLow {
 		t.Errorf("next run: effort = %q, want the session's low", got)
+	}
+}
+
+// Regression: the Session kept the caller's Temperature and Thinking
+// pointers, so changing them after NewSession changed every later call.
+func TestNewSession_KeepsItsOwnTemperatureAndThinking(t *testing.T) {
+	temperature := float32(0.2)
+	thinking := llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	stub := llmtest.NewStubClient(textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Temperature = &temperature
+		options.Thinking = thinking
+	})
+	temperature = 0.9
+	*thinking = *llm.ThinkingByEffort(llm.ThinkingEffortHigh)
+	runToEnd(t, session, "hi")
+
+	request := stub.Requests()[0]
+	if *request.Temperature != 0.2 || request.Thinking.Effort() != llm.ThinkingEffortLow {
+		t.Errorf("temperature %v, effort %q; want the values at NewSession (0.2, low)", *request.Temperature, request.Thinking.Effort())
+	}
+}
+
+// Regression: a run kept the caller's RunOptions.Thinking pointer and read it
+// once it held the lock, after RunWithOptions had returned.
+func TestRunWithOptions_KeepsItsOwnThinking(t *testing.T) {
+	locker := observingLocker{runEvents: make(chan (<-chan Event), 1), queuedAtUnlock: make(chan int, 1)}
+	stub := llmtest.NewStubClient(textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Locker = locker
+	})
+	thinking := llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	events, _ := session.RunWithOptions(context.Background(), "hi", &RunOptions{Thinking: thinking})
+	*thinking = *llm.ThinkingByEffort(llm.ThinkingEffortHigh)
+	locker.runEvents <- events
+	collectEvents(t, events)
+
+	if got := stub.Requests()[0].Thinking.Effort(); got != llm.ThinkingEffortLow {
+		t.Errorf("effort = %q; want low, the value at RunWithOptions", got)
+	}
+}
+
+func TestRun_ForwardsThinkingAndImages(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventThinking, Text: "pondering"},
+		{Kind: llm.EventImage, Image: &llm.ImagePart{URL: "https://example.com/a.png"}},
+		{Kind: llm.EventImage},
+		{Kind: llm.EventToolCall},
+		{Kind: llm.EventEnd},
+	}})
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
+
+	events := runToEnd(t, session, "draw")
+
+	var thinking string
+	var images int
+	for _, event := range events {
+		switch event.Kind {
+		case EventThinking:
+			thinking += event.Text
+		case EventImage:
+			images++
+		default:
+		}
+	}
+	if thinking != "pondering" || images != 1 {
+		t.Errorf("thinking = %q, images = %d; want pondering and 1 image", thinking, images)
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 2 || len(stored[1].Images) != 1 || len(stored[1].ToolCalls) != 0 {
+		t.Errorf("stored = %+v; want the image on the assistant message and no tool calls", stored)
+	}
+}
+
+func TestSystemPrompt(t *testing.T) {
+	testCases := []struct {
+		name, prompt, suffix, want string
+	}{
+		{"neither", "", "", ""},
+		{"prompt only", "be kind", "", "be kind"},
+		{"suffix only", "", "be brief", "be brief"},
+		{"both joined by a blank line", "be kind", "be brief", "be kind\n\nbe brief"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := systemPrompt(testCase.prompt, testCase.suffix); got != testCase.want {
+				t.Errorf("systemPrompt(%q, %q) = %q; want %q", testCase.prompt, testCase.suffix, got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestResolveEndReason(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelExpired()
+	contexts := map[string]context.Context{
+		"cancelled": cancelled,
+		"expired":   expired,
+		"live":      context.Background(),
+		"nil":       nil,
+	}
+
+	testCases := []struct {
+		name             string
+		userContext      string
+		runContext       string
+		callContextError error
+		want             EndReason
+	}{
+		{"caller cancelled wins", "cancelled", "expired", context.DeadlineExceeded, EndReasonCancelled},
+		{"caller deadline", "expired", "expired", nil, EndReasonTimeout},
+		{"run timeout", "live", "expired", nil, EndReasonTimeout},
+		{"call timeout", "live", "live", context.DeadlineExceeded, EndReasonTimeout},
+		{"call cancelled", "live", "live", context.Canceled, EndReasonCancelled},
+		{"plain failure", "live", "live", nil, EndReasonError},
+		{"nil contexts", "nil", "nil", nil, EndReasonError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := resolveEndReason(contexts[testCase.userContext], contexts[testCase.runContext], testCase.callContextError)
+			if got != testCase.want {
+				t.Errorf("resolveEndReason = %q; want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestToolResultJSON(t *testing.T) {
+	testCases := []struct {
+		name       string
+		toolResult ToolResult
+		want       string
+	}{
+		{"content", ToolResult{OK: true, Content: map[string]any{"a": 1}}, `{"a":1}`},
+		{"nil content", ToolResult{OK: true}, "null"},
+		{"failure", ToolResult{Error: `bad "path"`}, `{"error":"bad \"path\""}`},
+		{"unencodable content", ToolResult{OK: true, Content: make(chan int)}, `{"error":"content marshal failed: json: unsupported type: chan int"}`},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := toolResultJSON(testCase.toolResult); got != testCase.want {
+				t.Errorf("toolResultJSON = %s; want %s", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestEventSink_DropsOnlyWhenAbandonedAndFull(t *testing.T) {
+	events := make(chan Event, 1)
+	abandoned := make(chan struct{})
+	sink := eventSink{events: events, abandoned: abandoned}
+	close(abandoned)
+
+	sink.send(Event{Kind: EventText, Text: "fits the buffer"})
+	sink.send(Event{Kind: EventText, Text: "dropped"})
+
+	if got := (<-events).Text; got != "fits the buffer" {
+		t.Errorf("first event = %q; want the buffered one", got)
+	}
+	if len(events) != 0 {
+		t.Error("the second event should have been dropped")
+	}
+}
+
+// Regression: with ctx done and the provider's channel closed at once, the
+// select could take the close and accept a cut reply after LLMCallTimeout.
+func TestReceiveReply_StreamClosedAfterContextEndIsAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sink := eventSink{events: make(chan Event, 2*eventBufferSize), abandoned: ctx.Done()}
+	for range 100 {
+		providerEvents := make(chan llm.Event, 1)
+		providerEvents <- llm.Event{Kind: llm.EventTextDelta, Text: "cut"}
+		close(providerEvents)
+		if _, err := receiveReply(ctx, providerEvents, sink); !errors.Is(err, context.Canceled) {
+			t.Fatalf("receiveReply = %v; want context.Canceled", err)
+		}
+	}
+}
+
+// observingLocker grants the lock once the test passed it the run's event
+// channel; unlock reports how many events the run had queued by then.
+type observingLocker struct {
+	runEvents      chan (<-chan Event)
+	queuedAtUnlock chan int
+}
+
+func (l observingLocker) Lock(context.Context, string) (func(), error) {
+	events := <-l.runEvents
+	return func() { l.queuedAtUnlock <- len(events) }, nil
+}
+
+func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
+	locker := observingLocker{runEvents: make(chan (<-chan Event), 1), queuedAtUnlock: make(chan int, 1)}
+	session := newTestSession(t, llmtest.NewStubClient(textTurn("hi")), nil, nil, func(options *SessionOptions) {
+		options.Locker = locker
+	})
+	events, _ := session.Run(context.Background(), "go")
+	locker.runEvents <- events
+
+	queued := <-locker.queuedAtUnlock // nothing is read before the unlock
+	if all := collectEvents(t, events); queued != len(all) {
+		t.Errorf("unlock saw %d of the run's %d events queued; want EventEnd sent before the unlock", queued, len(all))
+	}
+}
+
+// Regression: an empty reply (here reasoning only) was stored as an
+// assistant message without content and resent on every later run, which
+// providers reject.
+func TestRun_EmptyReplyIsNotRecorded(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventThinking, Text: "long reasoning"},
+		{Kind: llm.EventEnd, FinishReason: "length"},
+	}}, textTurn("ok"))
+	history := memory.New()
+	session := newTestSession(t, stub, nil, history)
+
+	if reason := endReasonOf(t, runToEnd(t, session, "one")); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop", reason)
+	}
+	runToEnd(t, session, "two")
+
+	for _, message := range stub.Requests()[1].Messages {
+		if message.Role == llm.RoleAssistant && isEmptyReply(message) {
+			t.Errorf("second run sent an empty assistant message: %+v", stub.Requests()[1].Messages)
+		}
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 3 || stored[0].Content != "one" || stored[1].Content != "two" || stored[2].Content != "ok" {
+		t.Errorf("stored = %+v; want one, two, ok", stored)
+	}
+}
+
+// panickingUnlockLocker hands out an unlock function that panics.
+type panickingUnlockLocker struct{}
+
+func (panickingUnlockLocker) Lock(context.Context, string) (func(), error) {
+	return func() { panic("unlock failed") }, nil
+}
+
+// Regression: the lock release ran outside recoverRun, so a panicking unlock
+// crashed the process.
+func TestRun_PanickingUnlockDoesNotCrash(t *testing.T) {
+	session := newTestSession(t, llmtest.NewStubClient(textTurn("hi")), nil, nil, func(options *SessionOptions) {
+		options.Locker = panickingUnlockLocker{}
+	})
+	events := runToEnd(t, session, "go")
+	if reason := endReasonOf(t, events); reason != EndReasonStop {
+		t.Errorf("end reason = %q; want stop, the unlock runs after EventEnd", reason)
+	}
+}
+
+// Regression: the run read the published ToolCall and ToolResult again for
+// the history, so a caller changing them raced with the run (go test -race).
+func TestRun_CallerMayChangePublishedToolEvents(t *testing.T) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "ping", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		return tools.Result{Content: "pong"}, nil
+	})
+	history := memory.New()
+	session := newTestSession(t, llmtest.NewStubClient(toolCallTurn("c1", "ping", "{}"), textTurn("done")), registry, history)
+	events, _ := session.Run(context.Background(), "go")
+	for event := range events {
+		switch event.Kind {
+		case EventToolCall:
+			event.ToolCall.ID = "changed"
+		case EventToolResult:
+			event.ToolResult.ModelContent = "changed"
+		default:
+		}
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 4 || stored[2].ToolCallID != "c1" || stored[2].Content != `"pong"` {
+		t.Errorf("stored = %+v; want the tool message as the model saw it", stored)
+	}
+}
+
+func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventTextDelta, Text: "partial"},
+		{Kind: llm.EventUsage, Usage: &llm.Usage{PromptTokens: 7}},
+		{Kind: llm.EventError, Err: errors.New("content filter")},
+		{Kind: llm.EventEnd},
+	}})
+	events := runToEnd(t, newTestSession(t, stub, nil, nil), "go")
+
+	var kinds []EventKind
+	for _, event := range events {
+		if event.Kind == EventUsage && event.Usage.PromptTokens != 7 {
+			t.Errorf("usage = %+v; want the provider's", event.Usage)
+		}
+		if event.Kind != EventText {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	if want := []EventKind{EventUsage, EventError, EventEnd}; !slices.Equal(kinds, want) {
+		t.Errorf("events = %v; want %v", kinds, want)
+	}
+}
+
+// Regression: EventImage shared its Data with the recorded reply, so a caller
+// changing the bytes changed the next request and History.
+func TestRun_CallerMayChangePublishedImageBytes(t *testing.T) {
+	changed := make(chan struct{})
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "wait", func(ctx context.Context, _ json.RawMessage, _ tools.Environment) (tools.Result, error) {
+		select {
+		case <-changed:
+			return tools.Result{Content: "ok"}, nil
+		case <-ctx.Done():
+			return tools.Result{}, ctx.Err()
+		}
+	})
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
+		{Kind: llm.EventImage, Image: &llm.ImagePart{ContentType: "image/png", Data: []byte("png")}},
+		{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "c1", Name: "wait", Arguments: "{}"}},
+		{Kind: llm.EventEnd},
+	}}, textTurn("done"))
+	history := memory.New()
+	session := newTestSession(t, stub, registry, history)
+
+	events, _ := session.Run(context.Background(), "draw")
+	for event := range events {
+		if event.Kind == EventImage {
+			event.Image.Data[0] = 'X'
+			close(changed)
+		}
+	}
+	if got := string(stub.Requests()[1].Messages[2].Images[0].Data); got != "png" {
+		t.Errorf("image resent to the model = %q; want png", got)
+	}
+	if got := string(storedMessages(t, history, "s-test")[1].Images[0].Data); got != "png" {
+		t.Errorf("image in History = %q; want png", got)
 	}
 }

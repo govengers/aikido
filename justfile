@@ -29,15 +29,16 @@ test *flags:
 # Every unit test, uncached and shuffled: the nightly run and before a release (TST-014, TST-005)
 test-all: (test "-count=1" "-shuffle=on")
 
-# Reproducible compiled suite: its hash says whether the suite has anything new to test (TST-015)
+# Reproducible aikido CLI and compiled suite: their hash says whether the suite has anything new to test (TST-015)
 e2e-build:
     mkdir -p sandbox/e2e-build
+    go build -race -trimpath -buildvcs=false -o sandbox/e2e-build/aikido ./cmd/aikido
     go test -c -race -tags e2e -trimpath -buildvcs=false -o sandbox/e2e-build/ ./test/e2e/...
 
-# The end-to-end suite against the public API with real collaborators, always (TST-011)
+# The end-to-end suite: the CLI binary and the public API against a fake OpenRouter, always (TST-011)
 test-e2e-all: e2e-build
     mkdir -p sandbox
-    {{gotestsum}} --format testname --jsonfile sandbox/e2e.json -- -race -tags e2e -trimpath -buildvcs=false -count=1 ./test/e2e/...
+    E2E_BINARY={{justfile_directory()}}/sandbox/e2e-build/aikido {{gotestsum}} --format testname --jsonfile sandbox/e2e.json -- -race -tags e2e -trimpath -buildvcs=false -count=1 ./test/e2e/...
 
 # The end-to-end suite, skipped when suite and inputs equal a green run (TST-015); keeps sandbox/e2e.json for CI badges
 test-e2e: e2e-build
@@ -57,6 +58,10 @@ test-e2e: e2e-build
 # Scan for known vulnerabilities in reachable code (TCH-008)
 vulncheck:
     {{govulncheck}} ./...
+
+# Mirror docs/wiki of a release tag (default: the newest) or of main to the GitHub wiki; CI does it for every release
+wiki ref="":
+    .github/scripts/publish-wiki.sh {{ref}}
 
 # Everything CI runs on a change
 check: lint test test-e2e vulncheck

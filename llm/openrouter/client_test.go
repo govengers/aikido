@@ -4,12 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,61 +13,6 @@ import (
 
 	"github.com/govengers/aikido/llm"
 )
-
-// loadFixture reads an SSE transcript from testdata/.
-func loadFixture(t *testing.T, name string) []byte {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatalf("read fixture %s: %v", name, err)
-	}
-	return b
-}
-
-// sseHandler returns an http.HandlerFunc that writes the given SSE bytes with
-// status 200 and Content-Type: text/event-stream.
-func sseHandler(t *testing.T, body []byte) http.HandlerFunc {
-	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-	}
-}
-
-// newTestClient builds a Client targeting srv.URL.
-func newTestClient(t *testing.T, srv *httptest.Server) *Client {
-	t.Helper()
-	c, err := NewClient(&Options{
-		APIKey:  "sk-test",
-		BaseURL: srv.URL,
-	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	return c
-}
-
-// drain collects events from a stream until the channel closes.
-func drain(t *testing.T, ch <-chan llm.Event, timeout time.Duration) []llm.Event {
-	t.Helper()
-	var out []llm.Event
-	deadline := time.After(timeout)
-	for {
-		select {
-		case ev, ok := <-ch:
-			if !ok {
-				return out
-			}
-			out = append(out, ev)
-		case <-deadline:
-			t.Fatalf("timeout draining stream after %d events", len(out))
-		}
-	}
-}
 
 func TestNewClient_RequiresAPIKey(t *testing.T) {
 	t.Parallel()
@@ -86,151 +27,86 @@ func TestNewClient_RequiresAPIKey(t *testing.T) {
 	}
 }
 
-func TestClient_ImplementsLLMClient(t *testing.T) {
+// TestNewClient_DefaultClientBoundsResponseHeaders pins RES-001: without an
+// HTTPClient a hung provider fails after the header timeout instead of
+// blocking forever, while the overall Timeout stays off for long streams.
+func TestNewClient_DefaultClientBoundsResponseHeaders(t *testing.T) {
 	t.Parallel()
-	var _ llm.Client = (*Client)(nil)
+	client, err := NewClient(&Options{APIKey: "k"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if client.httpClient.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (streams outlive any fixed cap)", client.httpClient.Timeout)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if transport.ResponseHeaderTimeout != defaultResponseHeaderTimeout {
+		t.Errorf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, defaultResponseHeaderTimeout)
+	}
 }
 
 func TestStream_SimpleText(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "simple_text.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	events := streamBody(t, loadFixture(t, "simple_text.sse"))
+	summary := summarize(t, events)
 
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	if len(summary.errors) != 0 {
+		t.Errorf("unexpected EventError: %v", summary.errors)
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	// Expected: 3x EventTextDelta, 1x EventUsage, 1x EventEnd.
-	var texts []string
-	var usageSeen bool
-	var endSeen bool
-	var sawErr bool
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventTextDelta:
-			texts = append(texts, ev.Text)
-		case llm.EventUsage:
-			if usageSeen {
-				t.Error("multiple EventUsage events")
-			}
-			usageSeen = true
-			if ev.Usage == nil {
-				t.Fatal("EventUsage with nil Usage")
-			}
-			if ev.Usage.PromptTokens != 18 || ev.Usage.CompletionTokens != 4 {
-				t.Errorf("usage tokens = %+v", ev.Usage)
-			}
-			if ev.Usage.CostUSD == 0 {
-				t.Error("usage.CostUSD == 0; want non-zero")
-			}
-		case llm.EventEnd:
-			endSeen = true
-		case llm.EventError:
-			sawErr = true
-		}
+	if len(summary.usages) != 1 {
+		t.Fatalf("usage events = %d, want 1", len(summary.usages))
 	}
-	if sawErr {
-		t.Errorf("unexpected EventError")
+	usage := summary.usages[0]
+	if usage.PromptTokens != 18 || usage.CompletionTokens != 4 {
+		t.Errorf("usage tokens = %+v", usage)
 	}
-	if !usageSeen {
-		t.Error("missing EventUsage")
+	if usage.CostUSD == 0 {
+		t.Error("usage.CostUSD == 0; want non-zero")
 	}
-	if !endSeen {
-		t.Error("missing EventEnd")
+	if summary.text != "Hello, world." {
+		t.Errorf("text = %q, want %q", summary.text, "Hello, world.")
 	}
-	if got, want := strings.Join(texts, ""), "Hello, world."; got != want {
-		t.Errorf("text = %q, want %q", got, want)
-	}
-	if events[len(events)-1].Kind != llm.EventEnd {
-		t.Errorf("last event = %s, want EventEnd", events[len(events)-1].Kind)
-	}
+	assertEventOrder(t, events)
 }
 
 func TestStream_SingleTool(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "single_tool.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	events := streamBody(t, loadFixture(t, "single_tool.sse"))
+	summary := summarize(t, events)
 
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	if summary.text != "Let me check that file." {
+		t.Errorf("text = %q", summary.text)
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	// Expected: 1x text delta ("Let me check that file."), 1x tool call, 1x usage, 1x end.
-	var text string
-	var calls []llm.ToolCall
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventTextDelta:
-			text += ev.Text
-		case llm.EventToolCall:
-			if ev.Tool == nil {
-				t.Fatal("EventToolCall with nil Tool")
-			}
-			calls = append(calls, *ev.Tool)
-		}
+	if len(summary.toolCalls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(summary.toolCalls))
 	}
-	if text != "Let me check that file." {
-		t.Errorf("text = %q", text)
+	call := summary.toolCalls[0]
+	if call.ID != "call_abc" || call.Name != "read_file" {
+		t.Errorf("call = %+v", call)
 	}
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(calls))
+	if call.Arguments != `{"path":"README.md"}` {
+		t.Errorf("Arguments = %q, want %q", call.Arguments, `{"path":"README.md"}`)
 	}
-	c0 := calls[0]
-	if c0.ID != "call_abc" || c0.Name != "read_file" {
-		t.Errorf("call = %+v", c0)
-	}
-	if c0.Arguments != `{"path":"README.md"}` {
-		t.Errorf("Arguments = %q, want %q", c0.Arguments, `{"path":"README.md"}`)
-	}
-	if !json.Valid([]byte(c0.Arguments)) {
-		t.Errorf("Arguments not valid JSON: %q", c0.Arguments)
-	}
-	// Order: tool call must precede end.
 	assertEventOrder(t, events)
 }
 
 func TestStream_MultiToolInterleaved(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "multi_tool_interleaved.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	events := streamBody(t, loadFixture(t, "multi_tool_interleaved.sse"))
+	calls := summarize(t, events).toolCalls
 
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := drain(t, ch, 2*time.Second)
-
-	var calls []llm.ToolCall
-	for _, ev := range events {
-		if ev.Kind == llm.EventToolCall && ev.Tool != nil {
-			calls = append(calls, *ev.Tool)
-		}
-	}
 	if len(calls) != 2 {
 		t.Fatalf("calls = %d, want 2; events=%+v", len(calls), events)
 	}
 	// In index order: call_a (read_file) first, call_b (list_files) second.
-	if calls[0].ID != "call_a" || calls[0].Name != "read_file" {
+	if calls[0].ID != "call_a" || calls[0].Name != "read_file" || calls[0].Arguments != `{"path":"a.md"}` {
 		t.Errorf("calls[0] = %+v", calls[0])
 	}
-	if calls[1].ID != "call_b" || calls[1].Name != "list_files" {
+	if calls[1].ID != "call_b" || calls[1].Name != "list_files" || calls[1].Arguments != `{}` {
 		t.Errorf("calls[1] = %+v", calls[1])
-	}
-	if calls[0].Arguments != `{"path":"a.md"}` {
-		t.Errorf("calls[0].Arguments = %q", calls[0].Arguments)
-	}
-	if calls[1].Arguments != `{}` {
-		t.Errorf("calls[1].Arguments = %q", calls[1].Arguments)
 	}
 	if !json.Valid([]byte(calls[0].Arguments)) || !json.Valid([]byte(calls[1].Arguments)) {
 		t.Error("tool-call Arguments not valid JSON")
@@ -241,375 +117,231 @@ func TestStream_MultiToolInterleaved(t *testing.T) {
 func TestStream_MidStreamError(t *testing.T) {
 	t.Parallel()
 	body := loadFixture(t, "mid_stream_error.sse")
-	var hits int32
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "openai/gpt-4o"})
+	var hits atomic.Int32
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		hits.Add(1)
+		sseHandler(body)(writer, request)
+	})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "openai/gpt-4o"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 2*time.Second)
+	events := drain(t, stream, 2*time.Second)
+	summary := summarize(t, events)
 
-	var texts []string
-	var errEv *llm.Event
-	var endSeen bool
-	for i, ev := range events {
-		switch ev.Kind {
-		case llm.EventTextDelta:
-			texts = append(texts, ev.Text)
-		case llm.EventError:
-			errEv = &events[i]
-		case llm.EventEnd:
-			endSeen = true
-		}
+	if summary.text != "Working on it..." {
+		t.Errorf("text = %q", summary.text)
 	}
-	if got := strings.Join(texts, ""); got != "Working on it..." {
-		t.Errorf("text = %q", got)
+	if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrServerError) {
+		t.Errorf("errors = %v, want one matching ErrServerError", summary.errors)
 	}
-	if errEv == nil {
-		t.Fatal("missing EventError")
-	}
-	if errEv.Err == nil {
-		t.Fatal("EventError.Err is nil")
-	}
-	if !errors.Is(errEv.Err, llm.ErrServerError) {
-		t.Errorf("EventError.Err = %v, want errors.Is(ErrServerError)", errEv.Err)
-	}
-	if !endSeen {
-		t.Error("missing EventEnd")
-	}
-	// EventEnd is always last.
-	if events[len(events)-1].Kind != llm.EventEnd {
-		t.Errorf("last event = %s, want EventEnd", events[len(events)-1].Kind)
-	}
-	// No retry on mid-stream error.
-	if got := atomic.LoadInt32(&hits); got != 1 {
+	assertEventOrder(t, events)
+	if got := hits.Load(); got != 1 {
 		t.Errorf("hits = %d, want 1 (no retry on mid-stream error)", got)
 	}
 }
 
-func TestStream_ContentFilterFinishReason(t *testing.T) {
+func TestStream_ContentFilter(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "content_filter_finish_reason.sse")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	for _, fixture := range []string{"content_filter_finish_reason.sse", "content_filter_error_envelope.sse"} {
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+			summary := summarize(t, streamBody(t, loadFixture(t, fixture)))
+			if len(summary.errors) != 1 || !errors.Is(summary.errors[0], llm.ErrContentFiltered) {
+				t.Fatalf("errors = %v, want one matching ErrContentFiltered", summary.errors)
+			}
+			if errors.Is(summary.errors[0], llm.ErrServerError) {
+				t.Error("err should NOT match ErrServerError when content-filtered")
+			}
+			if summary.end == nil || summary.end.FinishReason != finishReasonContentFilter {
+				t.Errorf("EventEnd = %+v, want FinishReason %q", summary.end, finishReasonContentFilter)
+			}
+		})
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	var errEv *llm.Event
-	var endEv *llm.Event
-	for i, ev := range events {
-		switch ev.Kind {
-		case llm.EventError:
-			errEv = &events[i]
-		case llm.EventEnd:
-			endEv = &events[i]
-		}
-	}
-	if errEv == nil || errEv.Err == nil {
-		t.Fatal("expected EventError with non-nil Err")
-	}
-	if !errors.Is(errEv.Err, llm.ErrContentFiltered) {
-		t.Errorf("err = %v, want errors.Is(ErrContentFiltered)", errEv.Err)
-	}
-	if errors.Is(errEv.Err, llm.ErrServerError) {
-		t.Errorf("err should NOT match ErrServerError when content-filtered")
-	}
-	if endEv == nil {
-		t.Fatal("missing EventEnd")
-	}
-	if endEv.FinishReason != "content_filter" {
-		t.Errorf("EventEnd.FinishReason = %q, want %q", endEv.FinishReason, "content_filter")
-	}
-}
-
-func TestStream_ContentFilterErrorEnvelope(t *testing.T) {
-	t.Parallel()
-	body := loadFixture(t, "content_filter_error_envelope.sse")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "google/gemini-3.1-flash-image-preview"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := drain(t, ch, 2*time.Second)
-
-	var errEv *llm.Event
-	var endEv *llm.Event
-	for i, ev := range events {
-		switch ev.Kind {
-		case llm.EventError:
-			errEv = &events[i]
-		case llm.EventEnd:
-			endEv = &events[i]
-		}
-	}
-	if errEv == nil || errEv.Err == nil {
-		t.Fatal("expected EventError with non-nil Err")
-	}
-	if !errors.Is(errEv.Err, llm.ErrContentFiltered) {
-		t.Errorf("err = %v, want errors.Is(ErrContentFiltered)", errEv.Err)
-	}
-	if endEv == nil || endEv.FinishReason != "content_filter" {
-		t.Errorf("EventEnd.FinishReason = %q, want %q", endEvFinishReason(endEv), "content_filter")
-	}
-}
-
-func endEvFinishReason(ev *llm.Event) string {
-	if ev == nil {
-		return "<nil EventEnd>"
-	}
-	return ev.FinishReason
 }
 
 func TestStream_429ThenSuccess(t *testing.T) {
 	t.Parallel()
 	successBody := loadFixture(t, "success_after_429.sse")
 	var (
-		hits  int32
-		first time.Time
-		gap   time.Duration
+		hits  atomic.Int32
+		first atomic.Int64
+		gap   atomic.Int64
 	)
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&hits, 1)
-		if n == 1 {
-			first = time.Now()
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Retry-After", "1")
-			w.Header().Set("X-RateLimit-Reset", "1741305600000")
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":{"code":429,"message":"Rate limit exceeded","metadata":{}}}`))
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if hits.Add(1) == 1 {
+			first.Store(time.Now().UnixNano())
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Header().Set("Retry-After", "1")
+			writer.Header().Set("X-RateLimit-Reset", "1741305600000")
+			writer.WriteHeader(http.StatusTooManyRequests)
+			_, _ = writer.Write([]byte(`{"error":{"code":429,"message":"Rate limit exceeded","metadata":{}}}`))
 			return
 		}
-		gap = time.Since(first)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(successBody)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	defer srv.Close()
-
-	c, err := NewClient(&Options{
-		APIKey:  "sk-test",
-		BaseURL: srv.URL,
+		gap.Store(time.Now().UnixNano() - first.Load())
+		sseHandler(successBody)(writer, request)
 	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
+	stream, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	events := drain(t, ch, 5*time.Second)
+	summary := summarize(t, drain(t, stream, 5*time.Second))
 
-	if h := atomic.LoadInt32(&hits); h != 2 {
-		t.Errorf("hits = %d, want 2 (one 429, one success)", h)
+	if got := hits.Load(); got != 2 {
+		t.Errorf("hits = %d, want 2 (one 429, one success)", got)
 	}
-	if gap < 800*time.Millisecond {
-		t.Errorf("gap between requests = %v, want >= ~1s (Retry-After)", gap)
+	if waited := time.Duration(gap.Load()); waited < 800*time.Millisecond {
+		t.Errorf("gap between requests = %v, want >= ~1s (Retry-After)", waited)
 	}
-	// Success path same as simple_text: text + usage + end, no error.
-	var textsJoin string
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventError:
-			t.Errorf("unexpected EventError on retry path: %v", ev.Err)
-		case llm.EventTextDelta:
-			textsJoin += ev.Text
-		}
+	if len(summary.errors) != 0 {
+		t.Errorf("unexpected EventError on retry path: %v", summary.errors)
 	}
-	if textsJoin != "Hello, world." {
-		t.Errorf("text = %q", textsJoin)
+	if summary.text != "Hello, world." {
+		t.Errorf("text = %q", summary.text)
 	}
 }
 
 func TestStream_Thinking(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "thinking.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{
-		Model:    "anthropic/claude-sonnet-4-6",
-		Thinking: llm.ThinkingByEffort(llm.ThinkingEffortHigh),
-	})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	summary := summarize(t, streamBody(t, loadFixture(t, "thinking.sse")))
+	if !strings.Contains(summary.thinking, "Let me think") {
+		t.Errorf("thinking text = %q, want it to contain %q", summary.thinking, "Let me think")
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	var thinkingText, contentText string
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventThinking:
-			thinkingText += ev.Text
-		case llm.EventTextDelta:
-			contentText += ev.Text
-		}
-	}
-	if thinkingText == "" {
-		t.Error("expected EventThinking text, got none")
-	}
-	if !strings.Contains(thinkingText, "Let me think") {
-		t.Errorf("thinking text = %q", thinkingText)
-	}
-	if contentText != "42." {
-		t.Errorf("content text = %q, want %q", contentText, "42.")
+	if summary.text != "42." {
+		t.Errorf("content text = %q, want %q", summary.text, "42.")
 	}
 }
 
-func TestStream_AuthError(t *testing.T) {
+func TestStream_StatusErrors(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"code":401,"message":"invalid key"}}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	_, err := c.Stream(context.Background(), llm.Request{Model: "x"})
-	if err == nil {
-		t.Fatal("expected error")
+	testCases := []struct {
+		name   string
+		status int
+		body   string
+		want   error
+	}{
+		{name: "401", status: http.StatusUnauthorized, body: `{"error":{"code":401,"message":"invalid key"}}`, want: llm.ErrAuthentication},
+		{name: "400", status: http.StatusBadRequest, body: `{"error":{"code":400,"message":"bad input"}}`, want: llm.ErrInvalidRequest},
 	}
-	if !errors.Is(err, llm.ErrAuthentication) {
-		t.Errorf("err = %v, want ErrAuth", err)
-	}
-}
-
-func TestStream_InvalidRequest(t *testing.T) {
-	t.Parallel()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"bad input"}}`))
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	_, err := c.Stream(context.Background(), llm.Request{Model: "x"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !errors.Is(err, llm.ErrInvalidRequest) {
-		t.Errorf("err = %v, want ErrInvalidRequest", err)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			server := newTestServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(testCase.status)
+				_, _ = writer.Write([]byte(testCase.body))
+			})
+			_, err := newTestClient(t, server).Stream(context.Background(), llm.Request{Model: "x"})
+			if !errors.Is(err, testCase.want) {
+				t.Errorf("err = %v, want %v", err, testCase.want)
+			}
+		})
 	}
 }
 
 func TestStream_Cancellation(t *testing.T) {
 	t.Parallel()
-	// Server holds the response open indefinitely.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Hold open for up to 10s; the cancellation should kill us earlier.
-		select {
-		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
-		}
-	}))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	})
 	ctx, cancel := context.WithCancel(context.Background())
-	ch, err := c.Stream(ctx, llm.Request{Model: "x"})
+	stream, err := newTestClient(t, server).Stream(ctx, llm.Request{Model: "x"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	// Cancel quickly. The producer should exit and close the channel.
+	// The producer must exit and close the channel.
+	cancel()
+	_ = drain(t, stream, 2*time.Second)
+}
+
+// TestStream_CancelledMidStreamEmitsNoError pins that cancelling a running
+// stream ends it without an EventError: the body read fails because of the
+// cancellation, not because the provider dropped the connection.
+func TestStream_CancelledMidStreamEmitsNoError(t *testing.T) {
+	t.Parallel()
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"))
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := newTestClient(t, server).Stream(ctx, llm.Request{Model: "x"})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if first := <-stream; first.Kind != llm.EventTextDelta {
+		t.Fatalf("first event = %s, want text_delta", first.Kind)
+	}
+	cancel()
+	for event := range stream {
+		if event.Kind == llm.EventError {
+			t.Errorf("EventError after cancellation: %v", event.Err)
+		}
+	}
+}
+
+// TestComplete_CancelledContextIsNotServerError pins RES-002: the caller's
+// cancellation is a context error, not a transient ErrServerError that a
+// retry wrapper would retry.
+func TestComplete_CancelledContextIsNotServerError(t *testing.T) {
+	t.Parallel()
+	requestArrived := make(chan struct{})
+	var hits atomic.Int32
+	server := newTestServer(t, func(_ http.ResponseWriter, request *http.Request) {
+		// Only a fully read body lets the server notice the client hanging up.
+		_, _ = io.Copy(io.Discard, request.Body)
+		hits.Add(1)
+		close(requestArrived)
+		<-request.Context().Done()
+	})
+	// One attempt: with retry the backoff wait would answer the cancellation
+	// itself and hide the mapping of the failed round trip.
+	client, err := NewClient(&Options{APIKey: "sk-test", BaseURL: server.URL, MaximumAttempts: 1})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		<-requestArrived
 		cancel()
 	}()
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return // channel closed; success
-			}
-		case <-deadline:
-			t.Fatal("channel did not close after cancellation within 2s")
-		}
+	_, err = client.Complete(ctx, llm.Request{Model: "any"})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want errors.Is(context.Canceled)", err)
+	}
+	if errors.Is(err, llm.ErrServerError) {
+		t.Errorf("err = %v matches ErrServerError; a cancelled call is not a server error", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("hits = %d, want 1 (no retry after cancellation)", got)
 	}
 }
 
-// assertEventOrder verifies the per-spec event ordering invariants:
-// EventEnd is the last event, and at most one EventUsage / EventError occurs
-// before EventEnd.
-func assertEventOrder(t *testing.T, events []llm.Event) {
-	t.Helper()
-	if len(events) == 0 {
-		t.Fatal("no events")
-	}
-	if events[len(events)-1].Kind != llm.EventEnd {
-		t.Errorf("last event kind = %s, want EventEnd", events[len(events)-1].Kind)
-	}
-	// EventEnd appears exactly once.
-	var endCount int
-	for _, ev := range events {
-		if ev.Kind == llm.EventEnd {
-			endCount++
-		}
-	}
-	if endCount != 1 {
-		t.Errorf("EventEnd count = %d, want 1", endCount)
-	}
-}
-
-// Sanity: server responds with a request body that includes the expected fields.
+// TestStream_RequestBody checks headers and the request body on the wire.
 func TestStream_RequestBody(t *testing.T) {
 	t.Parallel()
 	body := loadFixture(t, "simple_text.sse")
-	var captured map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(buf, &captured)
-
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
-			t.Errorf("Authorization header = %q", got)
-		}
-		if got := r.Header.Get("HTTP-Referer"); got != "https://example.com" {
-			t.Errorf("HTTP-Referer = %q", got)
-		}
-		if got := r.Header.Get("X-Title"); got != "aikido-test" {
-			t.Errorf("X-Title = %q", got)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-	c, err := NewClient(&Options{
+	var (
+		captured map[string]any
+		header   http.Header
+	)
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		rawBody, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(rawBody, &captured)
+		header = request.Header.Clone()
+		sseHandler(body)(writer, request)
+	})
+	client, err := NewClient(&Options{
 		APIKey:        "sk-test",
-		BaseURL:       srv.URL,
+		BaseURL:       server.URL,
 		HTTPReferer:   "https://example.com",
 		XTitle:        "aikido-test",
 		ProviderOrder: []string{"anthropic"},
@@ -617,11 +349,10 @@ func TestStream_RequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	temp := float32(0.7)
-	ch, err := c.Stream(context.Background(), llm.Request{
-		Model:         "anthropic/claude-sonnet-4.6", // pass through — caller chooses canonical form
+	stream, err := client.Stream(context.Background(), llm.Request{
+		Model:         "anthropic/claude-sonnet-4.6", // passed through: the caller chooses the canonical form
 		MaximumTokens: 1024,
-		Temperature:   &temp,
+		Temperature:   new(float32(0.7)),
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: "you are helpful"},
 			{Role: llm.RoleUser, Content: "hi"},
@@ -630,13 +361,35 @@ func TestStream_RequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	_ = drain(t, ch, 2*time.Second)
+	_ = drain(t, stream, 2*time.Second)
 
+	assertHeaders(t, header, map[string]string{
+		"Authorization": "Bearer sk-test",
+		"Accept":        "text/event-stream",
+		"HTTP-Referer":  "https://example.com",
+		"X-Title":       "aikido-test",
+	})
+	assertChatBody(t, captured)
+	// Single-entry order locks to one provider: allow_fallbacks=false.
+	assertProviderBlock(t, captured, 1, false)
+}
+
+func assertHeaders(t *testing.T, header http.Header, want map[string]string) {
+	t.Helper()
+	for name, value := range want {
+		if got := header.Get(name); got != value {
+			t.Errorf("%s = %q, want %q", name, got, value)
+		}
+	}
+}
+
+func assertChatBody(t *testing.T, captured map[string]any) {
+	t.Helper()
 	if captured == nil {
 		t.Fatal("no request body captured")
 	}
 	if got := captured["model"]; got != "anthropic/claude-sonnet-4.6" {
-		t.Errorf("model = %v, want %q (verbatim — no normalization)", got, "anthropic/claude-sonnet-4.6")
+		t.Errorf("model = %v, want %q (verbatim, no normalization)", got, "anthropic/claude-sonnet-4.6")
 	}
 	if captured["stream"] != true {
 		t.Errorf("stream = %v, want true", captured["stream"])
@@ -644,29 +397,26 @@ func TestStream_RequestBody(t *testing.T) {
 	if got := captured["max_tokens"]; got != 1024.0 {
 		t.Errorf("max_tokens = %v, want 1024", got)
 	}
-	if got := captured["temperature"]; got != 0.7 {
-		// JSON numbers come back as float64 with potential representation noise; use approx
-		f, ok := got.(float64)
-		if !ok || f < 0.69 || f > 0.71 {
-			t.Errorf("temperature = %v, want ~0.7", got)
-		}
+	// float32 0.7 comes back as a float64 with representation noise.
+	if temperature, ok := captured["temperature"].(float64); !ok || temperature < 0.69 || temperature > 0.71 {
+		t.Errorf("temperature = %v, want ~0.7", captured["temperature"])
 	}
-	// provider routing
-	prov, ok := captured["provider"].(map[string]any)
+	if messages, ok := captured["messages"].([]any); !ok || len(messages) != 2 {
+		t.Errorf("messages malformed: %v", captured["messages"])
+	}
+}
+
+func assertProviderBlock(t *testing.T, captured map[string]any, wantOrderLength int, wantFallbacks bool) {
+	t.Helper()
+	provider, ok := captured["provider"].(map[string]any)
 	if !ok {
 		t.Fatalf("provider field missing or wrong shape: %v", captured["provider"])
 	}
-	if order, ok := prov["order"].([]any); !ok || len(order) != 1 || order[0] != "anthropic" {
-		t.Errorf("provider.order = %v", prov["order"])
+	if order, ok := provider["order"].([]any); !ok || len(order) != wantOrderLength || order[0] != "anthropic" {
+		t.Errorf("provider.order = %v", provider["order"])
 	}
-	// Single-entry order locks to one provider: allow_fallbacks=false.
-	if af, ok := prov["allow_fallbacks"].(bool); !ok || af {
-		t.Errorf("provider.allow_fallbacks = %v, want false (single-entry order)", prov["allow_fallbacks"])
-	}
-	// messages shape
-	msgs, ok := captured["messages"].([]any)
-	if !ok || len(msgs) != 2 {
-		t.Fatalf("messages malformed: %v", captured["messages"])
+	if allowFallbacks, ok := provider["allow_fallbacks"].(bool); !ok || allowFallbacks != wantFallbacks {
+		t.Errorf("provider.allow_fallbacks = %v, want %v", provider["allow_fallbacks"], wantFallbacks)
 	}
 }
 
@@ -676,58 +426,30 @@ func TestStream_ProviderOrderMultiEntry(t *testing.T) {
 	t.Parallel()
 	body := loadFixture(t, "simple_text.sse")
 	var captured map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(buf, &captured)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
-	}))
-	defer srv.Close()
-	c, err := NewClient(&Options{
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		rawBody, _ := io.ReadAll(request.Body)
+		_ = json.Unmarshal(rawBody, &captured)
+		sseHandler(body)(writer, request)
+	})
+	client, err := NewClient(&Options{
 		APIKey:        "sk-test",
-		BaseURL:       srv.URL,
+		BaseURL:       server.URL,
 		ProviderOrder: []string{"anthropic", "openai"},
 	})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
+	stream, err := client.Stream(context.Background(), llm.Request{Model: "anthropic/claude-sonnet-4-6"})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	_ = drain(t, ch, 2*time.Second)
+	_ = drain(t, stream, 2*time.Second)
 
-	prov, ok := captured["provider"].(map[string]any)
-	if !ok {
-		t.Fatalf("provider field missing")
-	}
-	if order, ok := prov["order"].([]any); !ok || len(order) != 2 {
-		t.Errorf("provider.order = %v", prov["order"])
-	}
-	// Multi-entry: allow_fallbacks=true.
-	if af, ok := prov["allow_fallbacks"].(bool); !ok || !af {
-		t.Errorf("provider.allow_fallbacks = %v, want true (multi-entry order)", prov["allow_fallbacks"])
-	}
+	assertProviderBlock(t, captured, 2, true)
 }
 
-// Verify the Stream method matches the llm.Client interface signature
-// (compile-time assertion; this is just defensive).
-func TestStream_InterfaceShape(t *testing.T) {
-	t.Parallel()
-	var c llm.Client
-	body := loadFixture(t, "simple_text.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	cli := newTestClient(t, srv)
-	c = cli // assign concrete to interface; checks signature
-	if c == nil {
-		t.Fatal("nil client")
-	}
-}
-
-// sanity: comment-only chunks ("`: OPENROUTER PROCESSING`") do not turn into
-// events.
+// TestStream_IgnoresCommentLines: comment-only chunks
+// ("`: OPENROUTER PROCESSING`") do not turn into events.
 func TestStream_IgnoresCommentLines(t *testing.T) {
 	t.Parallel()
 	body := []byte(`: OPENROUTER PROCESSING
@@ -741,23 +463,8 @@ data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage
 data: [DONE]
 
 `)
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "x"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := drain(t, ch, 2*time.Second)
-	var got string
-	for _, ev := range events {
-		if ev.Kind == llm.EventTextDelta {
-			got += ev.Text
-		}
-	}
-	if got != "hi" {
-		t.Errorf("text = %q, want %q", got, "hi")
+	if text := summarize(t, streamBody(t, body)).text; text != "hi" {
+		t.Errorf("text = %q, want %q", text, "hi")
 	}
 }
 
@@ -766,54 +473,21 @@ data: [DONE]
 // data URI is decoded into bytes; the remote URL is passed through verbatim.
 func TestStream_ImageStreamingDelta(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "image_streaming_delta.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
+	events := streamBody(t, loadFixture(t, "image_streaming_delta.sse"))
+	summary := summarize(t, events)
 
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "google/gemini-2.5-flash-image-preview"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	if summary.text != "Here is the requested image:" {
+		t.Errorf("text = %q", summary.text)
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	var (
-		text   string
-		images []llm.ImagePart
-	)
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventTextDelta:
-			text += ev.Text
-		case llm.EventImage:
-			if ev.Image == nil {
-				t.Fatal("EventImage with nil Image")
-			}
-			images = append(images, *ev.Image)
-		}
+	if len(summary.images) != 2 {
+		t.Fatalf("images = %d, want 2", len(summary.images))
 	}
-	if text != "Here is the requested image:" {
-		t.Errorf("text = %q", text)
+	decoded, remote := summary.images[0], summary.images[1]
+	if decoded.ContentType != "image/png" || len(decoded.Data) == 0 || decoded.URL != "" {
+		t.Errorf("images[0] = %+v, want the data URI decoded into bytes", decoded)
 	}
-	if len(images) != 2 {
-		t.Fatalf("images = %d, want 2", len(images))
-	}
-	// First: data URI → decoded bytes.
-	if images[0].ContentType != "image/png" {
-		t.Errorf("images[0].ContentType = %q", images[0].ContentType)
-	}
-	if len(images[0].Data) == 0 {
-		t.Error("images[0].Data is empty; data URI should have been decoded")
-	}
-	if images[0].URL != "" {
-		t.Errorf("images[0].URL = %q; data URI should have been consumed", images[0].URL)
-	}
-	// Second: remote URL pass-through.
-	if images[1].URL != "https://cdn.example.com/img/abc123.png" {
-		t.Errorf("images[1].URL = %q", images[1].URL)
-	}
-	if len(images[1].Data) != 0 {
-		t.Errorf("images[1].Data nonempty for URL-only image: %d bytes", len(images[1].Data))
+	if remote.URL != "https://cdn.example.com/img/abc123.png" || len(remote.Data) != 0 {
+		t.Errorf("images[1] = %+v, want the URL passed through", remote)
 	}
 	assertEventOrder(t, events)
 }
@@ -823,31 +497,12 @@ func TestStream_ImageStreamingDelta(t *testing.T) {
 // (rather than `delta`) populated.
 func TestStream_ImageMessageNonStream(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "image_message_nonstream.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "openai/gpt-image-1"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
-	}
-	events := drain(t, ch, 2*time.Second)
-
-	var images []llm.ImagePart
-	for _, ev := range events {
-		if ev.Kind == llm.EventImage && ev.Image != nil {
-			images = append(images, *ev.Image)
-		}
-	}
+	images := summarize(t, streamBody(t, loadFixture(t, "image_message_nonstream.sse"))).images
 	if len(images) != 1 {
 		t.Fatalf("images = %d, want 1", len(images))
 	}
-	if images[0].ContentType != "image/jpeg" {
-		t.Errorf("ContentType = %q", images[0].ContentType)
-	}
-	if len(images[0].Data) == 0 {
-		t.Error("Data not decoded")
+	if images[0].ContentType != "image/jpeg" || len(images[0].Data) == 0 {
+		t.Errorf("image = %+v, want decoded JPEG bytes", images[0])
 	}
 }
 
@@ -856,41 +511,14 @@ func TestStream_ImageMessageNonStream(t *testing.T) {
 // alongside one or more `text` parts.
 func TestStream_ImageInlineContent(t *testing.T) {
 	t.Parallel()
-	body := loadFixture(t, "image_inline_content.sse")
-	srv := httptest.NewServer(sseHandler(t, body))
-	defer srv.Close()
-	c := newTestClient(t, srv)
-
-	ch, err := c.Stream(context.Background(), llm.Request{Model: "google/gemini-2.5-flash-image-preview"})
-	if err != nil {
-		t.Fatalf("Stream: %v", err)
+	summary := summarize(t, streamBody(t, loadFixture(t, "image_inline_content.sse")))
+	if summary.text != "Generated." {
+		t.Errorf("text = %q", summary.text)
 	}
-	events := drain(t, ch, 2*time.Second)
-
-	var (
-		text   string
-		images []llm.ImagePart
-	)
-	for _, ev := range events {
-		switch ev.Kind {
-		case llm.EventTextDelta:
-			text += ev.Text
-		case llm.EventImage:
-			if ev.Image != nil {
-				images = append(images, *ev.Image)
-			}
-		}
+	if len(summary.images) != 1 {
+		t.Fatalf("images = %d, want 1", len(summary.images))
 	}
-	if text != "Generated." {
-		t.Errorf("text = %q", text)
-	}
-	if len(images) != 1 {
-		t.Fatalf("images = %d, want 1", len(images))
-	}
-	if images[0].ContentType != "image/webp" || len(images[0].Data) == 0 {
-		t.Errorf("images[0] = %+v", images[0])
+	if summary.images[0].ContentType != "image/webp" || len(summary.images[0].Data) == 0 {
+		t.Errorf("images[0] = %+v", summary.images[0])
 	}
 }
-
-// quiet a "fmt unused" warning if the package later doesn't need it
-var _ = fmt.Sprintf

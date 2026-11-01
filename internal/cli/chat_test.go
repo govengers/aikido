@@ -18,11 +18,11 @@ func TestRunChat_HappyPath(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	var out bytes.Buffer
-	err := runChat(context.Background(), chatOpts{
-		model:       "x",
-		prompt:      "say hi",
-		maxTokens:   100,
-		temperature: -1,
+	err := runChat(context.Background(), chatOptions{
+		model:         "x",
+		prompt:        "say hi",
+		maximumTokens: 100,
+		temperature:   -1,
 	}, &out, stub)
 	if err != nil {
 		t.Fatalf("runChat: %v", err)
@@ -34,12 +34,12 @@ func TestRunChat_HappyPath(t *testing.T) {
 	if !strings.Contains(got, "[usage]") {
 		t.Errorf("missing usage line: %q", got)
 	}
-	reqs := stub.Requests()
-	if len(reqs) != 1 || reqs[0].Model != "x" {
-		t.Errorf("model not threaded: %+v", reqs)
+	requests := stub.Requests()
+	if len(requests) != 1 || requests[0].Model != "x" {
+		t.Errorf("model not threaded: %+v", requests)
 	}
-	if reqs[0].Temperature != nil {
-		t.Errorf("temperature should be nil when negative, got %v", *reqs[0].Temperature)
+	if requests[0].Temperature != nil {
+		t.Errorf("temperature should be nil when negative, got %v", *requests[0].Temperature)
 	}
 }
 
@@ -48,19 +48,19 @@ func TestRunChat_ExplicitTemperature(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	var out bytes.Buffer
-	if err := runChat(context.Background(), chatOpts{prompt: "x", model: "m", temperature: 0.5}, &out, stub); err != nil {
+	if err := runChat(context.Background(), chatOptions{prompt: "x", model: "m", temperature: 0.5}, &out, stub); err != nil {
 		t.Fatalf("runChat: %v", err)
 	}
-	reqs := stub.Requests()
-	if reqs[0].Temperature == nil || *reqs[0].Temperature != 0.5 {
-		t.Errorf("temperature not threaded: %+v", reqs[0].Temperature)
+	requests := stub.Requests()
+	if requests[0].Temperature == nil || *requests[0].Temperature != 0.5 {
+		t.Errorf("temperature not threaded: %+v", requests[0].Temperature)
 	}
 }
 
 func TestRunChat_RequiresPrompt(t *testing.T) {
 	stub := llmtest.NewStubClient()
 	var out bytes.Buffer
-	if err := runChat(context.Background(), chatOpts{model: "m"}, &out, stub); err == nil {
+	if err := runChat(context.Background(), chatOptions{model: "m"}, &out, stub); err == nil {
 		t.Error("expected error for missing prompt")
 	}
 }
@@ -71,7 +71,7 @@ func TestRunChat_PropagatesStreamError(t *testing.T) {
 		{Kind: llm.EventEnd},
 	}})
 	var out bytes.Buffer
-	err := runChat(context.Background(), chatOpts{prompt: "hi", model: "m"}, &out, stub)
+	err := runChat(context.Background(), chatOptions{prompt: "hi", model: "m"}, &out, stub)
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("err = %v; want boom", err)
 	}
@@ -80,12 +80,12 @@ func TestRunChat_PropagatesStreamError(t *testing.T) {
 func TestRunChat_SystemPromptThreaded(t *testing.T) {
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventEnd}}})
 	var out bytes.Buffer
-	_ = runChat(context.Background(), chatOpts{prompt: "x", model: "m", system: "be terse"}, &out, stub)
-	reqs := stub.Requests()
-	if len(reqs[0].Messages) != 2 {
-		t.Fatalf("messages = %+v", reqs[0].Messages)
+	_ = runChat(context.Background(), chatOptions{prompt: "x", model: "m", system: "be terse"}, &out, stub)
+	requests := stub.Requests()
+	if len(requests[0].Messages) != 2 {
+		t.Fatalf("messages = %+v", requests[0].Messages)
 	}
-	if reqs[0].Messages[0].Role != llm.RoleSystem || reqs[0].Messages[0].Content != "be terse" {
-		t.Errorf("system msg = %+v", reqs[0].Messages[0])
+	if requests[0].Messages[0].Role != llm.RoleSystem || requests[0].Messages[0].Content != "be terse" {
+		t.Errorf("system message = %+v", requests[0].Messages[0])
 	}
 }

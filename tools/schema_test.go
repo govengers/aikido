@@ -19,9 +19,9 @@ func TestObject_Canonical(t *testing.T) {
 		t.Errorf("type = %v", got["type"])
 	}
 	props, _ := got["properties"].(map[string]any)
-	x, _ := props["x"].(map[string]any)
-	if x["type"] != "string" || x["description"] != "an x value" {
-		t.Errorf("x prop = %v", x)
+	property, _ := props["x"].(map[string]any)
+	if property["type"] != "string" || property["description"] != "an x value" {
+		t.Errorf("x prop = %v", property)
 	}
 	required, _ := got["required"].([]any)
 	if len(required) != 1 || required[0] != "x" {
@@ -52,7 +52,7 @@ func TestObject_NilProps(t *testing.T) {
 }
 
 func TestSchemaPrimitives(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name string
 		got  map[string]any
 		want map[string]any
@@ -62,10 +62,10 @@ func TestSchemaPrimitives(t *testing.T) {
 		{"Number", Number("d3"), map[string]any{"type": "number", "description": "d3"}},
 		{"Boolean", Boolean("d4"), map[string]any{"type": "boolean", "description": "d4"}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !reflect.DeepEqual(tt.got, tt.want) {
-				t.Errorf("got %v, want %v", tt.got, tt.want)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if !reflect.DeepEqual(testCase.got, testCase.want) {
+				t.Errorf("got %v, want %v", testCase.got, testCase.want)
 			}
 		})
 	}

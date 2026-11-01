@@ -14,20 +14,24 @@ import (
 //
 // Use this for image generation. Image-capable models (gemini-flash-image-preview,
 // gpt-image-1, etc.) emit the entire base64 PNG/JPEG payload in a single SSE
-// chunk. A 1024×1024 PNG is typically 0.8–2 MB raw → 1.07–2.7 MiB base64,
+// chunk. A 1024×1024 PNG is typically 0.8–2 MB raw, 1.07–2.7 MiB base64,
 // which exceeds the SSE scanner's per-line cap and trips ErrServerError on
 // every retry. Complete reads the body as one JSON document and is immune to
 // that failure mode.
 //
 // Retry behaviour mirrors Stream: 429/5xx at request-start are retried per
-// retryPolicy; auth and bad-request errors short-circuit. Content-filter
-// aborts surface as ErrContentFiltered (either via a top-level error envelope
-// on the JSON body or via finish_reason="content_filter"). Network-layer
+// Options.MaximumAttempts; auth and bad-request errors short-circuit.
+// Content-filter aborts surface as ErrContentFiltered (either via a top-level
+// error envelope on the JSON body or via finish_reason="content_filter"), with
+// the partial Response (usage, finish reason) still returned; a
+// finish_reason="error" without an envelope is ErrServerError the same way,
+// with the partial text and tool calls. Network-layer
 // errors are mapped onto ErrServerError so CompleteWithRetry can apply the
-// same retry policy as CollectWithRetry.
-func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+// same retry policy as CollectWithRetry; a cancelled ctx surfaces as the
+// context error.
+func (c *Client) Complete(ctx context.Context, request llm.Request) (llm.Response, error) {
 	start := time.Now()
-	body, err := c.buildBody(ctx, req, false)
+	body, err := c.buildBody(ctx, request, false)
 	if err != nil {
 		return llm.Response{}, fmt.Errorf("openrouter: build request: %w", err)
 	}
@@ -36,85 +40,71 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 	if err != nil {
 		return llm.Response{}, err
 	}
-	resp, err := parseCompleteResponse(raw)
-	if resp.Usage != nil {
-		resp.Usage.SetTiming(start, time.Time{}, time.Now())
+	response, err := parseCompleteResponse(raw)
+	if response.Usage != nil {
+		response.Usage.SetTiming(start, time.Time{}, time.Now())
 	}
-	return resp, err
+	return response, err
 }
 
 // parseCompleteResponse maps a non-streaming chat-completions JSON body onto
 // llm.Response.
 //
 // The wire shape mirrors streamChunk except that the assistant payload lives
-// on choices[i].message instead of choices[i].delta. We tolerate both shapes
-// and harmlessly fold whichever is populated — some providers (and gateway
-// shims) populate `delta` even on non-streaming responses.
+// on choices[i].message instead of choices[i].delta. Both shapes are folded
+// in: some providers (and gateway shims) populate `delta` even on
+// non-streaming responses.
 func parseCompleteResponse(body []byte) (llm.Response, error) {
 	var chunk streamChunk
 	if err := json.Unmarshal(body, &chunk); err != nil {
-		return llm.Response{}, fmt.Errorf("openrouter: decode response: %w", llm.ErrServerError)
+		return llm.Response{}, decodeError("decode response", err)
 	}
 
-	// Top-level error envelope. Map onto ErrServerError or ErrContentFiltered.
-	// The usage block rides along when the provider priced the failed call, and
-	// a priced failure still cost money: return it with the error rather than
-	// dropping it.
+	// The usage block rides along when the provider priced the failed call,
+	// and a priced failure still cost money: return it with the error rather
+	// than dropping it.
 	if chunk.Error != nil {
-		msg := chunk.Error.Message
-		if msg == "" {
-			msg = "provider error"
-		}
-		cause := llm.ErrServerError
-		if isContentFilterErrorEnvelope(chunk.Error) {
-			cause = llm.ErrContentFiltered
-		}
-		return llm.Response{Usage: chunkUsage(&chunk)}, fmt.Errorf("openrouter: %s: %w", msg, cause)
+		return llm.Response{Usage: chunkUsage(&chunk)}, fmt.Errorf("openrouter: %s: %w", chunk.Error.message(), chunk.Error.cause())
 	}
 
-	var resp llm.Response
-	asm := newToolCallAssembler()
-	for _, ch := range chunk.Choices {
-		absorbDelta(&resp, asm, ch.Delta)
-		if ch.Message != nil {
-			absorbDelta(&resp, asm, *ch.Message)
+	var response llm.Response
+	for _, choice := range chunk.Choices {
+		absorbDelta(&response, choice.Delta)
+		if choice.Message != nil {
+			absorbDelta(&response, *choice.Message)
 		}
-		if ch.FinishReason != nil {
-			resp.FinishReason = *ch.FinishReason
+		if choice.FinishReason != nil {
+			response.FinishReason = *choice.FinishReason
 		}
 	}
-	if calls := asm.flush(); len(calls) > 0 {
-		resp.ToolCalls = append(resp.ToolCalls, calls...)
-	}
-	if u := chunkUsage(&chunk); u != nil {
-		resp.Usage = u
-	}
+	response.Usage = chunkUsage(&chunk)
 
-	// finish_reason="content_filter" without a top-level error envelope —
-	// surface as ErrContentFiltered so the same caller branch fires for both
-	// streaming and non-streaming. Keep the partial Response so callers can
-	// log usage even on filtered turns.
-	if resp.FinishReason == "content_filter" {
-		return resp, fmt.Errorf("openrouter finish_reason=content_filter: %w", llm.ErrContentFiltered)
+	// A failure finish_reason without a top-level error envelope fails the
+	// call like it fails a stream, with the partial response and its usage.
+	switch response.FinishReason {
+	case finishReasonContentFilter:
+		return response, fmt.Errorf("openrouter finish_reason=content_filter: %w", llm.ErrContentFiltered)
+	case finishReasonError:
+		return response, fmt.Errorf("openrouter finish_reason=error: %w", llm.ErrServerError)
 	}
-
-	return resp, nil
+	return response, nil
 }
 
 // absorbDelta folds one streamDelta payload (delta or message) into the
-// response builder. Mirrors emitPayload in sse.go but writes to a Response
-// rather than emitting events on a channel.
-func absorbDelta(resp *llm.Response, asm *toolCallAssembler, p streamDelta) {
-	if text, imgs := decodeDeltaContent(p.Content); text != "" || len(imgs) > 0 {
-		resp.Text += text
-		resp.Images = append(resp.Images, imgs...)
-	}
-	for _, ip := range p.Images {
-		if img, ok := decodeAPIImagePart(ip); ok {
-			resp.Images = append(resp.Images, img)
+// response. It mirrors streamDecoder.emitPayload, writing to a Response
+// rather than emitting events. llm.Response has no thinking field, so
+// reasoning is dropped. Tool calls here are complete, often without an index,
+// so each one is a call of its own rather than a fragment to join.
+func absorbDelta(response *llm.Response, payload streamDelta) {
+	text, images := decodeDeltaContent(payload.Content)
+	response.Text += text
+	response.Images = append(response.Images, images...)
+	for _, part := range payload.Images {
+		if image, ok := decodeAPIImagePart(part); ok {
+			response.Images = append(response.Images, image)
 		}
 	}
-	for _, frag := range p.ToolCalls {
-		asm.feed(frag)
+	for _, fragment := range payload.ToolCalls {
+		response.ToolCalls = append(response.ToolCalls, newToolCall(fragment.ID, fragment.Function.Name, fragment.Function.Arguments, len(response.ToolCalls)))
 	}
 }

@@ -53,23 +53,24 @@ type Pricing struct {
 // accepts a JSON number or null.
 type USD float64
 
-// UnmarshalJSON accepts "0.000001", 0.000001 and null.
-func (u *USD) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(string(b), `"`)
-	if s == "" || s == "null" {
+// UnmarshalJSON accepts "0.000001", 0.000001, "" and null (both zero). Any
+// other text is an error wrapping the strconv.ParseFloat error.
+func (u *USD) UnmarshalJSON(data []byte) error {
+	text := strings.Trim(string(data), `"`)
+	if text == "" || text == "null" {
 		*u = 0
 		return nil
 	}
-	f, err := strconv.ParseFloat(s, 64)
+	price, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		return fmt.Errorf("openrouter: price %s: %w", b, err)
+		return fmt.Errorf("openrouter: price %s: %w", data, err)
 	}
-	*u = USD(f)
+	*u = USD(price)
 	return nil
 }
 
 // PerMillion is the price per million tokens, the unit OpenRouter's UI and
-// ProviderPrefs.MaxPrice use.
+// ProviderPreferences.MaximumPrice use.
 func (u USD) PerMillion() float64 { return float64(u) * 1e6 }
 
 // ModelEndpoints is a model with the provider endpoints serving it
@@ -83,9 +84,10 @@ type ModelEndpoints struct {
 
 // Endpoint is one provider serving a model, with its live performance.
 type Endpoint struct {
-	Name                    string   `json:"name"`
-	ProviderName            string   `json:"provider_name"`
-	Tag                     string   `json:"tag"` // provider slug for ProviderPrefs ("azure/global")
+	Name         string `json:"name"`
+	ProviderName string `json:"provider_name"`
+	// Tag is the provider slug for ProviderPreferences ("azure/global").
+	Tag                     string   `json:"tag"`
 	Quantization            string   `json:"quantization"`
 	ContextLength           int      `json:"context_length"`
 	MaximumCompletionTokens int      `json:"max_completion_tokens"`
@@ -114,7 +116,8 @@ type Percentiles struct {
 	P99 float64 `json:"p99"`
 }
 
-// Models lists OpenRouter's model catalogue.
+// Models lists OpenRouter's model catalogue. Errors wrap the llm sentinels
+// like Complete's.
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	var out struct {
 		Data []Model `json:"data"`
@@ -126,7 +129,8 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 }
 
 // ModelEndpoints lists the providers serving a model ("anthropic/claude-haiku-4.5")
-// with their pricing, limits, uptime, latency and throughput.
+// with their pricing, limits, uptime, latency and throughput. An id that is
+// not author/slug fails with llm.ErrInvalidRequest before any request.
 func (c *Client) ModelEndpoints(ctx context.Context, id string) (ModelEndpoints, error) {
 	author, slug, ok := strings.Cut(id, "/")
 	if !ok || author == "" || slug == "" {
@@ -141,14 +145,19 @@ func (c *Client) ModelEndpoints(ctx context.Context, id string) (ModelEndpoints,
 	return out.Data, nil
 }
 
-// getJSON GETs path and decodes the JSON body into v.
-func (c *Client) getJSON(ctx context.Context, path string, v any) error {
-	raw, _, err := c.do(ctx, http.MethodGet, c.baseURL+path, nil, "application/json", http.StatusOK)
+// getJSON GETs path and decodes the JSON body into target.
+func (c *Client) getJSON(ctx context.Context, path string, target any) error {
+	raw, _, err := c.do(ctx, httpCall{
+		method:     http.MethodGet,
+		url:        c.baseURL + path,
+		accept:     "application/json",
+		wantStatus: http.StatusOK,
+	})
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(raw, v); err != nil {
-		return fmt.Errorf("openrouter: decode %s: %w", path, err)
+	if err := json.Unmarshal(raw, target); err != nil {
+		return decodeError("decode "+path, err)
 	}
 	return nil
 }

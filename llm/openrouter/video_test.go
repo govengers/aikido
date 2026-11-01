@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,58 +21,63 @@ var fakeMP4 = []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 // fakeVideoAPI serves the three video endpoints. Polls answer statuses in
 // order, the last one repeating; a completed poll lists a URL unless noURL.
 type fakeVideoAPI struct {
-	statuses []string
-	failWith any
-	noURL    bool
-	polls    atomic.Int32
-	submit   map[string]any
+	statuses  []string
+	failWith  any
+	noURL     bool
+	clipBytes int64 // declared Content-Length of the clip; 0 sends fakeMP4 as is
+	polls     atomic.Int32
+	submit    map[string]any
 }
 
-func (f *fakeVideoAPI) client(t *testing.T) *Client {
+func (api *fakeVideoAPI) client(t *testing.T) *Client {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /videos", func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&f.submit); err != nil {
+	mux.HandleFunc("POST /videos", func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&api.submit); err != nil {
 			t.Error(err)
 		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"id":"job1","polling_url":"x","status":"pending"}`))
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte(`{"id":"job1","polling_url":"x","status":"pending"}`))
 	})
-	mux.HandleFunc("GET /videos/job1", func(w http.ResponseWriter, _ *http.Request) {
-		n := int(f.polls.Add(1)) - 1
-		st := f.statuses[min(n, len(f.statuses)-1)]
-		out := map[string]any{"id": "job1", "status": st}
-		if st == "completed" {
-			out["usage"] = map[string]any{"cost": 0.42}
-			if !f.noURL {
-				out["unsigned_urls"] = []string{"https://openrouter.ai/api/v1/videos/job1/content?index=0"}
+	mux.HandleFunc("GET /videos/job1", func(writer http.ResponseWriter, _ *http.Request) {
+		poll := int(api.polls.Add(1)) - 1
+		status := api.statuses[min(poll, len(api.statuses)-1)]
+		job := map[string]any{"id": "job1", "status": status}
+		if status == "completed" {
+			job["usage"] = map[string]any{"cost": 0.42}
+			if !api.noURL {
+				job["unsigned_urls"] = []string{"https://openrouter.ai/api/v1/videos/job1/content?index=0"}
 			}
 		}
-		if st == "failed" {
-			out["error"] = f.failWith
+		if status == "failed" {
+			job["error"] = api.failWith
 		}
-		_ = json.NewEncoder(w).Encode(out)
+		_ = json.NewEncoder(writer).Encode(job)
 	})
-	mux.HandleFunc("GET /videos/job1/content", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("index") != "0" {
-			t.Errorf("index = %q", r.URL.Query().Get("index"))
+	mux.HandleFunc("GET /videos/job1/content", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("index") != "0" {
+			t.Errorf("index = %q", request.URL.Query().Get("index"))
 		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = w.Write(fakeMP4)
+		writer.Header().Set("Content-Type", "application/octet-stream")
+		if api.clipBytes > 0 {
+			writer.Header().Set("Content-Length", strconv.FormatInt(api.clipBytes, 10))
+		}
+		_, _ = writer.Write(fakeMP4)
 	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	c, err := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, VideoPollInterval: time.Millisecond})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL, VideoPollInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c
+	return client
 }
 
 func TestGenerateVideo_SubmitsPollsAndDownloads(t *testing.T) {
-	f := &fakeVideoAPI{statuses: []string{"pending", "in_progress", "completed"}}
+	t.Parallel()
+	api := &fakeVideoAPI{statuses: []string{"pending", "in_progress", "completed"}}
 	off, seed := false, 7
-	resp, err := f.client(t).GenerateVideo(context.Background(), llm.VideoRequest{
+	response, err := api.client(t).GenerateVideo(context.Background(), llm.VideoRequest{
 		Model: "kwaivgi/kling-v3.0-pro", Prompt: "the cup steams", AspectRatio: "9:16", Resolution: "720p",
 		DurationSeconds: 5, GenerateAudio: &off, Seed: &seed,
 		FirstFrame: &llm.ImagePart{Data: []byte("jpg"), ContentType: "image/jpeg"},
@@ -80,20 +86,20 @@ func TestGenerateVideo_SubmitsPollsAndDownloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateVideo: %v", err)
 	}
-	if string(resp.Video) != string(fakeMP4) || resp.ContentType != "video/mp4" || resp.JobID != "job1" {
-		t.Fatalf("resp = %q %q %q", resp.Video, resp.ContentType, resp.JobID)
+	if string(response.Video) != string(fakeMP4) || response.ContentType != "video/mp4" || response.JobID != "job1" {
+		t.Fatalf("response = %q %q %q", response.Video, response.ContentType, response.JobID)
 	}
-	if resp.Usage == nil || resp.Usage.CostUSD != 0.42 || resp.Usage.Duration <= 0 {
-		t.Fatalf("usage = %+v", resp.Usage)
+	if response.Usage == nil || response.Usage.CostUSD != 0.42 || response.Usage.Duration <= 0 {
+		t.Fatalf("usage = %+v", response.Usage)
 	}
-	if n := f.polls.Load(); n != 3 {
-		t.Fatalf("polled %d times, want 3", n)
+	if polls := api.polls.Load(); polls != 3 {
+		t.Fatalf("polled %d times, want 3", polls)
 	}
-	s := f.submit
-	if s["aspect_ratio"] != "9:16" || s["resolution"] != "720p" || s["duration"] != 5.0 || s["generate_audio"] != false || s["seed"] != 7.0 {
-		t.Fatalf("submit body = %+v", s)
+	submitted := api.submit
+	if submitted["aspect_ratio"] != "9:16" || submitted["resolution"] != "720p" || submitted["duration"] != 5.0 || submitted["generate_audio"] != false || submitted["seed"] != 7.0 {
+		t.Fatalf("submit body = %+v", submitted)
 	}
-	frames, _ := s["frame_images"].([]any)
+	frames, _ := submitted["frame_images"].([]any)
 	if len(frames) != 2 {
 		t.Fatalf("frames = %+v", frames)
 	}
@@ -107,6 +113,7 @@ func TestGenerateVideo_SubmitsPollsAndDownloads(t *testing.T) {
 }
 
 func TestBuildVideoBody_OptionalFieldsStayOffTheWire(t *testing.T) {
+	t.Parallel()
 	body, err := buildVideoBody(llm.VideoRequest{Model: "m", Prompt: "p"})
 	if err != nil {
 		t.Fatal(err)
@@ -114,43 +121,46 @@ func TestBuildVideoBody_OptionalFieldsStayOffTheWire(t *testing.T) {
 	if string(body) != `{"model":"m","prompt":"p"}` {
 		t.Fatalf("body = %s", body)
 	}
-	for _, req := range []llm.VideoRequest{
+	for _, request := range []llm.VideoRequest{
 		{Model: "m"},
 		{Prompt: "p"},
 		{Model: "m", Prompt: "p", Size: "1280x720", Resolution: "720p"},
 		{Model: "m", Prompt: "p", FirstFrame: &llm.ImagePart{}},
 	} {
-		if _, err := buildVideoBody(req); !errors.Is(err, llm.ErrInvalidRequest) {
-			t.Errorf("%+v: err = %v, want ErrInvalidRequest", req, err)
+		if _, err := buildVideoBody(request); !errors.Is(err, llm.ErrInvalidRequest) {
+			t.Errorf("%+v: err = %v, want ErrInvalidRequest", request, err)
 		}
 	}
 }
 
 func TestGenerateVideo_Refusals(t *testing.T) {
-	cases := []struct {
+	t.Parallel()
+	testCases := []struct {
 		name string
-		f    *fakeVideoAPI
+		api  *fakeVideoAPI
 		want error
 	}{
 		{"moderation object", &fakeVideoAPI{statuses: []string{"pending", "failed"}, failWith: map[string]any{"message": "content flagged by moderation"}}, llm.ErrContentFiltered},
 		{"plain failure string", &fakeVideoAPI{statuses: []string{"failed"}, failWith: "gpu fell over"}, llm.ErrServerError},
 		{"completed without output", &fakeVideoAPI{statuses: []string{"completed"}, noURL: true}, llm.ErrContentFiltered},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp, err := tc.f.client(t).GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("err = %v, want %v", err, tc.want)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			response, err := testCase.api.client(t).GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			if !errors.Is(err, testCase.want) {
+				t.Fatalf("err = %v, want %v", err, testCase.want)
 			}
-			if resp.JobID != "job1" {
-				t.Errorf("JobID = %q, want it kept on failure", resp.JobID)
+			if response.JobID != "job1" {
+				t.Errorf("JobID = %q, want it kept on failure", response.JobID)
 			}
 		})
 	}
 }
 
 func TestGenerateVideo_SubmitErrors(t *testing.T) {
-	cases := []struct {
+	t.Parallel()
+	testCases := []struct {
 		status int
 		body   string
 		want   error
@@ -159,44 +169,118 @@ func TestGenerateVideo_SubmitErrors(t *testing.T) {
 		{400, `{"error":{"message":"Duration 5s is not supported"}}`, llm.ErrInvalidRequest},
 		{402, `{"error":{"message":"insufficient credits"}}`, llm.ErrAuthentication},
 	}
-	for _, tc := range cases {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(tc.status)
-			_, _ = w.Write([]byte(tc.body))
-		}))
-		c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL, MaximumAttempts: 1})
-		_, err := c.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
-		srv.Close()
-		if !errors.Is(err, tc.want) {
-			t.Errorf("%d %s: err = %v, want %v", tc.status, tc.body, err, tc.want)
+	for _, testCase := range testCases {
+		server := newTestServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(testCase.status)
+			_, _ = writer.Write([]byte(testCase.body))
+		})
+		client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL, MaximumAttempts: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+		if !errors.Is(err, testCase.want) {
+			t.Errorf("%d %s: err = %v, want %v", testCase.status, testCase.body, err, testCase.want)
 		}
 	}
 }
 
+// TestGenerateVideo_SubmitRetriesOnlyRateLimits pins RES-004 for the
+// non-idempotent submit: only a 429 proves no job was created; a 5xx or a 202
+// whose body breaks off may hide a billed job and is not sent again.
+func TestGenerateVideo_SubmitRetriesOnlyRateLimits(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name        string
+		first       func(writer http.ResponseWriter)
+		wantSubmits int32
+		wantErr     error
+	}{
+		{name: "429 retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Retry-After", "0")
+			writer.WriteHeader(http.StatusTooManyRequests)
+		}, wantSubmits: 2},
+		{name: "503 not retried", first: func(writer http.ResponseWriter) {
+			writer.WriteHeader(http.StatusServiceUnavailable)
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+		{name: "202 cut off not retried", first: func(writer http.ResponseWriter) {
+			writer.Header().Set("Content-Length", "100")
+			writer.WriteHeader(http.StatusAccepted)
+			_, _ = writer.Write([]byte(`{"id":"jo`))
+		}, wantSubmits: 1, wantErr: llm.ErrServerError},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var submits atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /videos", func(writer http.ResponseWriter, _ *http.Request) {
+				if submits.Add(1) == 1 {
+					testCase.first(writer)
+					return
+				}
+				writer.WriteHeader(http.StatusAccepted)
+				_, _ = writer.Write([]byte(`{"id":"job1","status":"completed","unsigned_urls":["u"]}`))
+			})
+			mux.HandleFunc("GET /videos/job1/content", func(writer http.ResponseWriter, _ *http.Request) {
+				_, _ = writer.Write(fakeMP4)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+			if !errors.Is(err, testCase.wantErr) || (testCase.wantErr == nil && err != nil) {
+				t.Errorf("err = %v, want %v", err, testCase.wantErr)
+			}
+			if got := submits.Load(); got != testCase.wantSubmits {
+				t.Errorf("submits = %d, want %d", got, testCase.wantSubmits)
+			}
+		})
+	}
+}
+
+// TestGenerateVideo_ClipAboveTheCap pins maximumVideoBytes: a clip declared
+// larger is refused before it is read, with the JobID kept.
+func TestGenerateVideo_ClipAboveTheCap(t *testing.T) {
+	t.Parallel()
+	api := &fakeVideoAPI{statuses: []string{"completed"}, clipBytes: maximumVideoBytes + 1}
+	response, err := api.client(t).GenerateVideo(context.Background(), llm.VideoRequest{Model: "m", Prompt: "p"})
+	if !errors.Is(err, llm.ErrInvalidResponse) {
+		t.Fatalf("err = %v, want ErrInvalidResponse", err)
+	}
+	if response.JobID != "job1" {
+		t.Errorf("JobID = %q, want job1", response.JobID)
+	}
+}
+
 func TestGenerateVideo_ContextEndsPolling(t *testing.T) {
-	f := &fakeVideoAPI{statuses: []string{"pending"}}
+	t.Parallel()
+	api := &fakeVideoAPI{statuses: []string{"pending"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	if _, err := f.client(t).GenerateVideo(ctx, llm.VideoRequest{Model: "m", Prompt: "p"}); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := api.client(t).GenerateVideo(ctx, llm.VideoRequest{Model: "m", Prompt: "p"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestVideoModels_Decodes(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/videos/models" {
-			t.Errorf("path = %s", r.URL.Path)
+	t.Parallel()
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/videos/models" {
+			t.Errorf("path = %s", request.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"data":[{"id":"google/veo-3.1-lite","supported_durations":[4,6,8],"supported_resolutions":["720p"],"supported_frame_images":["first_frame"],"generate_audio":true,"seed":null,"pricing_skus":{"duration_seconds_720p":"0.03"}}]}`))
-	}))
-	defer srv.Close()
-	c, _ := NewClient(&Options{APIKey: "k", BaseURL: srv.URL})
-	models, err := c.VideoModels(context.Background())
+		_, _ = writer.Write([]byte(`{"data":[{"id":"google/veo-3.1-lite","supported_durations":[4,6,8],"supported_resolutions":["720p"],"supported_frame_images":["first_frame"],"generate_audio":true,"seed":null,"pricing_skus":{"duration_seconds_720p":"0.03"}}]}`))
+	})
+	client := newTestClient(t, server)
+	models, err := client.VideoModels(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := models[0]
-	if m.ID != "google/veo-3.1-lite" || len(m.SupportedDurations) != 3 || m.GenerateAudio == nil || !*m.GenerateAudio || m.Seed != nil || m.PricingSKUs["duration_seconds_720p"] != "0.03" {
-		t.Fatalf("model = %+v", m)
+	model := models[0]
+	if model.ID != "google/veo-3.1-lite" || len(model.SupportedDurations) != 3 || model.GenerateAudio == nil || !*model.GenerateAudio || model.Seed != nil || model.PricingSKUs["duration_seconds_720p"] != "0.03" {
+		t.Fatalf("model = %+v", model)
 	}
 }

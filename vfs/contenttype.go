@@ -8,8 +8,8 @@ import (
 // ContentTypeFor maps a path's extension to the MIME type aikido uses for
 // text files. It returns "" for unknown extensions so each caller picks its
 // own fallback.
-func ContentTypeFor(p string) string {
-	switch strings.ToLower(path.Ext(p)) {
+func ContentTypeFor(filePath string) string {
+	switch strings.ToLower(path.Ext(filePath)) {
 	case ".md", ".markdown":
 		return "text/markdown"
 	case ".txt":

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -17,7 +20,7 @@ func stubFactory(client llm.Client) ClientFactory {
 }
 
 func TestNewApp_VersionFlag(t *testing.T) {
-	app := NewApp(func() (llm.Client, error) { return nil, nil })
+	app := NewApp(func() (llm.Client, error) { return nil, errors.New("factory must not run for --version") })
 	var out bytes.Buffer
 	app.Writer = &out
 	app.ErrWriter = &out
@@ -30,23 +33,23 @@ func TestNewApp_VersionFlag(t *testing.T) {
 }
 
 func TestVersionFromBuildInfo(t *testing.T) {
-	rev := []debug.BuildSetting{{Key: "vcs.revision", Value: "b25d1832e0c5f6a7b8c9d0e1f2a3b4c5d6e7f8a9"}}
-	cases := []struct {
+	revision := []debug.BuildSetting{{Key: "vcs.revision", Value: "b25d1832e0c5f6a7b8c9d0e1f2a3b4c5d6e7f8a9"}}
+	testCases := []struct {
 		name string
 		info debug.BuildInfo
 		want string
 	}{
 		{"go install at a tag", debug.BuildInfo{Main: debug.Module{Version: "v0.6.1"}}, "v0.6.1"},
 		{"checkout pseudo-version", debug.BuildInfo{Main: debug.Module{Version: "v0.6.1-0.20261011120000-b25d1832e0c5+dirty"}}, "v0.6.1-0.20261011120000-b25d1832e0c5+dirty"},
-		{"devel with revision", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: rev}, "(devel) b25d1832e0c5"},
-		{"devel dirty", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: append(rev, debug.BuildSetting{Key: "vcs.modified", Value: "true"})}, "(devel) b25d1832e0c5+dirty"},
+		{"devel with revision", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: revision}, "(devel) b25d1832e0c5"},
+		{"devel dirty", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}, Settings: append(revision, debug.BuildSetting{Key: "vcs.modified", Value: "true"})}, "(devel) b25d1832e0c5+dirty"},
 		{"devel without vcs", debug.BuildInfo{Main: debug.Module{Version: "(devel)"}}, "(devel)"},
 		{"empty", debug.BuildInfo{}, "(devel)"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := versionFromBuildInfo(&tc.info); got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := versionFromBuildInfo(&testCase.info); got != testCase.want {
+				t.Errorf("got %q, want %q", got, testCase.want)
 			}
 		})
 	}
@@ -67,8 +70,8 @@ func TestNewApp_RoutesChat(t *testing.T) {
 	if !strings.Contains(out.String(), "ok") {
 		t.Errorf("chat output missing reply: %q", out.String())
 	}
-	if reqs := stub.Requests(); len(reqs) != 1 || reqs[0].Model != "m1" {
-		t.Errorf("model flag not propagated: %+v", reqs)
+	if requests := stub.Requests(); len(requests) != 1 || requests[0].Model != "m1" {
+		t.Errorf("model flag not propagated: %+v", requests)
 	}
 }
 
@@ -110,5 +113,51 @@ func TestNewApp_FactoryError(t *testing.T) {
 	err := app.Run(context.Background(), []string{"aikido", "chat", "hi"})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("err = %v; want %v", err, sentinel)
+	}
+}
+
+func TestNewOpenRouterClient(t *testing.T) {
+	unsetForTest(t, "OPENROUTER_API_KEY")
+	if _, err := NewOpenRouterClient(); err == nil || !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+		t.Errorf("err = %v, want the missing-key error", err)
+	}
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	if client, err := NewOpenRouterClient(); err != nil || client == nil {
+		t.Errorf("NewOpenRouterClient = %v, %v; want a client", client, err)
+	}
+}
+
+func TestNewOpenRouterClient_BaseURLFromEnvironment(t *testing.T) {
+	requestedPaths := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestedPaths <- request.URL.Path
+		writer.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("OPENROUTER_API_KEY", "sk-test")
+	t.Setenv("OPENROUTER_BASE_URL", server.URL+"/api/v1")
+
+	client, err := NewOpenRouterClient()
+	if err != nil {
+		t.Fatalf("NewOpenRouterClient: %v", err)
+	}
+	_, err = client.Complete(t.Context(), llm.Request{Model: "test/model", Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}})
+
+	if !errors.Is(err, llm.ErrAuthentication) {
+		t.Errorf("err = %v; want the test server's 401", err)
+	}
+	select {
+	case requestedPath := <-requestedPaths:
+		if requestedPath != "/api/v1/chat/completions" {
+			t.Errorf("request path = %q; want /api/v1/chat/completions", requestedPath)
+		}
+	default:
+		t.Error("the test server got no request")
+	}
+}
+
+func TestResolveStandardStreams(t *testing.T) {
+	if resolveWriter(nil) != os.Stdout || resolveErrorWriter(nil) != os.Stderr || resolveReader(nil) != os.Stdin {
+		t.Error("a nil command must fall back to the process's standard streams")
 	}
 }
