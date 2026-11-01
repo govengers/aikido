@@ -23,7 +23,7 @@ var bathroomVocabulary = &llm.Vocabulary{
 
 func TestVocabulary_Correct(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ in, want string }{
+	for _, testCase := range []struct{ input, want string }{
 		// Replacements, case-insensitive, whole word, longest first.
 		{"Ich will was von Pfeifer und Mai.", "Ich will was von PFEIFFER & MAY."},
 		{"Den liv sechzig G bitte.", "Den LIV60G bitte."},
@@ -44,8 +44,8 @@ func TestVocabulary_Correct(t *testing.T) {
 		{"Die Tasse ist voll.", "Die Tasse ist voll."},
 		{"", ""},
 	} {
-		if got := bathroomVocabulary.Correct(tc.in); got != tc.want {
-			t.Errorf("Correct(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := bathroomVocabulary.Correct(testCase.input); got != testCase.want {
+			t.Errorf("Correct(%q) = %q, want %q", testCase.input, got, testCase.want)
 		}
 	}
 	var none *llm.Vocabulary
@@ -85,17 +85,20 @@ func TestTranscribeDetailed_Vocabulary(t *testing.T) {
 func TestTranscribe_VocabularyPromptCap(t *testing.T) {
 	t.Parallel()
 	terms := make([]string, 500)
-	for i := range terms {
-		terms[i] = "Begriff" + strings.Repeat("x", i%7)
+	for index := range terms {
+		terms[index] = "Begriff" + strings.Repeat("x", index%7)
 	}
 	stub := llmtest.NewStubClient(textTurn("ok"))
 	if _, _, err := llm.Transcribe(context.Background(), stub, llm.TranscribeRequest{Audio: []byte("x"), Format: "wav", Vocabulary: &llm.Vocabulary{Terms: terms}}); err != nil {
 		t.Fatal(err)
 	}
 	prompt := stub.Requests()[0].Messages[0].Content
-	line := prompt[strings.Index(prompt, "like this: "):]
-	if n := strings.Count(line, ","); n+1 > llm.MaximumVocabularyPromptTerms || len(line) > llm.MaximumVocabularyPromptBytes+100 {
-		t.Errorf("prompt line not capped: %d terms, %d bytes", n+1, len(line))
+	_, line, found := strings.Cut(prompt, "like this: ")
+	if !found {
+		t.Fatalf("prompt lacks the terms:\n%s", prompt)
+	}
+	if termCount := strings.Count(line, ",") + 1; termCount > llm.MaximumVocabularyPromptTerms || len(line) > llm.MaximumVocabularyPromptBytes+100 {
+		t.Errorf("prompt line not capped: %d terms, %d bytes", termCount, len(line))
 	}
 }
 
