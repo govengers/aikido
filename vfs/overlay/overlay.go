@@ -229,9 +229,12 @@ func (s *Storage) SearchSyntax() string {
 // Changes returns what Commit would apply, sorted by path. Paths the overlay
 // touched but left equal to the base are not listed: a write of the base's
 // bytes, and a delete of a file the base does not have (such as a file
-// created and deleted again in the overlay). Content types are not compared,
-// since backends such as vfs/osfs do not store them. Errors of the base's
-// ReadFile other than vfs.ErrFileNotFound are returned wrapped.
+// created and deleted again in the overlay). A write of the base's bytes is
+// listed as ChangeCreate when a pending delete names the same path in another
+// case (a case-only rename): on a case-insensitive base the delete removes
+// the file the write puts back. Content types are not compared, since
+// backends such as vfs/osfs do not store them. Errors of the base's ReadFile
+// other than vfs.ErrFileNotFound are returned wrapped.
 func (s *Storage) Changes(ctx context.Context) ([]Change, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -248,18 +251,32 @@ func (s *Storage) Changes(ctx context.Context) ([]Change, error) {
 	return changes, nil
 }
 
-// Commit applies the changes to the base one path at a time in path order
-// (writes and deletes alike) and drops each applied entry from the overlay,
-// together with the entries that turned out to be no change. On the first
-// failure it stops and returns an error naming the path that wraps the base's
-// error, so errors.Is matches vfs.ErrReadOnly for a read-only base; the
-// changes not applied yet stay in the overlay and a later Commit retries
-// them. Commit holds the overlay's lock while it writes, so other calls wait
-// until it returns.
+// Commit applies the changes to the base one path at a time, first every
+// delete and then every write, each group in path order, and drops each
+// applied entry from the overlay, together with the entries that turned out
+// to be no change. Deletes go first so that a case-only rename (write
+// README.md, delete Readme.md) ends with the new name on a case-insensitive
+// base instead of no file. On the first failure it stops and returns an error
+// naming the path that wraps the base's error, so errors.Is matches
+// vfs.ErrReadOnly for a read-only base; the changes not applied yet stay in
+// the overlay and a later Commit retries them. Commit holds the overlay's
+// lock while it writes, so other calls wait until it returns.
 func (s *Storage) Commit(ctx context.Context) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if err := s.commitEntries(ctx, true); err != nil {
+		return err
+	}
+	return s.commitEntries(ctx, false)
+}
+
+// commitEntries applies the tombstones (deleted true) or the writes (deleted
+// false) in path order, as Commit describes. The caller holds the lock.
+func (s *Storage) commitEntries(ctx context.Context, deleted bool) error {
 	for _, path := range slices.Sorted(maps.Keys(s.entries)) {
+		if s.entries[path].deleted != deleted {
+			continue
+		}
 		change, changed, err := s.changeFor(ctx, path)
 		if err != nil {
 			return err
@@ -299,6 +316,8 @@ func (s *Storage) changeFor(ctx context.Context, path string) (change Change, ch
 		return change, baseHasFile, nil
 	case !baseHasFile:
 		change.Kind = ChangeCreate
+	case bytes.Equal(previous, current.content) && s.hasCaseVariantTombstone(path):
+		change.Kind, change.Previous = ChangeCreate, nil
 	case bytes.Equal(previous, current.content):
 		return Change{}, false, nil
 	default:
@@ -307,6 +326,19 @@ func (s *Storage) changeFor(ctx context.Context, path string) (change Change, ch
 	change.Content = bytes.Clone(current.content)
 	change.ContentType = current.contentType
 	return change, true, nil
+}
+
+// hasCaseVariantTombstone reports whether a pending delete names path in
+// another case. A case-insensitive base answers a read of path with that
+// file, so the write only looks like no change; Commit deletes the file
+// first and the write must recreate it. The caller holds the lock.
+func (s *Storage) hasCaseVariantTombstone(path string) bool {
+	for other, current := range s.entries {
+		if current.deleted && other != path && strings.EqualFold(other, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Storage) apply(ctx context.Context, change Change) error {

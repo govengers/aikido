@@ -100,9 +100,9 @@ With `//go:embed knowledge/*.md`, pass `fs.Sub(corpus, "knowledge")` so the mode
 	if err := workspace.Commit(ctx); err != nil {
 ```
 
-- `Changes(ctx)` lists what `Commit` would do, sorted by path: `overlay.ChangeCreate`, `ChangeModify`, `ChangeDelete`, each with `Content`, `ContentType` and the base's `Previous` bytes. Writes equal to the base and deletes of files the base never had are not listed; content types are not compared.
+- `Changes(ctx)` lists what `Commit` would do, sorted by path: `overlay.ChangeCreate`, `ChangeModify`, `ChangeDelete`, each with `Content`, `ContentType` and the base's `Previous` bytes. Writes equal to the base and deletes of files the base never had are not listed, except a write next to a pending delete of the same path in another case (a case-only rename such as `Readme.md` to `README.md`), which is listed as a create; content types are not compared.
 - `overlay.UnifiedDiff(changes)` renders them as one unified diff for reading (`a/<path>`, `b/<path>`, `/dev/null` for created and deleted files, a header alone for an empty one, "Binary files ... differ" for non-UTF-8 content). It is anchored on unique lines (the Go toolchain's algorithm): fast, not guaranteed minimal, not meant for `patch`.
-- `Commit(ctx)` applies the changes one path at a time in path order and drops each applied entry. On the first failure it stops with an error that names the path and wraps the base's error (`errors.Is(err, vfs.ErrReadOnly)` for a read-only base); the rest stays for a retry. Other calls wait while it runs.
+- `Commit(ctx)` applies the changes one path at a time, all deletes first and then all writes, each in path order, and drops each applied entry. Deletes go first so a case-only rename on a case-insensitive disk (macOS, Windows) ends with the new name instead of no file. On the first failure it stops with an error that names the path and wraps the base's error (`errors.Is(err, vfs.ErrReadOnly)` for a read-only base); the rest stays for a retry. Other calls wait while it runs.
 - `Discard()` drops every pending change.
 - The overlay is `Searchable` (substring over the merged view, one base read per file it does not hold); the base's own search is not used.
 - A read-only base fails at `Commit`, not at `WriteFile`.

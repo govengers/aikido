@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -195,6 +197,115 @@ func TestCommit_FailureKeepsTheRestAndIsRetryable(t *testing.T) {
 	if got := paths(t, base); !slices.Equal(got, []string{"a.md", "b.md", "c.md"}) {
 		t.Errorf("base after retry = %v", got)
 	}
+}
+
+func TestCommit_CaseOnlyRenameOnCaseInsensitiveBase(t *testing.T) {
+	ctx := context.Background()
+	base := newFoldingStorage(map[string]string{"Readme.md": "hello\n"})
+	storage := newOverlay(t, base)
+	renameCaseOnly(t, storage)
+	if got := describe(changesOf(t, storage)); !slices.Equal(got, []string{"create README.md", "delete Readme.md"}) {
+		t.Errorf("Changes = %v; want [create README.md delete Readme.md]", got)
+	}
+	if err := storage.Commit(ctx); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if got := paths(t, base); !slices.Equal(got, []string{"README.md"}) {
+		t.Errorf("base files = %v; want [README.md]", got)
+	}
+	if got := read(t, base, "README.md"); got != "hello\n" {
+		t.Errorf("base README.md = %q", got)
+	}
+}
+
+func TestCommit_CaseOnlyRenameOnDisk(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "Readme.md"), []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "README.md")); err != nil {
+		t.Skipf("%s is case-sensitive", directory)
+	}
+	base, err := osfs.New(&osfs.Options{Directory: directory})
+	if err != nil {
+		t.Fatalf("osfs.New: %v", err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	storage := newOverlay(t, base)
+	renameCaseOnly(t, storage)
+	if err := storage.Commit(context.Background()); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "README.md" {
+		t.Fatalf("directory holds %v; want only README.md", entries)
+	}
+	if got := read(t, base, "README.md"); got != "hello\n" {
+		t.Errorf("README.md = %q", got)
+	}
+}
+
+// renameCaseOnly does what move_file does for Readme.md -> README.md: write
+// the destination, then delete the source.
+func renameCaseOnly(t *testing.T, storage *overlay.Storage) {
+	t.Helper()
+	write(t, storage, "README.md", read(t, storage, "Readme.md"))
+	deleteFile(t, storage, "Readme.md")
+}
+
+// foldingStorage is a case-insensitive, case-preserving base like the
+// default filesystems of macOS and Windows: one file per path under
+// strings.ToLower, listed under the name it was created with.
+type foldingStorage struct {
+	files map[string]foldedFile
+}
+
+type foldedFile struct{ name, content string }
+
+func newFoldingStorage(files map[string]string) *foldingStorage {
+	storage := &foldingStorage{files: map[string]foldedFile{}}
+	for name, content := range files {
+		storage.files[strings.ToLower(name)] = foldedFile{name: name, content: content}
+	}
+	return storage
+}
+
+func (s *foldingStorage) ListFiles(context.Context) ([]vfs.FileMetadata, error) {
+	files := []vfs.FileMetadata{}
+	for _, file := range s.files {
+		files = append(files, vfs.FileMetadata{Path: file.name, Size: int64(len(file.content))})
+	}
+	slices.SortFunc(files, func(left, right vfs.FileMetadata) int { return strings.Compare(left.Path, right.Path) })
+	return files, nil
+}
+
+func (s *foldingStorage) ReadFile(_ context.Context, path string) ([]byte, vfs.FileMetadata, error) {
+	file, ok := s.files[strings.ToLower(path)]
+	if !ok {
+		return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, path)
+	}
+	return []byte(file.content), vfs.FileMetadata{Path: path, Size: int64(len(file.content))}, nil
+}
+
+func (s *foldingStorage) WriteFile(_ context.Context, path string, content []byte, _ string) error {
+	file, ok := s.files[strings.ToLower(path)]
+	if !ok {
+		file.name = path
+	}
+	file.content = string(content)
+	s.files[strings.ToLower(path)] = file
+	return nil
+}
+
+func (s *foldingStorage) DeleteFile(_ context.Context, path string) error {
+	if _, ok := s.files[strings.ToLower(path)]; !ok {
+		return fmt.Errorf("%w: %s", vfs.ErrFileNotFound, path)
+	}
+	delete(s.files, strings.ToLower(path))
+	return nil
 }
 
 func TestCommit_ReadOnlyBase(t *testing.T) {
