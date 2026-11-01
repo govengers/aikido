@@ -35,6 +35,15 @@ const (
 	maximumLineSize       = 1024 * 1024
 )
 
+// The line cap bounds one fragment, these bound what a stream accumulates:
+// the arguments of all its tool calls together (16 times the agent's default
+// file size) and the number of calls. Above either, the stream fails with
+// ErrInvalidResponse and its calls are dropped.
+const (
+	maximumToolCallArgumentBytes = 16 << 20
+	maximumToolCalls             = 128
+)
+
 // processStream reads the SSE body and emits llm.Events onto out. It is
 // designed to be called from a producer goroutine; it always emits exactly
 // one EventEnd as the final event before returning. Channel close is the
@@ -142,6 +151,9 @@ func (d *streamDecoder) handlePayload(payload string) {
 		d.handleErrorEnvelope(&chunk)
 	default:
 		for _, choice := range chunk.Choices {
+			if d.failed {
+				break
+			}
 			d.handleChoice(choice)
 		}
 		// Usage may arrive on any chunk (typically the final content chunk
@@ -170,10 +182,10 @@ func (d *streamDecoder) handleChoice(choice streamChoice) {
 	d.emitPayload(choice.Delta)
 	// Some image-capable models deliver the generated image as a
 	// non-streaming `choices[0].message` payload instead of a `delta`.
-	if choice.Message != nil {
+	if choice.Message != nil && !d.failed {
 		d.emitPayload(*choice.Message)
 	}
-	if choice.FinishReason != nil {
+	if choice.FinishReason != nil && !d.failed {
 		d.handleFinishReason(*choice.FinishReason)
 	}
 }
@@ -216,7 +228,11 @@ func (d *streamDecoder) emitPayload(payload streamDelta) {
 		}
 	}
 	for _, fragment := range payload.ToolCalls {
-		d.assembler.feed(fragment)
+		if err := d.assembler.feed(fragment); err != nil {
+			d.assembler.flush() // over a cap the calls are unusable: dropped
+			d.fail(err)
+			return
+		}
 	}
 }
 
@@ -282,6 +298,9 @@ type toolCallAssembler struct {
 	parts []*partialToolCall
 	// current maps a wire index to the call its fragments continue.
 	current map[int]*partialToolCall
+	// calls and argumentBytes count the whole stream, across flushes.
+	calls         int
+	argumentBytes int
 }
 
 type partialToolCall struct {
@@ -296,10 +315,20 @@ func newToolCallAssembler() *toolCallAssembler {
 }
 
 // feed merges a single fragment into the buffer. A call keeps its first
-// non-empty name; argument fragments concatenate.
-func (a *toolCallAssembler) feed(fragment toolCallFragment) {
+// non-empty name; argument fragments concatenate. A fragment that would take
+// the stream above maximumToolCalls or maximumToolCallArgumentBytes is
+// refused with llm.ErrInvalidResponse.
+func (a *toolCallAssembler) feed(fragment toolCallFragment) error {
+	a.argumentBytes += len(fragment.Function.Arguments)
+	if a.argumentBytes > maximumToolCallArgumentBytes {
+		return fmt.Errorf("openrouter mid-stream: tool-call arguments above %d bytes: %w", maximumToolCallArgumentBytes, llm.ErrInvalidResponse)
+	}
 	part, ok := a.current[fragment.Index]
 	if !ok || (part.id != "" && fragment.ID != "" && fragment.ID != part.id) {
+		a.calls++
+		if a.calls > maximumToolCalls {
+			return fmt.Errorf("openrouter mid-stream: more than %d tool calls: %w", maximumToolCalls, llm.ErrInvalidResponse)
+		}
 		part = &partialToolCall{index: fragment.Index}
 		a.parts = append(a.parts, part)
 		a.current[fragment.Index] = part
@@ -311,6 +340,7 @@ func (a *toolCallAssembler) feed(fragment toolCallFragment) {
 		part.name = fragment.Function.Name
 	}
 	part.arguments.WriteString(fragment.Function.Arguments)
+	return nil
 }
 
 // flush returns the assembled tool calls in ascending index order (calls

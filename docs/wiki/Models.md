@@ -73,7 +73,7 @@ Use `Complete` instead of `Stream` for image output: a base64 image in one SSE l
 
 Every chat request asks OpenRouter for usage accounting, so `CostUSD` is set on streamed and non-streamed calls alike.
 
-Size caps (fixed, not options): a non-streaming answer (`Complete`, images, speech, decisions, model lists, video jobs) is read up to 64 MiB, a video clip up to 512 MiB; a larger answer fails with `llm.ErrInvalidResponse` and is not retried. Of an error answer at most 64 KiB is read, its message keeps 256 bytes. A stream line may be 1 MiB.
+Size caps (fixed, not options): a non-streaming answer (`Complete`, images, speech, decisions, model lists, video jobs) is read up to 64 MiB, a video clip up to 512 MiB; a larger answer fails with `llm.ErrInvalidResponse` and is not retried. Of an error answer at most 64 KiB is read, its message keeps 256 bytes. A stream line may be 1 MiB; one stream may carry at most 128 tool calls with 16 MiB of arguments together, beyond that it ends with `EventError` (`llm.ErrInvalidResponse`) and its tool calls are dropped.
 
 ### Provider routing
 
