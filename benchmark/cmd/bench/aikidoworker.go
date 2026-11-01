@@ -88,11 +88,12 @@ var (
 	aikidoUsageLine  = regexp.MustCompile(`^\[usage\] prompt=(\d+) completion=(\d+) cost=\$([0-9.]+)`)
 	aikidoResultLine = regexp.MustCompile(`^\[tool-result\] (\S+) (ok|fail)`)
 	aikidoEndLine    = regexp.MustCompile(`^\[end\] (\S+)`)
+	aikidoCacheField = regexp.MustCompile(` cache_read=(\d+) cache_write=(\d+)`)
 	aikidoErrorLine  = regexp.MustCompile(`^\[error\] (.*)`)
 )
 
-// parseAikidoLines reads the CLI transcript (internal/cli/agent.go). The CLI
-// reports no cache tokens, so those stay zero.
+// parseAikidoLines reads the CLI transcript (internal/cli/agent.go), including
+// the cache_read/cache_write fields the CLI prints when the provider reports them.
 func parseAikidoLines(stream io.Reader, observed *metrics) error {
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 1<<20), 1<<24)
@@ -107,6 +108,7 @@ func parseAikidoLines(stream io.Reader, observed *metrics) error {
 			observed.InputTokens += prompt
 			observed.OutputTokens += completion
 			observed.CostUSD += cost
+			addCacheTokens(line, observed)
 		} else if match := aikidoResultLine.FindStringSubmatch(line); match != nil {
 			observed.tool(match[1], match[2] == "fail")
 		} else if match := aikidoEndLine.FindStringSubmatch(line); match != nil {
@@ -119,4 +121,16 @@ func parseAikidoLines(stream io.Reader, observed *metrics) error {
 		return err
 	}
 	return runError
+}
+
+// addCacheTokens adds the cache_read/cache_write fields of a [usage] line.
+func addCacheTokens(line string, observed *metrics) {
+	cache := aikidoCacheField.FindStringSubmatch(line)
+	if cache == nil {
+		return
+	}
+	read, _ := strconv.Atoi(cache[1])
+	written, _ := strconv.Atoi(cache[2])
+	observed.CacheReadTokens += read
+	observed.CacheWriteTokens += written
 }

@@ -186,6 +186,9 @@ func withProviderFlag(ctx context.Context, command *urfavecli.Command) context.C
 // formatUsage renders one model call's usage line.
 func formatUsage(usage *llm.Usage) string {
 	line := fmt.Sprintf("[usage] prompt=%d completion=%d cost=$%.6f", usage.PromptTokens, usage.CompletionTokens, usage.CostUSD)
+	if usage.CacheReadTokens > 0 || usage.CacheWriteTokens > 0 {
+		line += fmt.Sprintf(" cache_read=%d cache_write=%d", usage.CacheReadTokens, usage.CacheWriteTokens)
+	}
 	if usage.Provider != "" {
 		line += " provider=" + usage.Provider
 	}
