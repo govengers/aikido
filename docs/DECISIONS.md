@@ -656,7 +656,7 @@ override (build a second Pipeline), abbreviation-aware sentence splitting.
 ## ADR-033 - grep, glob and edit_file as default VFS tools; `vfs/osfs`
 
 **Date:** 22.10.2026
-**Status:** Accepted. Supersedes the "no brute-force grep" part of ADR-020.
+**Status:** Accepted (amended 01.11.2026 - numbered `read_file` output). Supersedes the "no brute-force grep" part of ADR-020.
 
 **Context.** Agents working on files want the tool shapes models are trained
 on (Claude Code, Codex): regex search, path globbing, exact-string edits and
@@ -699,6 +699,16 @@ tool list (more prompt tokens) and a 2000-line default on `read_file`.
 Consumers that pin the tool name list (Hub `internal/nexi` drift guard) must
 add `grep`, `glob`, `edit_file` or set `DisableExtended`. `go.mod` requires Go
 1.25.
+
+**Amendment (01.11.2026) - numbered `read_file` output.** `read_file` no
+longer returns raw content: every line is prefixed with its 1-based number and
+a tab, which are not part of the file, so a model can cite lines and continue
+a cut read at the next line number (ADR-039). `edit_file` and `multi_edit`
+take `old_string` without that prefix, and their descriptions say so. The
+window stops at 2000 lines or 40 KiB of `content` measured as JSON-encoded
+bytes, so the whole result fits the default 64 KiB tool result cap. A single
+line longer than that is cut and ends in a notice with the `offset` and the
+new optional `column` argument (1-based byte in that line) to read on from.
 
 ## ADR-034 - Provider routing, model catalogue and per-call performance
 
