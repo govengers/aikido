@@ -2,9 +2,11 @@
 
 Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one paragraph consequences. New decisions append; superseded decisions are marked but not deleted.
 
+Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `PATTERNS.md`, `ROADMAP.md`) and the `github.com/mxcd/aikido` module path. Those documents were removed before v1.0.0; the repository history keeps them. Current behaviour is in [docs/wiki](wiki/Home.md).
+
 ---
 
-## ADR-001 — Single Go module, multiple packages
+## ADR-001 - Single Go module, multiple packages
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -13,11 +15,11 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 **Decision.** Single `go.mod` at the repo root. The CLI binary, when it lands in v2, lives under `cmd/aikido/`. Go's per-package dependency tracking ensures library consumers who only import `github.com/govengers/aikido/llm` (etc.) do not transitively pull cobra.
 
-**Consequences.** One version tag covers everything. The `cmd/aikido` directory is built only by `go build ./cmd/aikido`; library users never see it. If we ever publish the CLI separately (e.g., via Homebrew with its own version cadence), we can split into multi-module then — Go modules handle this gracefully.
+**Consequences.** One version tag covers everything. The `cmd/aikido` directory is built only by `go build ./cmd/aikido`; library users never see it. If we ever publish the CLI separately (e.g., via Homebrew with its own version cadence), we can split into multi-module then - Go modules handle this gracefully.
 
 ---
 
-## ADR-002 — OpenRouter as the v1 provider
+## ADR-002 - OpenRouter as the v1 provider
 
 **Date:** 29.04.2026
 **Status:** Accepted (supplemented by ADR-016: paper-mapping pass against direct Anthropic before W1 freeze validates the abstraction shape)
@@ -26,24 +28,24 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 **Decision.** v1 ships exactly one provider: `llm/openrouter`. Direct provider packages (`llm/anthropic`, `llm/openai`) are v2.
 
-**Consequences.** v1 callers get model portability for free — `Model: "anthropic/claude-sonnet-4-6"` to `Model: "openai/gpt-4o"` is one string change. Callers who need provider-specific features (Anthropic's full prompt caching API, OpenAI's structured outputs) wait for v2. The `llm.Client` interface is provider-agnostic; v2 packages slot in without breaking v1 callers. **Watch out:** OpenRouter forwards Anthropic `cache_control` blocks but other providers may silently ignore them. v1 passes `Message.CacheHint` through and tolerates silent ignores; v2's `llm/anthropic` is the fallback when caching fidelity matters.
+**Consequences.** v1 callers get model portability for free - `Model: "anthropic/claude-sonnet-4-6"` to `Model: "openai/gpt-4o"` is one string change. Callers who need provider-specific features (Anthropic's full prompt caching API, OpenAI's structured outputs) wait for v2. The `llm.Client` interface is provider-agnostic; v2 packages slot in without breaking v1 callers. **Watch out:** OpenRouter forwards Anthropic `cache_control` blocks but other providers may silently ignore them. v1 passes `Message.CacheHint` through and tolerates silent ignores; v2's `llm/anthropic` is the fallback when caching fidelity matters.
 
 ---
 
-## ADR-003 — Custom Go agent loop, not Claude Agent SDK
+## ADR-003 - Custom Go agent loop, not Claude Agent SDK
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** The Claude Agent SDK is a Node-based loop with battle-tested streaming and reliability. Adopting it would mean shipping a Node sidecar in MaPa's single-binary Go deployment model. A custom Go loop is roughly 200–300 LOC (per `Custom-Go-Agent-Loop-Over-SDK-Pattern.md`) and gives full control over caching, metering, and concurrency — but loses the SDK's tested edge cases.
+**Context.** The Claude Agent SDK is a Node-based loop with battle-tested streaming and reliability. Adopting it would mean shipping a Node sidecar in MaPa's single-binary Go deployment model. A custom Go loop is roughly 200–300 LOC (per `Custom-Go-Agent-Loop-Over-SDK-Pattern.md`) and gives full control over caching, metering, and concurrency - but loses the SDK's tested edge cases.
 
 **Decision.** Custom Go agent loop in `agent/`. Rationale: single-binary deploy with no Node sidecar, specialized tool set (VFS-aware), full control over prompt caching and metering, and per-project transaction semantics that the SDK does not model.
 
-**Consequences.** aikido owns its loop's correctness. Tests must cover error paths the SDK normally covers: provider mid-stream errors, tool dispatch errors, max-turn exhaustion, concurrent turn rejection. Reference loop already runs in production at `asolabs/hub/sandbox/agent-test/agent/loop.go` — aikido generalizes that, it does not invent.
+**Consequences.** aikido owns its loop's correctness. Tests must cover error paths the SDK normally covers: provider mid-stream errors, tool dispatch errors, max-turn exhaustion, concurrent turn rejection. Reference loop already runs in production at `asolabs/hub/sandbox/agent-test/agent/loop.go` - aikido generalizes that, it does not invent.
 
 ---
 
-## ADR-004 — Interface-based Storage, not callback functions
+## ADR-004 - Interface-based Storage, not callback functions
 
 **Date:** 29.04.2026
 **Status:** Accepted (capability-pattern idiom retained; specific `TxStorage` capability dropped from v1 per ADR-019; scoping capability `ScopedStorage` added per ADR-013)
@@ -56,10 +58,10 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-005 — JSON Schema for tools: explicit primary, reflection optional
+## ADR-005 - JSON Schema for tools: explicit primary, reflection optional
 
 **Date:** 29.04.2026
-**Status:** Superseded in part by ADR-018 — v1 ships explicit-only; reflective `SchemaFromType[T]()` is removed and the `invopop/jsonschema` dependency is dropped. Reflection may return additively in v1.x.
+**Status:** Superseded in part by ADR-018 - v1 ships explicit-only; reflective `SchemaFromType[T]()` is removed and the `invopop/jsonschema` dependency is dropped. Reflection may return additively in v1.x.
 
 **Context.** Tool registration needs a parameter schema. Two options: explicit JSON Schema literals (verbose, type-loose, full control) or reflection from Go struct tags (terse, type-safe-ish, brittle for unions/optional/enum). MaPa's existing tool registrations in `asolabs/hub` use explicit literals.
 
@@ -69,7 +71,7 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-006 — Streaming-first LLM client
+## ADR-006 - Streaming-first LLM client
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -78,14 +80,14 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 **Decision.** Streaming is the only mode. `llm.Client.Stream(ctx, req)` returns `<-chan llm.Event`. A `llm.Collect` helper drains a stream into a `(text, calls, usage)` triple for callers who don't need streaming.
 
-**Consequences.** All consumers — including non-streaming callers — flow through the same code path. There is no second non-streaming path to keep in sync. Streaming use cases (TTS pipelines, live UI updates) are first-class. Non-streaming callers pay a tiny channel-overhead cost that is dwarfed by network latency.
+**Consequences.** All consumers - including non-streaming callers - flow through the same code path. There is no second non-streaming path to keep in sync. Streaming use cases (TTS pipelines, live UI updates) are first-class. Non-streaming callers pay a tiny channel-overhead cost that is dwarfed by network latency.
 
 ---
 
-## ADR-007 — Notes as a first-class library construct
+## ADR-007 - Notes as a first-class library construct
 
 **Date:** 29.04.2026
-**Status:** Superseded for v1 by ADR-015 — notes package is deferred to v1.x. The pattern is documented as a recipe in `PATTERNS.md` until N≥2 production validations exist outside the PRD generator.
+**Status:** Superseded for v1 by ADR-015 - notes package is deferred to v1.x. The pattern is documented as a recipe in `PATTERNS.md` until N≥2 production validations exist outside the PRD generator.
 
 **Context.** The user identified a load-bearing pattern: agents work better when they write atomic short notes during interactions and consolidate them into a target document on demand, rather than rewriting the full document every turn. This pattern can live in user code (with documentation) or in the library (with a dedicated package).
 
@@ -95,7 +97,7 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-008 — v1 ships memory VFS only
+## ADR-008 - v1 ships memory VFS only
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -108,10 +110,10 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-009 — Per-project mutex, in-process; defer multi-instance to v3
+## ADR-009 - Per-project mutex, in-process; defer multi-instance to v3
 
 **Date:** 29.04.2026
-**Status:** Superseded by ADR-012 — concurrency control moves from "per-project mutex" to "per-Session mutex." Two `Session.Run` calls on the same `Session` serialize; different sessions run in parallel. Multi-instance coordination remains a v3 concern (now session-scoped, not project-scoped).
+**Status:** Superseded by ADR-012 - concurrency control moves from "per-project mutex" to "per-Session mutex." Two `Session.Run` calls on the same `Session` serialize; different sessions run in parallel. Multi-instance coordination remains a v3 concern (now session-scoped, not project-scoped).
 
 **Context.** Concurrency is bounded per projectID: one turn at a time prevents partial-state corruption. The mutex can be in-process (`sync.Map[uuid.UUID]*sync.Mutex`) or distributed (Redis-backed via `redislock`). In-process is simpler and works for single-instance deployments; distributed is required for horizontal scaling.
 
@@ -121,7 +123,7 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-010 — Library only in v1; CLI joins v2
+## ADR-010 - Library only in v1; CLI joins v2
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -130,11 +132,11 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 **Decision.** No CLI in v1. The `cmd/aikido` directory does not exist until v2.
 
-**Consequences.** v1 has zero CLI-related dependencies (cobra etc.) anywhere in the module. v2 adds the CLI as a single new directory; all existing v1 packages are imported as-is. The user's framing — image gen as the headline CLI use case — is honored without the v1 scope creeping.
+**Consequences.** v1 has zero CLI-related dependencies (cobra etc.) anywhere in the module. v2 adds the CLI as a single new directory; all existing v1 packages are imported as-is. The user's framing - image gen as the headline CLI use case - is honored without the v1 scope creeping.
 
 ---
 
-## ADR-011 — Stateless agent turns; caller maintains history
+## ADR-011 - Stateless agent turns; caller maintains history
 
 **Date:** 29.04.2026
 **Status:** Superseded by ADR-012 (Session model) and ADR-014 (History as pluggable interface). Reason: forcing every caller to write the same `messages`-table adapter, the same turn-ID issuance, and the same pruning logic is exactly the boilerplate the library is meant to remove. v1 ships a `History` interface with a bundled memory backend, parallel to the `vfs.Storage` idiom. `RunWithMessages` is retained as an escape hatch for callers needing full control of what the LLM sees per turn.
@@ -147,17 +149,17 @@ Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one pa
 
 ---
 
-## ADR-012 — Session as the multi-turn unit; `Scope` opaque and optional; `projectID` removed
+## ADR-012 - Session as the multi-turn unit; `Scope` opaque and optional; `projectID` removed
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** The locked surface keyed on `projectID uuid.UUID` everywhere — `agent.Run(ctx, projectID, userText)`, `Storage.WriteFile(ctx, projectID, ...)`, the per-project mutex, the snapshot key, the notes scope key. A single typed parameter was doing four jobs at once with no single coherent meaning, and the term "project" leaked from `asolabs/hub`'s domain model. In aikido, callers' domain identifiers vary: ASO Nexus Hub uses business UIDs, the PRD generator uses PRD session IDs, a chatbot over a shared knowledge base has no boundary at all.
+**Context.** The locked surface keyed on `projectID uuid.UUID` everywhere - `agent.Run(ctx, projectID, userText)`, `Storage.WriteFile(ctx, projectID, ...)`, the per-project mutex, the snapshot key, the notes scope key. A single typed parameter was doing four jobs at once with no single coherent meaning, and the term "project" leaked from `asolabs/hub`'s domain model. In aikido, callers' domain identifiers vary: ASO Nexus Hub uses business UIDs, the PRD generator uses PRD session IDs, a chatbot over a shared knowledge base has no boundary at all.
 
 **Decision.** Two orthogonal concepts replace `projectID`:
 
-- **`Session`** — the unit of multi-turn interaction. A Session bundles a session ID (opaque string), a model + system prompt, a tool registry, and a `History` plug-in (ADR-014). Multiple `Run` calls on the same Session share its history. This is the OpenAI-Assistants/Thread shape. The per-project mutex becomes a per-session mutex on the `Session` struct.
-- **`Scope`** — an opaque caller-defined string used only by tools that need a tenant or namespace boundary. Library never interprets it. Callers map it to whatever domain term they have. Scope is orthogonal to session: a session may have no scope, one scope, or different scopes per scoped tool.
+- **`Session`** - the unit of multi-turn interaction. A Session bundles a session ID (opaque string), a model + system prompt, a tool registry, and a `History` plug-in (ADR-014). Multiple `Run` calls on the same Session share its history. This is the OpenAI-Assistants/Thread shape. The per-project mutex becomes a per-session mutex on the `Session` struct.
+- **`Scope`** - an opaque caller-defined string used only by tools that need a tenant or namespace boundary. Library never interprets it. Callers map it to whatever domain term they have. Scope is orthogonal to session: a session may have no scope, one scope, or different scopes per scoped tool.
 
 The `projectID uuid.UUID` parameter is removed from every public surface. Each of its four old jobs either moves to its rightful owner or disappears.
 
@@ -165,7 +167,7 @@ The `projectID uuid.UUID` parameter is removed from every public surface. Each o
 
 ---
 
-## ADR-013 — Storage scoping is a capability, not a parameter
+## ADR-013 - Storage scoping is a capability, not a parameter
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -178,12 +180,12 @@ The `projectID uuid.UUID` parameter is removed from every public surface. Each o
 
 ---
 
-## ADR-014 — History is a pluggable interface; v1 bundles a memory backend
+## ADR-014 - History is a pluggable interface; v1 bundles a memory backend
 
 **Date:** 29.04.2026
-**Status:** Accepted (amended 30.04.2026 — variadic `Append`, single flush at end of turn, History required, narrow contract honestly named)
+**Status:** Accepted (amended 30.04.2026 - variadic `Append`, single flush at end of turn, History required, narrow contract honestly named)
 
-**Context.** ADR-011 made callers own history. Every realistic caller would write a `messages`-table adapter, the same turn-ID issuance, and the same pruning logic. Some of that — the messages-table adapter shape and turn-ID issuance — is real boilerplate the library should remove. Pruning policy, on closer read, is *not* — it varies fundamentally per app (token-budget vs semantic-importance vs sliding-window vs LLM-summarize), and the library has neither the information nor the right to pick one.
+**Context.** ADR-011 made callers own history. Every realistic caller would write a `messages`-table adapter, the same turn-ID issuance, and the same pruning logic. Some of that - the messages-table adapter shape and turn-ID issuance - is real boilerplate the library should remove. Pruning policy, on closer read, is *not* - it varies fundamentally per app (token-budget vs semantic-importance vs sliding-window vs LLM-summarize), and the library has neither the information nor the right to pick one.
 
 **Decision.** Library defines:
 
@@ -194,27 +196,27 @@ type History interface {
 }
 ```
 
-`sessionID` is opaque; the implementation uses it as a key. The `Session` reads history at turn start, calls the LLM with that history plus the new user message, accumulates the turn's produced messages (assistant + tool results) in a local slice, and flushes them all in **one variadic `Append` call** at end of turn. v1 ships an in-memory backend under `agent/history/memory`. `History` is **required** in `SessionOptions` — no nil-fallback. `agent.NewLocalSession` auto-supplies the in-memory backend for single-replica use. `RunWithMessages` is retained as an escape hatch for callers needing full control of what the LLM sees per turn (trimming, branched conversations, agent-as-subroutine); it does not append to History — the caller drains the resulting events via `agent.Drain` and stores the messages on their own.
+`sessionID` is opaque; the implementation uses it as a key. The `Session` reads history at turn start, calls the LLM with that history plus the new user message, accumulates the turn's produced messages (assistant + tool results) in a local slice, and flushes them all in **one variadic `Append` call** at end of turn. v1 ships an in-memory backend under `agent/history/memory`. `History` is **required** in `SessionOptions` - no nil-fallback. `agent.NewLocalSession` auto-supplies the in-memory backend for single-replica use. `RunWithMessages` is retained as an escape hatch for callers needing full control of what the LLM sees per turn (trimming, branched conversations, agent-as-subroutine); it does not append to History - the caller drains the resulting events via `agent.Drain` and stores the messages on their own.
 
 **What this buys callers (honestly):**
-- The canonical `[]llm.Message` shape and a sessionID-keyed contract — so every caller's persistence adapter looks the same.
+- The canonical `[]llm.Message` shape and a sessionID-keyed contract - so every caller's persistence adapter looks the same.
 - An in-memory backend and conformance suite for tests.
 - One backend round-trip per turn instead of K+2 (variadic Append).
 
-**What it does NOT buy callers:** pruning is still implemented by each caller's `History.Read` (a Postgres-backed History trims to its own policy before returning). The library cannot remove that work — every app's policy differs. The `History` interface is genuinely narrow.
+**What it does NOT buy callers:** pruning is still implemented by each caller's `History.Read` (a Postgres-backed History trims to its own policy before returning). The library cannot remove that work - every app's policy differs. The `History` interface is genuinely narrow.
 
 **On error.** Any `History.Read` or `History.Append` failure is terminal for the current `Run`; see ADR-023.
 
-**Consequences.** New `agent.History` interface and bundled memory implementation. Conformance suite (same shape as `vfs/conformance.go`). Supersedes ADR-011. The "we removed all the boilerplate" framing of the original ADR-014 was an overclaim — corrected here.
+**Consequences.** New `agent.History` interface and bundled memory implementation. Conformance suite (same shape as `vfs/conformance.go`). Supersedes ADR-011. The "we removed all the boilerplate" framing of the original ADR-014 was an overclaim - corrected here.
 
 ---
 
-## ADR-015 — Notes deferred to v1.x
+## ADR-015 - Notes deferred to v1.x
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** ADR-007 promoted note-then-consolidate to a first-class library construct. The pattern is real and the efficiency win is real, but it is N=1 — proven only in the PRD generator. Generalizing N=1 patterns into a library tends to bake in incidental decisions of the original use case (default consolidation prompt, `_notes/{turn-uuid}.md` path layout, atomic-note-per-turn assumption).
+**Context.** ADR-007 promoted note-then-consolidate to a first-class library construct. The pattern is real and the efficiency win is real, but it is N=1 - proven only in the PRD generator. Generalizing N=1 patterns into a library tends to bake in incidental decisions of the original use case (default consolidation prompt, `_notes/{turn-uuid}.md` path layout, atomic-note-per-turn assumption).
 
 **Decision.** Cut the `notes` package from v1. v1 ships waves W0–W7 (no W8). Notes lands as additive in v1.x once aikido has 2+ production validations that justify a generalized shape. The pattern is documented as a recipe in `docs/PATTERNS.md` so callers can hand-roll it on top of `tools.Registry` + `vfs.Storage` + `llm.Client`.
 
@@ -222,12 +224,12 @@ type History interface {
 
 ---
 
-## ADR-016 — Provider abstraction validated by paper-mapping pass before W1 freeze
+## ADR-016 - Provider abstraction validated by paper-mapping pass before W1 freeze
 
 **Date:** 29.04.2026
-**Status:** Accepted; gate closed 30.04.2026 — paper-mapping pass produced concrete v1 surface changes, all folded into `v1/API.md`.
+**Status:** Accepted; gate closed 30.04.2026 - paper-mapping pass produced concrete v1 surface changes, all folded into `v1/API.md`.
 
-**Context.** ADR-002 ships only OpenRouter in v1. The `llm.Client` surface is locked at v1.0 per the versioning policy. The locked surface was originally designed against exactly one provider (OpenAI-compatible-shaped). Three fields predicted to fail when v2's direct Anthropic lands: `Message.CacheHint bool` (too coarse for per-message breakpoints with TTL), `Request.ThinkingEffort string` (loses Anthropic's explicit `thinking: { budget_tokens: N }` variant), and the absence of an `EventThinking` variant (silently discards reasoning tokens — lossy for observability).
+**Context.** ADR-002 ships only OpenRouter in v1. The `llm.Client` surface is locked at v1.0 per the versioning policy. The locked surface was originally designed against exactly one provider (OpenAI-compatible-shaped). Three fields predicted to fail when v2's direct Anthropic lands: `Message.CacheHint bool` (too coarse for per-message breakpoints with TTL), `Request.ThinkingEffort string` (loses Anthropic's explicit `thinking: { budget_tokens: N }` variant), and the absence of an `EventThinking` variant (silently discards reasoning tokens - lossy for observability).
 
 **Decision.** Produce `docs/v1/planning/ANTHROPIC-MAPPING.md` before W1 begins. Walk every field of `llm.Request`, `llm.Message`, `llm.Event`, `llm.Usage` through the direct-Anthropic mapping. Land all surface changes derived from the walk in one composite pre-W1 doc PR.
 
@@ -239,16 +241,16 @@ type History interface {
 4. `EventKind` (in both `llm` and `agent`) switched from `iota` to typed string. Order-independent additions; clean log serialization.
 5. `Request.Temperature float32` → `Request.Temperature *float32` with `llm.Float32` helper. Eliminates the zero-value foot-gun for deterministic-output callers.
 
-**Consequences.** ADR-016's resolution checklist is closed. The composite pre-W1 doc PR also raised `MaxTokens` default to 16384 (Grill #12a — independent of the Anthropic mapping but bundled for one frozen surface) and added `RunTimeout` + `LLMCallTimeout` (Grill #3 — split of the old single `TurnTimeout`). Supplements ADR-002.
+**Consequences.** ADR-016's resolution checklist is closed. The composite pre-W1 doc PR also raised `MaxTokens` default to 16384 (Grill #12a - independent of the Anthropic mapping but bundled for one frozen surface) and added `RunTimeout` + `LLMCallTimeout` (Grill #3 - split of the old single `TurnTimeout`). Supplements ADR-002.
 
 ---
 
-## ADR-017 — `Storage` reduced to four methods; Snapshot/Restore/HashState removed
+## ADR-017 - `Storage` reduced to four methods; Snapshot/Restore/HashState removed
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** Tracing call sites in the locked design: `Restore` and `HashState` are never called by aikido — they are caller-facing utilities the locked surface forced every backend to implement. `Snapshot` is called by the agent loop after a successful turn but the returned `SnapshotID` is never used by aikido (no public API surfaced it). Forcing backend authors to implement three methods aikido itself does not consume is a tax with no return.
+**Context.** Tracing call sites in the locked design: `Restore` and `HashState` are never called by aikido - they are caller-facing utilities the locked surface forced every backend to implement. `Snapshot` is called by the agent loop after a successful turn but the returned `SnapshotID` is never used by aikido (no public API surfaced it). Forcing backend authors to implement three methods aikido itself does not consume is a tax with no return.
 
 **Decision.** The `vfs.Storage` interface is reduced to four methods:
 
@@ -267,7 +269,7 @@ type Storage interface {
 
 ---
 
-## ADR-018 — One canonical schema style: explicit only
+## ADR-018 - One canonical schema style: explicit only
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -280,20 +282,20 @@ type Storage interface {
 
 ---
 
-## ADR-019 — `Tx` dropped from v1; agent loop has no transactional wrap
+## ADR-019 - `Tx` dropped from v1; agent loop has no transactional wrap
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** ADR-017 already removed `Snapshot` from the library. With snapshots gone, the only remaining job for the per-turn `Tx` wrap was rollback-on-tool-error — a semantic that discards successful writes from the same turn, forcing the model to redo work, while the model's natural self-correction loop would simply retry the failed call. Without rollback, model and storage state stay in sync; with rollback, they diverge until the model regenerates the lost writes. Each individual `WriteFile` / `DeleteFile` is already atomic at the backend level.
+**Context.** ADR-017 already removed `Snapshot` from the library. With snapshots gone, the only remaining job for the per-turn `Tx` wrap was rollback-on-tool-error - a semantic that discards successful writes from the same turn, forcing the model to redo work, while the model's natural self-correction loop would simply retry the failed call. Without rollback, model and storage state stay in sync; with rollback, they diverge until the model regenerates the lost writes. Each individual `WriteFile` / `DeleteFile` is already atomic at the backend level.
 
 **Decision.** Remove the `vfs.TxStorage` capability and the `vfs.Tx` interface from v1. The agent loop never calls `BeginTx`. Use cases that genuinely need atomic multi-write semantics ship the multi-write as a single tool (`write_files` taking `[]File`), not a hidden tx wrap around the whole turn. Backends that want internal write-batching for efficiency do it without library coordination.
 
-**Consequences.** Agent loop pseudocode in `ARCHITECTURE.md` simplifies — no `BeginTx` / `Commit` / `Rollback` / `anyErr` branches. W5 conformance sub-tests for tx behavior removed. W6 test scenarios for "TxStorage detection" removed. `vfs/memory` no longer implements `TxStorage`. `TxStorage` is a candidate for v1.x re-introduction if a second use case proves the abstraction is real. INDEX.md Open Question 16 (`BeginTx` mid-turn error) becomes moot.
+**Consequences.** Agent loop pseudocode in `ARCHITECTURE.md` simplifies - no `BeginTx` / `Commit` / `Rollback` / `anyErr` branches. W5 conformance sub-tests for tx behavior removed. W6 test scenarios for "TxStorage detection" removed. `vfs/memory` no longer implements `TxStorage`. `TxStorage` is a candidate for v1.x re-introduction if a second use case proves the abstraction is real. INDEX.md Open Question 16 (`BeginTx` mid-turn error) becomes moot.
 
 ---
 
-## ADR-020 — Search via `Searchable` capability; semantic search and summary search deferred
+## ADR-020 - Search via `Searchable` capability; semantic search and summary search deferred
 
 **Date:** 29.04.2026
 **Status:** Accepted
@@ -309,7 +311,7 @@ type Searchable interface {
 }
 ```
 
-Input is a single `query string`; the backend interprets it (substring, glob, regex, full-text — whatever it supports). Output is a list of file paths. The tool description embeds `Searchable.SearchSyntax()` so the model knows what it can send. `agent.RegisterVFSTools` registers `search` only when the supplied storage satisfies `Searchable`.
+Input is a single `query string`; the backend interprets it (substring, glob, regex, full-text - whatever it supports). Output is a list of file paths. The tool description embeds `Searchable.SearchSyntax()` so the model knows what it can send. `agent.RegisterVFSTools` registers `search` only when the supplied storage satisfies `Searchable`.
 
 Two related features deferred: `semantic_search` (RAG/vector retrieval, v1.x or v2) and document-summary search (returns summary text, not full content; v1.x once the summary shape is designed).
 
@@ -317,12 +319,12 @@ Two related features deferred: `semantic_search` (RAG/vector retrieval, v1.x or 
 
 ---
 
-## ADR-021 — `tools.Env` slimmed to dynamic-only fields
+## ADR-021 - `tools.Env` slimmed to dynamic-only fields
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** The locked `tools.Env` carried `Storage`, `Project`, `TurnID`, `Logger`, and `Now`. ADR-012 removed `Project`. ADR-013 made `Storage` registration-time-bound (closure capture in scoped tools), so the agent has no canonical storage to inject — different tools register with different storage handles. `Logger` and `Now` are convenience fields most tools ignore.
+**Context.** The locked `tools.Env` carried `Storage`, `Project`, `TurnID`, `Logger`, and `Now`. ADR-012 removed `Project`. ADR-013 made `Storage` registration-time-bound (closure capture in scoped tools), so the agent has no canonical storage to inject - different tools register with different storage handles. `Logger` and `Now` are convenience fields most tools ignore.
 
 **Decision.** Slim `tools.Env` to fields that genuinely change per dispatch:
 
@@ -339,33 +341,33 @@ Tools that need a logger, a clock, or a storage handle capture them at registrat
 
 ---
 
-## ADR-022 — Public/internal split: `retry` internal, `sseparse` un-extracted, `llmtest` public
+## ADR-022 - Public/internal split: `retry` internal, `sseparse` un-extracted, `llmtest` public
 
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** v1 should commit to public API surface only for packages with actual external consumers. The locked design had `retry` public (for "users implementing custom providers" — none exist in v1), `internal/sseparse/` extracted (for "future providers" — v2's direct Anthropic uses a different SSE format entirely), and `internal/testutil.StubClient` hidden (despite being directly useful to every aikido consumer testing their own integrations).
+**Context.** v1 should commit to public API surface only for packages with actual external consumers. The locked design had `retry` public (for "users implementing custom providers" - none exist in v1), `internal/sseparse/` extracted (for "future providers" - v2's direct Anthropic uses a different SSE format entirely), and `internal/testutil.StubClient` hidden (despite being directly useful to every aikido consumer testing their own integrations).
 
 **Decision.** Three calls:
 
 1. `retry/` moves to `internal/retry/`. Used only by `llm/openrouter` in v1 (and future direct providers in v2). v2 may promote back to public if external provider authors materialize.
 2. `internal/sseparse/` is not extracted. The SSE line parser stays inline in `llm/openrouter/`. Extract when a second provider validates the abstraction, not before.
-3. `StubClient` and its scriptable script types are promoted from `internal/testutil/` to a public package — `llm/llmtest/` (or similar; naming TBD). Same shape as Go stdlib `httptest`. Library users testing their own integrations get a stub `llm.Client` out of the box.
+3. `StubClient` and its scriptable script types are promoted from `internal/testutil/` to a public package - `llm/llmtest/` (or similar; naming TBD). Same shape as Go stdlib `httptest`. Library users testing their own integrations get a stub `llm.Client` out of the box.
 
-**Consequences.** `retry` removed from v1 public godoc. `internal/sseparse/` package never created — W3 deliverable list shrinks. New public `llm/llmtest/` package. Reduces the v1 stable-API commitment surface to APIs with actual users.
+**Consequences.** `retry` removed from v1 public godoc. `internal/sseparse/` package never created - W3 deliverable list shrinks. New public `llm/llmtest/` package. Reduces the v1 stable-API commitment surface to APIs with actual users.
 
 ---
 
-## ADR-023 — `History` errors are terminal for the current `Run`
+## ADR-023 - `History` errors are terminal for the current `Run`
 
 **Date:** 30.04.2026
 **Status:** Accepted
 
 **Context.** ADR-014 made `History` a pluggable interface returning `error` from `Read` and `Append`. Neither the ADR nor `ARCHITECTURE.md` specified what the agent does with those errors. The hot path has multiple Append points (one per turn after Grill #8 / the ADR-014 amendment). Drift between the in-memory `msgs` slice the LLM sees and the durable `History` log is an invisible failure mode in development (memory backend never errors) and a haunting one in production (transient DB blip → silently drifted transcript → next turn's model sees holes and behaves erratically).
 
-**Decision.** Any `History.Read` or `History.Append` failure inside a `Run` is **terminal**: the agent emits `EventError` (with the wrapped History error) followed by `EventEnd(EndReasonError)` and the channel closes. The agent does **not** retry History calls — retry budget belongs to the `History` impl. On `EndReasonError` the durable transcript is **not** updated for this turn (the variadic flush is the last step of a successful turn; if it fails, History stays in its pre-turn state).
+**Decision.** Any `History.Read` or `History.Append` failure inside a `Run` is **terminal**: the agent emits `EventError` (with the wrapped History error) followed by `EventEnd(EndReasonError)` and the channel closes. The agent does **not** retry History calls - retry budget belongs to the `History` impl. On `EndReasonError` the durable transcript is **not** updated for this turn (the variadic flush is the last step of a successful turn; if it fails, History stays in its pre-turn state).
 
-This applies symmetrically to `Locker` errors: `Lock` failures (including acquire-timeout) emit `EventError + EventEnd(EndReasonError)`. No separate `EndReasonLockTimeout` — the existing `EndReasonError` carries the wrapped error.
+This applies symmetrically to `Locker` errors: `Lock` failures (including acquire-timeout) emit `EventError + EventEnd(EndReasonError)`. No separate `EndReasonLockTimeout` - the existing `EndReasonError` carries the wrapped error.
 
 **Rationale.** Lenient ("log and continue") creates a correctness bug class invisible in tests and impossible to reproduce in prod. Consistent with the no-transactional-rollback stance from ADR-019: each storage / History op is atomic at the backend level; if it fails, the agent fails. Flaky backends are the backend's responsibility to make resilient (retry-with-backoff in the Postgres adapter), not the agent's.
 
@@ -373,12 +375,12 @@ This applies symmetrically to `Locker` errors: `Lock` failures (including acquir
 
 ---
 
-## ADR-024 — `Locker` is a pluggable interface in v1; in-memory implementation ships now, Redis ships in v1.1
+## ADR-024 - `Locker` is a pluggable interface in v1; in-memory implementation ships now, Redis ships in v1.1
 
 **Date:** 30.04.2026
 **Status:** Accepted; supersedes the v3 deferral in ADR-009 / ADR-012.
 
-**Context.** ADR-012 moved concurrency control from a per-project mutex to a per-Session struct mutex. The premise was "v1 single-instance, struct mutex is fine; v3 swaps in a Redis-backed `agent.Locker`." On review, the per-Session struct mutex only works when callers cache one `*Session` instance per logical session ID across requests. That invariant was undocumented. Naive callers — webapps that build a fresh `*Session` per HTTP request — get two distinct mutexes for the same session ID and silently lose concurrency control. The bug is invisible in dev (one Session per test) and lethal in prod (split-brained transcripts under concurrent same-session traffic).
+**Context.** ADR-012 moved concurrency control from a per-project mutex to a per-Session struct mutex. The premise was "v1 single-instance, struct mutex is fine; v3 swaps in a Redis-backed `agent.Locker`." On review, the per-Session struct mutex only works when callers cache one `*Session` instance per logical session ID across requests. That invariant was undocumented. Naive callers - webapps that build a fresh `*Session` per HTTP request - get two distinct mutexes for the same session ID and silently lose concurrency control. The bug is invisible in dev (one Session per test) and lethal in prod (split-brained transcripts under concurrent same-session traffic).
 
 **Decision.** `agent.Locker` is a pluggable interface in **v1**, not v3:
 
@@ -388,19 +390,19 @@ type Locker interface {
 }
 ```
 
-`Locker` is **required** in `SessionOptions` (no nil-fallback, no package-level default — symmetric with every other v1 plug-in). v1 ships `agent.NewLocalLocker()` returning an in-process `*LocalLocker` (per-id `sync.Mutex` map, with a `Forget(id)` method for long-running services). It is production-grade for single-replica deployments, not just tests. `agent.NewLocalSession` auto-supplies it.
+`Locker` is **required** in `SessionOptions` (no nil-fallback, no package-level default - symmetric with every other v1 plug-in). v1 ships `agent.NewLocalLocker()` returning an in-process `*LocalLocker` (per-id `sync.Mutex` map, with a `Forget(id)` method for long-running services). It is production-grade for single-replica deployments, not just tests. `agent.NewLocalSession` auto-supplies it.
 
-For multi-replica deployments, the implementing application provides the backend by implementing `agent.Locker` — typically Redis-backed, but anything with mutual-exclusion-by-key works (etcd, Postgres advisory locks, Consul, etc.). v1.1 ships `agent/locker/redis` with an abstract `Client` interface (two methods: `SetNX` + `Eval`) so aikido does not import any specific Redis client library; callers wire their existing `go-redis` / `redigo` / `rueidis` client through a small adapter.
+For multi-replica deployments, the implementing application provides the backend by implementing `agent.Locker` - typically Redis-backed, but anything with mutual-exclusion-by-key works (etcd, Postgres advisory locks, Consul, etc.). v1.1 ships `agent/locker/redis` with an abstract `Client` interface (two methods: `SetNX` + `Eval`) so aikido does not import any specific Redis client library; callers wire their existing `go-redis` / `redigo` / `rueidis` client through a small adapter.
 
 **Lock scope is the entire `Run`.** Acquired before `History.Read` at turn-start, released after `EventEnd`. Anything narrower allows two concurrent `Run`s on the same ID to interleave their History reads/writes between turns and split-brain the conversation.
 
 **On error.** Any `Lock` failure (including acquire-timeout) is terminal for the current `Run`: `EventError + EventEnd(EndReasonError)`. See ADR-023.
 
-**Consequences.** Per-Session struct mutex removed from the `Session` struct (no `mu sync.Mutex` field). Pseudocode in `ARCHITECTURE.md` wraps `runLoop` in `unlock, _ := s.opts.Locker.Lock(ctx, s.id); defer unlock()`. Webapp shape — fresh `*Session` per request, shared `Locker` from app startup — works correctly for free. v3's "Locker arrives later" promise is honored two milestones early. `vfs/postgres`-style "no production backends bundled" posture (ADR-008, ADR-014) deliberately broken for `agent/locker/redis` in v1.1, because the Redis lock algorithm (token-matched Lua-script unlock, refresh-on-tick) is a correctness primitive aikido owns better than each caller does. Supersedes ADR-009 and the multi-replica deferral in ADR-012.
+**Consequences.** Per-Session struct mutex removed from the `Session` struct (no `mu sync.Mutex` field). Pseudocode in `ARCHITECTURE.md` wraps `runLoop` in `unlock, _ := s.opts.Locker.Lock(ctx, s.id); defer unlock()`. Webapp shape - fresh `*Session` per request, shared `Locker` from app startup - works correctly for free. v3's "Locker arrives later" promise is honored two milestones early. `vfs/postgres`-style "no production backends bundled" posture (ADR-008, ADR-014) deliberately broken for `agent/locker/redis` in v1.1, because the Redis lock algorithm (token-matched Lua-script unlock, refresh-on-tick) is a correctness primitive aikido owns better than each caller does. Supersedes ADR-009 and the multi-replica deferral in ADR-012.
 
 ---
 
-## ADR-025 — v1 ships no model catalog; tokens and cost tracking are caller-side
+## ADR-025 - v1 ships no model catalog; tokens and cost tracking are caller-side
 
 **Date:** 30.04.2026
 **Status:** Accepted
@@ -409,15 +411,15 @@ For multi-replica deployments, the implementing application provides the backend
 
 **Decision.** v1 ships **no** model catalog. `llm.Catalog`, `llm.FindModel`, `llm.Model`, `llm.ErrUnknownModel`, the `llm/catalog.go` deliverable, and the seed-pricing table are all dropped. Callers using `Model` strings as literals from provider docs already had what they needed; the catalog wrapper added rot risk without capability.
 
-The dot-to-hyphen `normalizeModelID` helper was kept in v0.1/v0.2 but **removed in v0.2.1** — see ADR-026 below.
+The dot-to-hyphen `normalizeModelID` helper was kept in v0.1/v0.2 but **removed in v0.2.1** - see ADR-026 below.
 
-**Token consumption + cost tracking is a tracked future requirement** owned by v1.x or v2. The natural home is per-provider: each direct provider package ships its internal pricing table for cost computation. v1's single provider is OpenRouter, which returns `usage.cost` natively in every response — `llm.Usage.CostUSD` carries it through. Production callers wanting cost dashboards in v1 read it directly from `Usage`. v2's `llm/anthropic` and `llm/openai` packages will compute cost per-call from per-provider catalogs.
+**Token consumption + cost tracking is a tracked future requirement** owned by v1.x or v2. The natural home is per-provider: each direct provider package ships its internal pricing table for cost computation. v1's single provider is OpenRouter, which returns `usage.cost` natively in every response - `llm.Usage.CostUSD` carries it through. Production callers wanting cost dashboards in v1 read it directly from `Usage`. v2's `llm/anthropic` and `llm/openai` packages will compute cost per-call from per-provider catalogs.
 
 **Consequences.** `W1` deliverable list shrinks (no `llm/catalog.go`, no seed table, no `FindModel` helpers). `v1/API.md`'s `llm` package section drops the catalog block. INDEX.md Q23 (catalog seed pricing drift) becomes moot. PATTERNS.md gains a "bring your own catalog" recipe section if/when callers demonstrate they need one.
 
 ---
 
-## ADR-026 — Drop blanket dot→hyphen model-ID normalization
+## ADR-026 - Drop blanket dot→hyphen model-ID normalization
 
 **Date:** 07.05.2026
 **Status:** Accepted (v0.2.1)
@@ -426,28 +428,28 @@ The dot-to-hyphen `normalizeModelID` helper was kept in v0.1/v0.2 but **removed 
 
 In practice OpenRouter's catalog is **not** uniformly hyphenated. Newer image-capable models like `google/gemini-2.5-flash-image-preview` are rejected with `400 "is not a valid model ID"` when sent in the dashed form `google/gemini-2-5-flash-image-preview`. Older models with `2.0` accepted both forms, so the gotcha looked stable until 2.5+ landed. The blanket conversion silently broke any caller that picked a newer model.
 
-**Decision.** Drop `normalizeModelID` entirely (v0.2.1). The OpenRouter client now sends `req.Model` verbatim. `llm/openrouter/modelid.go` and its test are deleted. The PATTERNS.md entry is removed. Callers pass the canonical OpenRouter model ID — exactly the string from OpenRouter's catalog page — and we don't second-guess it.
+**Decision.** Drop `normalizeModelID` entirely (v0.2.1). The OpenRouter client now sends `req.Model` verbatim. `llm/openrouter/modelid.go` and its test are deleted. The PATTERNS.md entry is removed. Callers pass the canonical OpenRouter model ID - exactly the string from OpenRouter's catalog page - and we don't second-guess it.
 
-**Consequences.** Callers that relied on the dot form being silently converted will get a 400 from OpenRouter on first request — clear, immediate, fixable in the caller. The downstream hub project (asolabs/hub) had to update its `AISettings.PostImage.Model` default to the catalog-canonical `google/gemini-2.5-flash-image-preview`. No other callers exist; this is a non-breaking-in-practice change for the only known consumer. Future provider quirks should be solved per-model in a documented helper rather than a blanket transformation.
+**Consequences.** Callers that relied on the dot form being silently converted will get a 400 from OpenRouter on first request - clear, immediate, fixable in the caller. The downstream hub project (asolabs/hub) had to update its `AISettings.PostImage.Model` default to the catalog-canonical `google/gemini-2.5-flash-image-preview`. No other callers exist; this is a non-breaking-in-practice change for the only known consumer. Future provider quirks should be solved per-model in a documented helper rather than a blanket transformation.
 
 ---
 
-## ADR-027 — Promote retry to a public package + add llm.CollectWithRetry
+## ADR-027 - Promote retry to a public package + add llm.CollectWithRetry
 
 **Date:** 07.05.2026
 **Status:** Accepted (v0.2.2)
 
-**Context.** ADR-022 made `retry` deliberately internal — the retry surface was an implementation detail of `llm/openrouter` for stream-start failures. Mid-stream failures (e.g. SSE RST during image generation against preview models) are not retried at the library level: once `Stream` returns a channel and SSE bytes start flowing, a transport drop surfaces as `EventError{Err: ErrServerError}` and the channel closes. Callers that want to recover have to call `Stream` (or `Collect`) again themselves — but they had no shared retry policy to lean on, since `retry` was internal.
+**Context.** ADR-022 made `retry` deliberately internal - the retry surface was an implementation detail of `llm/openrouter` for stream-start failures. Mid-stream failures (e.g. SSE RST during image generation against preview models) are not retried at the library level: once `Stream` returns a channel and SSE bytes start flowing, a transport drop surfaces as `EventError{Err: ErrServerError}` and the channel closes. Callers that want to recover have to call `Stream` (or `Collect`) again themselves - but they had no shared retry policy to lean on, since `retry` was internal.
 
 Real-world traces from `asolabs/hub` show ~20% per-attempt failure rate on `google/gemini-3.1-flash-image-preview` due to upstream Google flake. End-user-facing image generation requires a retry policy.
 
-**Decision.** Promote `internal/retry` → `retry`. The package surface (`Policy`, `Do`, `RetryAfterError`, `DefaultPolicy`) is unchanged. Add `llm.CollectWithRetry(ctx, client, req, retry.Policy)` and `llm.IsTransientServerError(err)` to give callers a one-line retry wrapper around `llm.Collect`. Add `llm.DefaultStreamingRetryPolicy()` returning a 5-attempt 2s-base 30s-cap policy tuned for image-gen preview models. The OpenRouter client's existing internal use of `retry.Do` continues unchanged — same package, just at the public path.
+**Decision.** Promote `internal/retry` → `retry`. The package surface (`Policy`, `Do`, `RetryAfterError`, `DefaultPolicy`) is unchanged. Add `llm.CollectWithRetry(ctx, client, req, retry.Policy)` and `llm.IsTransientServerError(err)` to give callers a one-line retry wrapper around `llm.Collect`. Add `llm.DefaultStreamingRetryPolicy()` returning a 5-attempt 2s-base 30s-cap policy tuned for image-gen preview models. The OpenRouter client's existing internal use of `retry.Do` continues unchanged - same package, just at the public path.
 
 **Consequences.** Callers wrapping streaming operations get the same retry primitives provider clients already use. The retry surface is now part of the v1 API and follows the v1 stability promise (additive changes only until v2). Cost note: failures still bill for partial tokens emitted before the abort; tune `MaxAttempts` with that in mind. Per-model retry policies (e.g., disable retry for non-preview models that are reliable) remain a caller-side concern.
 
 ---
 
-## ADR-028 — Surface content-filter signals as a distinct error sentinel
+## ADR-028 - Surface content-filter signals as a distinct error sentinel
 
 **Date:** 07.05.2026
 **Status:** Accepted (v0.2.3)
@@ -457,18 +459,18 @@ Real-world traces from `asolabs/hub` show ~20% per-attempt failure rate on `goog
 1. **`finish_reason: "content_filter"`** on a `choices[].delta` chunk in an otherwise normal SSE stream.
 2. **A top-level `error` envelope** whose `code`/`message` indicates content filtering.
 
-Both shapes are deterministic per (prompt, model) pair. Until v0.2.3 the openrouter client lumped (1) in with normal `stop`/`tool_calls`/`length` finish reasons (silent — no signal to the caller) and flattened (2) into `ErrServerError` (indistinguishable from genuine 5xx flake). Callers that wrapped `Collect` with retry would burn the full retry budget on guaranteed-failing requests, and there was no clean way to render a "try a different prompt" error to end users.
+Both shapes are deterministic per (prompt, model) pair. Until v0.2.3 the openrouter client lumped (1) in with normal `stop`/`tool_calls`/`length` finish reasons (silent - no signal to the caller) and flattened (2) into `ErrServerError` (indistinguishable from genuine 5xx flake). Callers that wrapped `Collect` with retry would burn the full retry budget on guaranteed-failing requests, and there was no clean way to render a "try a different prompt" error to end users.
 
-There's a third shape — **silent mid-stream RST** — where the provider just kills the connection without any structured chunk. We cannot detect this at the wire level; it surfaces as `ErrServerError` (still). Callers can heuristically classify "all retries failed identically" as content-filter at the call site, but the protocol gives us nothing there.
+There's a third shape - **silent mid-stream RST** - where the provider just kills the connection without any structured chunk. We cannot detect this at the wire level; it surfaces as `ErrServerError` (still). Callers can heuristically classify "all retries failed identically" as content-filter at the call site, but the protocol gives us nothing there.
 
 **Decision.**
 - Add `llm.ErrContentFiltered` sentinel + `llm.IsContentFilter(err)` helper.
 - Detect `finish_reason: "content_filter"` and emit `EventError{Err: fmt.Errorf("...: %w", ErrContentFiltered)}` followed by the closing `EventEnd{FinishReason: "content_filter"}`.
 - Detect content-filter signals in the structured error envelope (string codes `"content_filter"`, `"content_policy_violation"`, `"safety"`, plus message-substring fallback) and emit the same `EventError` shape.
 - Add `Event.FinishReason string` (always populated on the closing `EventEnd` when the provider reported one) so callers can inspect the reason post-hoc without parsing strings.
-- Existing `IsTransientServerError` continues to match only `ErrServerError` — content-filter errors are correctly excluded from retry by default.
+- Existing `IsTransientServerError` continues to match only `ErrServerError` - content-filter errors are correctly excluded from retry by default.
 
-**Consequences.** Hub-side and other callers can branch cleanly: skip retry on `IsContentFilter(err)`, render user-actionable "try different wording" copy, save the typically-multiple-cents per request that retrying a flagged prompt would otherwise burn. The `EventEnd.FinishReason` field is additive and safe under the v1 stability promise. Silent-RST content aborts remain unsolved at the protocol level — the caller-side "all-retries-identical" heuristic is the only signal there.
+**Consequences.** Hub-side and other callers can branch cleanly: skip retry on `IsContentFilter(err)`, render user-actionable "try different wording" copy, save the typically-multiple-cents per request that retrying a flagged prompt would otherwise burn. The `EventEnd.FinishReason` field is additive and safe under the v1 stability promise. Silent-RST content aborts remain unsolved at the protocol level - the caller-side "all-retries-identical" heuristic is the only signal there.
 
 ---
 
@@ -841,3 +843,141 @@ the provider (empty criteria) arrives as a JSON error envelope.
 lands here first. Not covered: `session_id`, `user`, `trace`, the TypeSafe
 compatible `/api/v1/systemone` endpoint, and decision questions as an agent
 tool.
+
+## ADR-037 - govengers standards and the module move to github.com/govengers/aikido
+
+**Date:** 01.11.2026
+**Status:** Accepted
+
+**Context.** aikido grew from v0.1 to v0.12 under `github.com/mxcd/aikido` with
+abbreviated names (`Max*`, `ToolDef`, `Env`, `FileMeta`, `ProviderPrefs`),
+positional constructors (`osfs.New(dir)`, `embedfs.NewStorage(fsys)`,
+`codex.NewTokenSource(t, f, o)`), a five-value `llm.Collect` and untyped end
+reasons. Its sibling libraries (govengers/auth, cache, livewire) live in the
+govengers organisation and follow govengers/standards with the `library`
+profile. A v1 freezes the API, so the names had to be right before it.
+
+**Decision.**
+- Module `github.com/govengers/aikido`, Go 1.26, Apache 2.0 (was MIT), v1.0.0
+  as the first release there. No aliases or shims for the old path.
+- govengers/standards `library` profile: the shared lint baseline, the
+  template justfile (unit tests with an 80 % coverage gate, e2e suite,
+  vulncheck), CI on the organisation's reusable workflow, `.govengers.yml` with
+  the waived rules and their reasons.
+- Names are spelled out (NAM-001): `Maximum*`, `ToolDefinition`,
+  `Environment`, `FileMetadata`, `ThinkingConfiguration`, `ProviderPreferences`,
+  `AfterError`, ... Components with settings are built from options (DES-001:
+  `osfs.New(&osfs.Options{...})`, `embedfs.New`,
+  `codex.NewTokenSource(&TokenSourceOptions{...})`); one component per package
+  is built by `New` (`memory.New`).
+- `llm.Collect` and `CollectWithRetry` return `llm.Response`; `agent.EndReason`
+  is a type; `tools.Result.Display` and `SessionOptions.Logger`, which nothing
+  read, are removed; the conformance suites move to `vfs/vfstest` and
+  `agent/history/historytest`.
+- Documentation follows govengers/auth: README, `llms.txt`, `docs/wiki`
+  (mirrored to the GitHub wiki on every release), `docs/migration.md`, this
+  file. The v1/v2 planning documents are deleted.
+
+**Consequences.** Every consumer migrates once ([migration](migration.md)); the
+compiler finds all renames, the behaviour changes are listed separately. From
+v1.0.0 on, changes are additive within v1. Exceptions to the standards are
+recorded in `.govengers.yml` (`NewLocalSession`, `llmtest.NewStubClient`,
+`CollectWithRetry` restarting a stream).
+
+## ADR-038 - Copy-on-write overlay and mounts as the connection to external files
+
+**Date:** 01.11.2026
+**Status:** Accepted
+
+**Context.** `vfs/osfs` (ADR-033) gave agents a real directory, but every tool
+call wrote straight to disk: a confused run edits files with no way back, and
+History cannot be rewound to match. Callers also asked to show reference
+material next to a writable workspace, and for a review step before anything
+is written. A shell or a sync mechanism would open far more than files.
+
+**Decision.**
+- `vfs/overlay`: a copy-on-write `vfs.Storage` over any base. Reads fall
+  through, writes and deletes stay in memory until `Commit`, which applies them
+  in path order and keeps the rest after a failure for a retry. `Changes` lists
+  creates, modifications and deletes against the base, `UnifiedDiff` renders
+  them (a port of the Go toolchain's anchored `internal/diff`), `Discard` drops
+  them. The overlay is `Searchable` over the merged view.
+- `vfs/mount`: several storages in one tree by path prefix, longest prefix
+  wins, `ReadOnly` per mount, `Searchable` exactly when one mount is.
+- Files are the authority: the agent loop stays non-transactional (ADR-019) and
+  History append-only. Reversibility comes from the overlay, not from undoing
+  messages.
+- CLI: `aikido agent --dir` runs on an overlay and prints the changes and the
+  diff; only `--apply` commits. `--mount name=path[:ro]` adds directories.
+
+**Consequences.** The safe default for agents on real files is an overlay over
+`vfs/osfs` plus a review. The overlay holds every written file in memory until
+`Commit`; a run that writes gigabytes needs a different approach. `Commit` is
+not atomic across files.
+
+## ADR-039 - Harness limits: tool timeout, bounded tool results, prompt caching
+
+**Date:** 01.11.2026
+**Status:** Accepted
+
+**Context.** The run was bounded by turns, a run timeout and a model-call
+timeout, but a hanging tool held the run until `RunTimeout`, a large tool
+result (a whole file, a broad grep) went to the model and into History in full
+and filled the context window, and long tool loops resent the whole
+conversation at full price on every call because no prompt-cache breakpoints
+were set unless the caller managed them.
+
+**Decision.**
+- `SessionOptions.ToolCallTimeout`, default 2 minutes, negative disables: each
+  dispatch runs under that deadline; a call that fails after it is reported to
+  the model as timed out and the run continues.
+- `SessionOptions.MaximumToolResultBytes`, default 64 KiB, negative disables:
+  the model's (and History's) copy of a longer tool result is replaced by valid
+  JSON `{"truncated", "total_bytes", "notice", "content"}` with a prefix.
+  `EventToolResult` keeps the full `Content` and the capped `ModelContent`;
+  `Drain` stores the capped copy, so a rebuilt log matches what the model saw.
+  `read_file` stops at 40 KiB so a normal read stays under the cap, and numbers
+  its lines so a cut read can continue.
+- Prompt caching on by default: every request marks the system prompt and its
+  last message with a 5 minute `CacheBreakpoint` (2 of Anthropic's 4), on the
+  request only, never in History, and not at all when the messages already
+  carry a breakpoint. `DisablePromptCaching` opts out.
+
+**Consequences.** Existing sessions behave differently without code changes
+(listed in the migration guide). The tool timeout binds only handlers that
+honour `ctx`. Caching lowers cost on Anthropic and Gemini models and is ignored
+by providers that cache on their own.
+
+## ADR-040 - Tool panics and argument checks in Dispatch
+
+**Date:** 01.11.2026
+**Status:** Accepted
+
+**Context.** Models send malformed calls: missing required fields, a string
+where an object belongs, JSON `null`. Every handler had to check this itself,
+and most did not, so the model got unhelpful errors. A handler that panicked
+(nil map, index out of range) crashed the host process, since the run goroutine
+had no recover.
+
+**Decision.**
+- `tools.Registry.Dispatch` checks before the handler runs: empty arguments
+  count as `{}`, anything else must be a JSON object that holds every field of
+  the schema's top-level `required` list (`null` counts as missing). A failure
+  is `tools.ErrInvalidArguments`, naming the tool and the field. Types, enums
+  and nested schemas are not validated: no JSON Schema validator dependency,
+  and handlers parse into typed structs anyway.
+- `Dispatch` recovers a handler panic as `tools.ErrToolPanicked`, naming the
+  tool and the panic value. In an agent run it is a tool error the model sees.
+- A panic elsewhere in a run (provider client, History) ends the run with
+  `EventError` (with the stack) and `EndReasonError`; the lock is released.
+- Error messages of `Dispatch` and the built-in tools are written for the
+  model, so it can correct the call.
+
+**Consequences.** Handlers receive arguments that at least contain their
+required fields. A bug in a tool no longer takes the process down, but it is
+also easier to miss: watch `EventToolResult` with `OK == false` in logs and
+metrics.
+
+## ADR-041 - Shell access for agents
+
+Pending: decided after the opencode benchmark (see benchmark/).
