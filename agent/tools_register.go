@@ -3,6 +3,7 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/tools"
@@ -45,7 +46,8 @@ type VFSToolOptions struct {
 // move_file when not read-only (grep, glob, edit_file, multi_edit and
 // move_file are skipped with DisableExtended). If
 // options.Storage satisfies vfs.Searchable, it also registers search. Tool
-// handlers capture options.Storage via closure (ADR-021).
+// handlers capture a copy of options (ADR-021), so changing options or its
+// AllowedExtensions afterwards does not affect them.
 //
 // It returns an error for a nil registry or Storage, and an error matching
 // tools.ErrDuplicateTool if the registry already holds one of the names.
@@ -57,6 +59,7 @@ func RegisterVFSTools(registry *tools.Registry, options *VFSToolOptions) error {
 		return errors.New("aikido/agent: RegisterVFSTools: Storage is required")
 	}
 	configured := *options
+	configured.AllowedExtensions = slices.Clone(options.AllowedExtensions)
 	if configured.MaximumFileBytes <= 0 {
 		configured.MaximumFileBytes = defaultMaximumFileBytes
 	}

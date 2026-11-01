@@ -214,6 +214,19 @@ func TestWriteFile_AllowedExtensions(t *testing.T) {
 	}
 }
 
+func TestRegisterVFSTools_CopiesAllowedExtensions(t *testing.T) {
+	allowed := []string{".md"}
+	registry := newRegistryWithVFS(t, &VFSToolOptions{Storage: vfsmem.New(), AllowedExtensions: allowed})
+	allowed[0] = ".bin"
+
+	if _, err := dispatch(t, registry, "write_file", `{"path":"x.md","content":"ok"}`); err != nil {
+		t.Errorf("md write after the caller changed its slice: %v", err)
+	}
+	if _, err := dispatch(t, registry, "write_file", `{"path":"x.bin","content":"ok"}`); !errors.Is(err, vfs.ErrPathInvalid) {
+		t.Errorf("bin write err = %v; want ErrPathInvalid", err)
+	}
+}
+
 func TestWriteFile_MaximumFileBytes(t *testing.T) {
 	storage := vfsmem.New()
 	registry := newRegistryWithVFS(t, &VFSToolOptions{
