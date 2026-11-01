@@ -319,13 +319,12 @@ func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runSt
 		result, err := s.dispatch(ctx, call, environment)
 		toolResult := buildToolResult(call, result, err)
 		toolResult.ModelContent = boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes)
+		// The caller owns what the events point to, so the conversation keeps
+		// its own copy, taken before they are sent.
+		message := llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: toolResult.ModelContent}
 		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
 		sink.send(Event{Kind: EventToolResult, ToolResult: &toolResult})
-		state.record(llm.Message{
-			Role:       llm.RoleTool,
-			ToolCallID: call.ID,
-			Content:    toolResult.ModelContent,
-		})
+		state.record(message)
 	}
 }
 

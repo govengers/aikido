@@ -817,6 +817,31 @@ func TestRun_ReleasesTheLockAfterEventEnd(t *testing.T) {
 	}
 }
 
+// Regression: the run read the published ToolCall and ToolResult again for
+// the history, so a caller changing them raced with the run (go test -race).
+func TestRun_CallerMayChangePublishedToolEvents(t *testing.T) {
+	registry := tools.NewRegistry()
+	mustRegister(t, registry, "ping", func(context.Context, json.RawMessage, tools.Environment) (tools.Result, error) {
+		return tools.Result{Content: "pong"}, nil
+	})
+	history := memory.New()
+	session := newTestSession(t, llmtest.NewStubClient(toolCallTurn("c1", "ping", "{}"), textTurn("done")), registry, history)
+	events, _ := session.Run(context.Background(), "go")
+	for event := range events {
+		switch event.Kind {
+		case EventToolCall:
+			event.ToolCall.ID = "changed"
+		case EventToolResult:
+			event.ToolResult.ModelContent = "changed"
+		default:
+		}
+	}
+	stored := storedMessages(t, history, "s-test")
+	if len(stored) != 4 || stored[2].ToolCallID != "c1" || stored[2].Content != `"pong"` {
+		t.Errorf("stored = %+v; want the tool message as the model saw it", stored)
+	}
+}
+
 func TestRun_FailedCallStillReportsItsUsage(t *testing.T) {
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventTextDelta, Text: "partial"},
