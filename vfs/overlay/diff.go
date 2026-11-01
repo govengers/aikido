@@ -18,7 +18,7 @@ const diffContextLines = 3
 // UnifiedDiff renders changes as one unified diff for human review, in the
 // order given (Changes returns them sorted by path). Files are named a/<path>
 // and b/<path>; a created file is diffed against /dev/null, a deleted one to
-// /dev/null. Content that is not valid UTF-8 or contains a NUL byte is
+// /dev/null, and an empty one shows as its header alone. Content that is not valid UTF-8 or contains a NUL byte is
 // reported as "Binary files ... differ" instead of line by line. No changes
 // yield "".
 //
@@ -42,7 +42,12 @@ func UnifiedDiff(changes []Change) string {
 			fmt.Fprintf(&out, "Binary files %s and %s differ\n", oldName, newName)
 			continue
 		}
-		out.WriteString(lineDiff(oldName, oldContent, newName, newContent))
+		fileDiff := lineDiff(oldName, oldContent, newName, newContent)
+		if fileDiff == "" && change.Kind != ChangeModify {
+			// An empty file created or deleted has no lines, only the header.
+			fileDiff = fmt.Sprintf("--- %s\n+++ %s\n", oldName, newName)
+		}
+		out.WriteString(fileDiff)
 	}
 	return out.String()
 }

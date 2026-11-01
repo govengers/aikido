@@ -24,6 +24,16 @@ func TestUnifiedDiff(t *testing.T) {
 			want:    "--- a/old.md\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n",
 		},
 		{
+			name:    "create an empty file",
+			changes: []Change{{Path: "empty.md", Kind: ChangeCreate, Content: []byte{}}},
+			want:    "--- /dev/null\n+++ b/empty.md\n",
+		},
+		{
+			name:    "delete an empty file",
+			changes: []Change{{Path: "empty.md", Kind: ChangeDelete, Previous: []byte{}}},
+			want:    "--- a/empty.md\n+++ /dev/null\n",
+		},
+		{
 			name:    "modify with context",
 			changes: []Change{{Path: "a.md", Kind: ChangeModify, Previous: []byte("1\n2\n3\n4\n5\n"), Content: []byte("1\n2\nthree\n4\n5\n")}},
 			want:    "--- a/a.md\n+++ b/a.md\n@@ -1,5 +1,5 @@\n 1\n 2\n-3\n+three\n 4\n 5\n",
