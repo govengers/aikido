@@ -185,6 +185,32 @@ func TestProcessSubstitution(t *testing.T) {
 	}, nil)
 }
 
+// TestMktemp replays the benchmark's tmp=$(mktemp) pattern (the command did
+// not exist) and GNU's forms.
+func TestMktemp(t *testing.T) {
+	shell, storage := newTestShell(t, map[string]string{"pkg/a.go": "a\nb\n"}, nil)
+	script := `tmp=$(mktemp); wc -l < pkg/a.go > "$tmp"; cat "$tmp"; rm -f "$tmp"; echo "$tmp"; d=$(mktemp -d); [ -d "$d" ] && echo "dir $d"; ` +
+		`mktemp -p /tmp job.XXXXXX; mktemp --suffix=.txt -u; mktemp -q x; echo $?; mktemp x; mktemp -t a/bXXX; mkdir w; mktemp w/tXXXX`
+	result := mustRun(t, shell, script)
+	pattern := regexp.MustCompile(`^2
+/tmp/tmp\.[A-Za-z0-9]{10}
+dir /tmp/tmp\.[A-Za-z0-9]{10}
+/tmp/job\.[A-Za-z0-9]{6}
+/tmp/tmp\.[A-Za-z0-9]{10}\.txt
+1
+mktemp: too few X's in template 'x'
+mktemp: invalid template, 'a/bXXX', contains directory separator
+w/t[A-Za-z0-9]{4}
+$`)
+	if !pattern.MatchString(result.Output) {
+		t.Fatalf("output = %q", result.Output)
+	}
+	files, err := storage.ListFiles(t.Context())
+	if err != nil || len(files) != 2 {
+		t.Fatalf("workspace files = %v, %v; want pkg/a.go and the w/ file", files, err)
+	}
+}
+
 // TestTextCommandsSeeCreatedDirectories covers the review's S28: a
 // directory made with mkdir (no file below it) read as a missing file.
 func TestTextCommandsSeeCreatedDirectories(t *testing.T) {

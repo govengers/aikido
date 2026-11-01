@@ -62,6 +62,7 @@ Every command accepts the listed GNU flags (clustered `-rf`, attached `-n5`, lon
 | `ls` | one entry per line; `-1 -a -A -l -h -R -d -t -S -r -F -p`; sorted by byte order. `-l` shows `user user` as owner and the Storage's modification time; files are `-rw-r--r--`, directories `drwxr-xr-x` |
 | `find` | start paths, then `-name -iname -path -ipath -wholename -type f/d/c (l b p s never match) -empty -maxdepth -mindepth -true -false ! -not -a -and -o -or ( ) -prune -print -print0 -delete -exec cmd {} ;` and `-exec cmd {} +`; `-H -L -P` are accepted. Walks in sorted order |
 | `mkdir` | `-p -v` |
+| `mktemp` | creates `/tmp/tmp.XXXXXXXXXX` (or `$TMPDIR`) and prints it; `-d -u -q -t -p DIR --tmpdir[=DIR] --suffix=SUFF`, `TEMPLATE` with at least three trailing `X` (relative to the working directory unless `-p`/`-t`) |
 | `rmdir` | empty directories only |
 | `rm` | `-r -R -f -v`; refuses `/`, `.` and `..` like GNU |
 | `mv` | `-f -n -v`; files and directories, into a directory, renames |

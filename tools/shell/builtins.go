@@ -19,7 +19,7 @@ func Builtins() []Command {
 	commands := []Command{
 		basenameCommand(), base64Command(), bashCommand("bash"), catCommand(), cpCommand(),
 		dateCommand(time.Now), dirnameCommand(), envCommand(), findCommand(), lsCommand(),
-		mkdirCommand(), mvCommand(), realpathCommand(), rmCommand(), rmdirCommand(),
+		mkdirCommand(), mktempCommand(), mvCommand(), realpathCommand(), rmCommand(), rmdirCommand(),
 		seqCommand(), sha256sumCommand(), bashCommand("sh"), sleepCommand(), teeCommand(),
 		touchCommand(), whichCommand(), xargsCommand(),
 	}
