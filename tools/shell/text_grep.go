@@ -448,6 +448,9 @@ type grepSearcher struct {
 	// printedLines says some line was printed, so a later non-adjacent
 	// context group needs a "--" separator.
 	printedLines bool
+	// writeErr is the first failed write; the search stops on it (a
+	// closed pipe after head -1).
+	writeErr error
 }
 
 // grepInput is one file to search: the name grep prints and how to read it.
@@ -681,6 +684,9 @@ func (g *grepSearcher) searchLines(ctx context.Context, name string, lines *line
 		if err := g.scanLine(ctx, scan, grepLine{index: index, text: text}); err != nil {
 			return false, err
 		}
+		if g.writeErr != nil {
+			return false, fmt.Errorf("write output: %w", g.writeErr)
+		}
 	}
 	g.printSummary(name, scan.selected)
 	return scan.selected > 0, nil
@@ -771,14 +777,13 @@ func (g *grepSearcher) printSelected(ctx context.Context, scan *grepScan, index 
 // suppresses the text of context lines, not their place in a group.
 func (g *grepSearcher) startLine(scan *grepScan, index int) {
 	if g.settings.context && g.printedLines && (scan.lastPrinted < 0 || index > scan.lastPrinted+1) {
-		fmt.Fprint(g.output, "--\n")
+		g.write("--\n")
 	}
 	scan.lastPrinted = index
 	g.printedLines = true
 }
 
-// printLine writes one output line with its prefixes. Write errors surface
-// at Flush.
+// printLine writes one output line with its prefixes.
 func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separator byte) {
 	g.startLine(scan, index)
 	if g.settings.onlyMatches && separator == '-' {
@@ -795,7 +800,15 @@ func (g *grepSearcher) printLine(scan *grepScan, index int, text string, separat
 	}
 	line.WriteString(text)
 	line.WriteByte(g.lineEnd())
-	fmt.Fprint(g.output, line.String())
+	g.write(line.String())
+}
+
+// write writes text to the output and keeps the first error, which ends
+// the search after the current line.
+func (g *grepSearcher) write(text string) {
+	if _, err := g.output.WriteString(text); err != nil && g.writeErr == nil {
+		g.writeErr = err
+	}
 }
 
 // printSummary prints the -c count and the -l / -L name of one file.
@@ -806,12 +819,12 @@ func (g *grepSearcher) printSummary(name string, selectedCount int) {
 	}
 	if settings.count && settings.listing == listNone {
 		if g.withFilename {
-			fmt.Fprintf(g.output, "%s%c", name, g.nameEnd(':'))
+			g.write(fmt.Sprintf("%s%c", name, g.nameEnd(':')))
 		}
-		fmt.Fprintf(g.output, "%d\n", selectedCount)
+		g.write(fmt.Sprintf("%d\n", selectedCount))
 	}
 	if settings.listing == listMatching && selectedCount > 0 || settings.listing == listNonMatching && selectedCount == 0 {
-		fmt.Fprintf(g.output, "%s%c", name, g.nameEnd('\n'))
+		g.write(fmt.Sprintf("%s%c", name, g.nameEnd('\n')))
 	}
 }
 

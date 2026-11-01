@@ -210,3 +210,11 @@ func TestGrepBeforeContextBudget(t *testing.T) {
 		{name: "huge -B", files: lines, script: `while cat f; do :; done | grep -B 1000000000 NEVER; echo $?`, want: "grep: input exceeds 67108864 bytes\n2\n"},
 	}, &Options{Timeout: time.Minute})
 }
+
+// TestGrepStopsOnWriteError: grep stops at the first failed write, not at
+// the end of its input.
+func TestGrepStopsOnWriteError(t *testing.T) {
+	runScriptCases(t, []scriptCase{
+		{name: "closed pipe", script: `seq 1 1000000000000 | grep . | head -1`, want: "1\n"},
+	}, &Options{Timeout: 20 * time.Second})
+}
