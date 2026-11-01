@@ -469,8 +469,9 @@ func runBase64(ctx context.Context, invocation *Invocation) error {
 	return err
 }
 
-// encodeBase64 streams input as base64 in lines of wrap characters (0:
-// one line); an empty input prints nothing.
+// encodeBase64 streams input as base64 in lines of wrap characters; an empty
+// input prints nothing. With wrap 0 the output is one line without a final
+// newline, like GNU's -w 0.
 func encodeBase64(output io.Writer, input io.Reader, wrap int) error {
 	wrapped := &lineWrapper{output: output, width: wrap}
 	encoder := base64.NewEncoder(base64.StdEncoding, wrapped)
@@ -479,6 +480,9 @@ func encodeBase64(output io.Writer, input io.Reader, wrap int) error {
 	}
 	if err := encoder.Close(); err != nil {
 		return fmt.Errorf("encode: %w", err)
+	}
+	if wrap == 0 {
+		return nil
 	}
 	return wrapped.end()
 }
@@ -527,7 +531,9 @@ func decodeBase64(invocation *Invocation, output *bufio.Writer, input io.Reader,
 	if ignoreGarbage {
 		input = &base64Alphabet{reader: input}
 	}
-	_, err := io.Copy(output, base64.NewDecoder(base64.StdEncoding, input))
+	// The plain writer hides bufio's ReadFrom: through it a decode error would
+	// stick to output and come back from Flush as a write error.
+	_, err := io.Copy(struct{ io.Writer }{output}, base64.NewDecoder(base64.StdEncoding, input))
 	var corrupt base64.CorruptInputError
 	if errors.As(err, &corrupt) || errors.Is(err, io.ErrUnexpectedEOF) {
 		// What was decoded comes first, as GNU writes it before the error.

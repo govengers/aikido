@@ -123,7 +123,7 @@ func TestRunawayCommandsStop(t *testing.T) {
 	}, &Options{Timeout: time.Second})
 	runScriptCases(t, []scriptCase{
 		{name: "doubling hold space", script: `echo x | sed ':a;G;h;ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
-		{name: "endless append queue", script: `echo x | sed -e ':a;a foo' -e 'ba'; echo $?`, want: "sed: input exceeds 67108864 bytes\n2\n"},
+		{name: "endless append queue", script: "echo x | sed -e ':a;a " + strings.Repeat("x", 4000) + "' -e 'ba'; echo $?", want: "sed: input exceeds 67108864 bytes\n2\n"},
 		{
 			name: "sed -i result cap", files: map[string]string{"f": "x\n"},
 			script: "sed -i '" + strings.Repeat("h;G;", 20) + strings.Repeat("p;", 40) + "' f; echo $?; cat f",

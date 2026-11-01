@@ -201,7 +201,7 @@ func TestEncodeBase64Wraps(t *testing.T) {
 	}{
 		{input: "abcde", wrap: 3, want: "YWJ\njZG\nU=\n"},
 		{input: "abcdef", wrap: 4, want: "YWJj\nZGVm\n"},
-		{input: "abcde", wrap: 0, want: "YWJjZGU=\n"},
+		{input: "abcde", wrap: 0, want: "YWJjZGU="},
 		{input: "", wrap: 76, want: ""},
 	} {
 		var output strings.Builder
