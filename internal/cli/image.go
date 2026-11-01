@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/govengers/aikido/llm"
+	"github.com/govengers/aikido/llm/openrouter"
 
 	urfavecli "github.com/urfave/cli/v3"
 )
@@ -391,13 +392,15 @@ func roundToSideStep(pixels float64) int {
 
 // hintImagesAPI annotates the provider error a model raises when it is served
 // only by the images endpoint. The id is missing from a plain /models listing,
-// so the raw 404 reads like a typo. OpenRouter's message text is the only
-// signal: the openrouter package returns no typed error to match.
+// so the raw 404 reads like a typo. OpenRouter states the reason only in the
+// message of its error envelope (*openrouter.APIError); other errors pass
+// through unchanged.
 func hintImagesAPI(err error) error {
-	if err == nil {
-		return nil
+	var apiError *openrouter.APIError
+	if !errors.As(err, &apiError) {
+		return err
 	}
-	message := strings.ToLower(err.Error())
+	message := strings.ToLower(apiError.Message)
 	if !strings.Contains(message, "/api/v1/images") && !strings.Contains(message, "output modalities") {
 		return err
 	}

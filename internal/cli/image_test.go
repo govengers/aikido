@@ -14,6 +14,7 @@ import (
 
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/llm/llmtest"
+	"github.com/govengers/aikido/llm/openrouter"
 )
 
 var fakePNG = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'x', 'x'}
@@ -629,20 +630,26 @@ func TestHintImagesAPI(t *testing.T) {
 	if hintImagesAPI(nil) != nil {
 		t.Error("nil error must stay nil")
 	}
-	plain := errors.New("openrouter: status 401: bad key")
-	if got := hintImagesAPI(plain); got.Error() != plain.Error() {
-		t.Errorf("unrelated error was rewritten: %v", got)
-	}
-	for _, message := range []string{
-		`openrouter: status 404: this model is only available via the /api/v1/images endpoint`,
-		`openrouter: status 400: model does not support the requested output modalities`,
+	for _, unrelated := range []error{
+		&openrouter.APIError{StatusCode: 401, Message: "bad key"},
+		errors.New("openrouter: status 404: only available via the /api/v1/images endpoint"), // text alone is no signal
 	} {
-		got := hintImagesAPI(errors.New(message))
-		if !strings.Contains(got.Error(), "OPENROUTER_IMAGES_API_MODELS") {
-			t.Errorf("hint missing for %q: %v", message, got)
+		if got := hintImagesAPI(unrelated); got.Error() != unrelated.Error() {
+			t.Errorf("unrelated error was rewritten: %v", got)
 		}
-		if !strings.Contains(got.Error(), message) {
-			t.Errorf("original message lost: %v", got)
+	}
+	for _, apiError := range []*openrouter.APIError{
+		{StatusCode: 404, Message: "This model is only available via the /api/v1/images endpoint"},
+		{StatusCode: 400, Message: "model does not support the requested output modalities"},
+	} {
+		wrapped := fmt.Errorf("complete: %w", apiError)
+		got := hintImagesAPI(wrapped)
+		want := wrapped.Error() + " (model may need the images endpoint: add it to OPENROUTER_IMAGES_API_MODELS)"
+		if got.Error() != want {
+			t.Errorf("hintImagesAPI = %q; want %q", got, want)
+		}
+		if !errors.Is(got, apiError) {
+			t.Errorf("hint dropped the error chain: %v", got)
 		}
 	}
 }
