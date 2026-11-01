@@ -26,6 +26,8 @@ func TestValidateWorkerOptions(t *testing.T) {
 		{"allow without shell", agentOptions{directory: "d", worker: workerOptions{direct: true, allowed: []string{"git"}}}, "--allow needs --shell"},
 		{"allow through an overlay", agentOptions{directory: "d", worker: workerOptions{shell: true, allowed: []string{"git"}}}, "--allow needs --direct"},
 		{"env without allow", agentOptions{worker: workerOptions{shell: true, environment: []string{"HOME"}}}, "--env needs --allow"},
+		// The review's S10: cd /dep ran the program in --dir/dep on disk.
+		{"allow with a mount", agentOptions{directory: "d", mounts: []mountSpec{{}}, worker: workerOptions{shell: true, direct: true, allowed: []string{"git"}}}, "--allow cannot be combined with --mount"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {

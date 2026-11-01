@@ -36,6 +36,8 @@ func validateWorkerOptions(options agentOptions) error {
 		return errors.New("--allow needs --shell: host programs run from the agent's bash tool")
 	case len(worker.allowed) > 0 && !worker.direct:
 		return errors.New("--allow needs --direct: host programs see the directory on disk, not the overlay")
+	case len(worker.allowed) > 0 && len(options.mounts) > 0:
+		return errors.New("--allow cannot be combined with --mount: host programs see --dir on disk, where the mounts do not exist")
 	case len(worker.environment) > 0 && len(worker.allowed) == 0:
 		return errors.New("--env needs --allow: the variables are passed to the allowed host programs only")
 	default:
