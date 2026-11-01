@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/tools"
@@ -329,7 +330,9 @@ func globToRegexp(glob string) (*regexp.Regexp, error) {
 		case character == ',' && inBraces:
 			expression.WriteString("|")
 		default:
-			expression.WriteString(regexp.QuoteMeta(string(character)))
+			_, size := utf8.DecodeRuneInString(glob[index:])
+			expression.WriteString(regexp.QuoteMeta(glob[index : index+size]))
+			index += size - 1
 		}
 	}
 	if inBraces {

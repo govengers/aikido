@@ -39,6 +39,9 @@ func TestGlobToRegexp(t *testing.T) {
 		{"*.{md,txt}", "x.txt", true},
 		{"*.{md,txt}", "x.json", false},
 		{"a.md", "aXmd", false},
+		{"café/*.md", "café/a.md", true},
+		{"caf?/*.md", "café/a.md", true},
+		{"{über,unter}/*.md", "über/a.md", true},
 	}
 	for _, testCase := range testCases {
 		pattern, err := globToRegexp(testCase.glob)
