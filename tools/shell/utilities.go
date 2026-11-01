@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -288,7 +289,7 @@ func runSeq(ctx context.Context, invocation *Invocation) error {
 		width = max(len(strconv.FormatInt(parsed.first, 10)), len(strconv.FormatInt(parsed.last, 10)))
 	}
 	written := false
-	for value, count := parsed.first, 0; (parsed.step > 0 && value <= parsed.last) || (parsed.step < 0 && value >= parsed.last); value, count = value+parsed.step, count+1 {
+	for value, count := parsed.first, 0; (parsed.step > 0 && value <= parsed.last) || (parsed.step < 0 && value >= parsed.last); count++ {
 		if count%1024 == 0 && ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -300,6 +301,11 @@ func runSeq(ctx context.Context, invocation *Invocation) error {
 			return err
 		}
 		written = true
+		next := value + parsed.step
+		if (next < value) != (parsed.step < 0) {
+			break // the next value would wrap around int64
+		}
+		value = next
 	}
 	if written {
 		fmt.Fprintln(invocation.Stdout)
@@ -406,10 +412,14 @@ func parseSleep(argument string) (time.Duration, error) {
 		}
 	}
 	value, err := strconv.ParseFloat(number, 64)
-	if err != nil || value < 0 {
+	if err != nil || value < 0 || math.IsNaN(value) {
 		return 0, errors.New("invalid time interval")
 	}
-	return time.Duration(value * float64(unit)), nil
+	// inf and huge values sleep until the context ends, as GNU's forever.
+	if nanoseconds := value * float64(unit); nanoseconds < math.MaxInt64 {
+		return time.Duration(nanoseconds), nil
+	}
+	return time.Duration(math.MaxInt64), nil
 }
 
 func base64Command() Command {
