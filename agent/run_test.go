@@ -650,6 +650,45 @@ func TestRunOptions_ThinkingOverridesSession(t *testing.T) {
 	}
 }
 
+// Regression: the Session kept the caller's Temperature and Thinking
+// pointers, so changing them after NewSession changed every later call.
+func TestNewSession_KeepsItsOwnTemperatureAndThinking(t *testing.T) {
+	temperature := float32(0.2)
+	thinking := llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	stub := llmtest.NewStubClient(textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Temperature = &temperature
+		options.Thinking = thinking
+	})
+	temperature = 0.9
+	*thinking = *llm.ThinkingByEffort(llm.ThinkingEffortHigh)
+	runToEnd(t, session, "hi")
+
+	request := stub.Requests()[0]
+	if *request.Temperature != 0.2 || request.Thinking.Effort() != llm.ThinkingEffortLow {
+		t.Errorf("temperature %v, effort %q; want the values at NewSession (0.2, low)", *request.Temperature, request.Thinking.Effort())
+	}
+}
+
+// Regression: a run kept the caller's RunOptions.Thinking pointer and read it
+// once it held the lock, after RunWithOptions had returned.
+func TestRunWithOptions_KeepsItsOwnThinking(t *testing.T) {
+	locker := observingLocker{runEvents: make(chan (<-chan Event), 1), queuedAtUnlock: make(chan int, 1)}
+	stub := llmtest.NewStubClient(textTurn("ok"))
+	session := newTestSession(t, stub, nil, nil, func(options *SessionOptions) {
+		options.Locker = locker
+	})
+	thinking := llm.ThinkingByEffort(llm.ThinkingEffortLow)
+	events, _ := session.RunWithOptions(context.Background(), "hi", &RunOptions{Thinking: thinking})
+	*thinking = *llm.ThinkingByEffort(llm.ThinkingEffortHigh)
+	locker.runEvents <- events
+	collectEvents(t, events)
+
+	if got := stub.Requests()[0].Thinking.Effort(); got != llm.ThinkingEffortLow {
+		t.Errorf("effort = %q; want low, the value at RunWithOptions", got)
+	}
+}
+
 func TestRun_ForwardsThinkingAndImages(t *testing.T) {
 	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventThinking, Text: "pondering"},

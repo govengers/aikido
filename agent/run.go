@@ -49,10 +49,12 @@ func (s *Session) Run(ctx context.Context, userText string) (<-chan Event, error
 }
 
 // RunWithOptions is Run with per-run options. Nil options behave like Run.
+// The run keeps its own copy of options.
 func (s *Session) RunWithOptions(ctx context.Context, userText string, options *RunOptions) (<-chan Event, error) {
 	plan := runPlan{userText: userText, persistToHistory: true}
 	if options != nil {
 		plan.options = *options
+		plan.options.Thinking = copyOf(options.Thinking)
 	}
 	events := make(chan Event, eventBufferSize)
 	go s.runLoop(ctx, events, plan)

@@ -32,7 +32,7 @@ A production session, from [agent/example_test.go](../../agent/example_test.go) 
 	})
 ```
 
-`SystemPrompt` is sent first on every model call and never written to History. `Tools` nil offers no tools (a call then fails with `tools.ErrUnknownTool` and the model sees it).
+`NewSession` copies the options, including the values `Temperature` and `Thinking` point to, and `RunWithOptions` copies its `RunOptions`, so changing them afterwards affects neither the session nor a started run. `SystemPrompt` is sent first on every model call and never written to History. `Tools` nil offers no tools (a call then fails with `tools.ErrUnknownTool` and the model sees it).
 
 ## Runs
 

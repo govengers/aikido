@@ -19,8 +19,9 @@ const (
 	defaultMaximumToolResultBytes = 64 << 10
 )
 
-// SessionOptions configure a Session. NewSession copies them, so changing
-// them afterwards does not affect the Session.
+// SessionOptions configure a Session. NewSession copies them, including the
+// values Temperature and Thinking point to, so changing them afterwards does
+// not affect the Session.
 type SessionOptions struct {
 	// ID keys the session's History and Locker entries. Required.
 	ID string
@@ -95,7 +96,19 @@ func NewSession(options *SessionOptions) (*Session, error) {
 	if err := validateSessionOptions(options); err != nil {
 		return nil, err
 	}
-	return &Session{options: withSessionDefaults(*options)}, nil
+	own := withSessionDefaults(*options)
+	own.Temperature = copyOf(own.Temperature)
+	own.Thinking = copyOf(own.Thinking)
+	return &Session{options: own}, nil
+}
+
+// copyOf returns a pointer to a copy of *value, nil for nil, so a Session
+// never shares configuration the caller can still change.
+func copyOf[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	return new(*value)
 }
 
 func validateSessionOptions(options *SessionOptions) error {
