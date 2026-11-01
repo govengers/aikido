@@ -1,0 +1,8 @@
+# shop-web staging
+namespace: shop-staging
+replicas: 1
+image:
+  tag: "4.2.1"
+resources:
+  limits:
+    memory: 256Mi

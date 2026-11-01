@@ -1,0 +1,6 @@
+# shared defaults for every stage (not a stage itself)
+namespace: billing-default
+image:
+  repository: registry.acme.example/billing/invoice-api
+service:
+  port: 8080

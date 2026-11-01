@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/govengers/aikido/llm"
@@ -74,14 +73,6 @@ func bashHandler(directory string) tools.Handler {
 		}
 		return tools.Result{Content: result}, nil
 	}
-}
-
-// killGroup puts the command in its own process group and kills the whole
-// group on cancel, so `go test` children or background jobs do not linger.
-func killGroup(command *exec.Cmd) {
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
-	command.WaitDelay = 5 * time.Second
 }
 
 // cappedBuffer keeps the first limit bytes and counts the rest.

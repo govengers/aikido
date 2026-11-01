@@ -1,0 +1,19 @@
+# shop-api staging
+namespace: shop-staging
+replicas: 1
+image:
+  tag: "2.13.4"
+env:
+  LOG_LEVEL: debug
+  CART_CACHE_MODE: redis
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+metricsExporter:
+  resources:
+    limits:
+      memory: 64Mi

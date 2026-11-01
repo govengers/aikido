@@ -1,0 +1,6 @@
+apiVersion: v2
+name: payment-gateway-mock
+description: payment gateway stand-in for staging
+type: application
+version: 0.3.0
+appVersion: "0.3.0"

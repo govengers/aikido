@@ -1,0 +1,21 @@
+# shop-api prod
+namespace: shop-prod
+replicas: 2
+image:
+  tag: "2.13.4"
+env:
+  LOG_LEVEL: info
+  CART_CACHE_MODE: redis
+db:
+  maxOpenConns: 40
+resources:
+  requests:
+    cpu: 250m
+    memory: 192Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+metricsExporter:
+  resources:
+    limits:
+      memory: 64Mi

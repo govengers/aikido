@@ -1,0 +1,137 @@
+package shell
+
+import "testing"
+
+var sedFiles = map[string]string{
+	"a.txt":      "a\nb\nc\n",
+	"b.txt":      "x\ny",
+	"w.txt":      "hello world\nfoo bar\n",
+	"script.sed": "s/a/A/\n2d\n",
+	"bad.sed":    "p\nfoo\n",
+	"d/f":        "f\n",
+}
+
+var sedCases = []textCase{
+	{name: "sed s", files: sedFiles, script: "sed s/o/0/ w.txt", stdout: "hell0 world\nf0o bar\n"},
+	{name: "sed s g", files: sedFiles, script: "sed s/o/0/g w.txt", stdout: "hell0 w0rld\nf00 bar\n"},
+	{name: "sed s number", files: sedFiles, script: "sed s/o/0/2 w.txt", stdout: "hello w0rld\nfo0 bar\n"},
+	{name: "sed s number g", stdin: "abcde\n", script: "sed 's/./X/2g'", stdout: "aXXXX\n"},
+	{name: "sed s ignore case", files: sedFiles, script: "sed s/HELLO/hi/I w.txt", stdout: "hi world\nfoo bar\n"},
+	{name: "sed s delimiter", files: sedFiles, script: "sed 's|o|/|g' w.txt", stdout: "hell/ w/rld\nf// bar\n"},
+	{name: "sed s escaped delimiter", stdin: "a/b\n", script: "sed 's/\\//|/'", stdout: "a|b\n"},
+	{name: "sed s ampersand and groups", files: sedFiles, script: "sed 's/\\(hello\\) \\(world\\)/\\2 \\1 [&]/' w.txt", stdout: "world hello [hello world]\nfoo bar\n"},
+	{name: "sed -E groups", files: sedFiles, script: "sed -E 's/(\\w+) (\\w+)/\\2 \\1/' w.txt", stdout: "world hello\nbar foo\n"},
+	{name: "sed -r alternation", files: sedFiles, script: "sed -r 's/(a|b)/[\\1]/' a.txt", stdout: "[a]\n[b]\nc\n"},
+	{name: "sed s upper case", files: sedFiles, script: "sed 's/\\w\\+/\\u&/g' w.txt", stdout: "Hello World\nFoo Bar\n"},
+	{name: "sed s U E", files: sedFiles, script: "sed 's/\\(o\\)\\(.*\\)/\\U\\1\\E\\2/' w.txt", stdout: "hellO world\nfOo bar\n"},
+	{name: "sed s empty matches", stdin: "baaac\n", script: "sed 's/a*/x/g'", stdout: "xbxcx\n"},
+	{name: "sed s newline in replacement", stdin: "a,b\n", script: "sed 's/,/\\n/'", stdout: "a\nb\n"},
+	{name: "sed s tab escapes", stdin: "a b\n", script: "sed 's/ /\\t/'", stdout: "a\tb\n"},
+	{name: "sed s bracket with delimiter", stdin: "a/b\n", script: "sed 's/[/]/X/'", stdout: "aXb\n"},
+	{name: "sed s p with -n", files: sedFiles, script: "sed -n 's/foo/FOO/p' w.txt", stdout: "FOO bar\n"},
+	{name: "sed -n p range", files: sedFiles, script: "sed -n '2,3p' a.txt", stdout: "b\nc\n"},
+	{name: "sed d", files: sedFiles, script: "sed 2d a.txt", stdout: "a\nc\n"},
+	{name: "sed last line", files: sedFiles, script: "sed -n '$p' a.txt b.txt", stdout: "y"},
+	{name: "sed -s last line", files: sedFiles, script: "sed -s -n '$p' a.txt b.txt", stdout: "c\ny"},
+	{name: "sed p without final newline", files: sedFiles, script: "sed p b.txt", stdout: "x\nx\ny\ny"},
+	{name: "sed regex address", files: sedFiles, script: "sed -n '/b/p' a.txt", stdout: "b\n"},
+	{name: "sed regex range", files: sedFiles, script: "sed -n '/a/,/b/p' a.txt", stdout: "a\nb\n"},
+	{name: "sed zero address", files: sedFiles, script: "sed -n '0,/a/p' a.txt", stdout: "a\n"},
+	{name: "sed decreasing range", files: sedFiles, script: "sed -n '2,1p' a.txt", stdout: "b\n"},
+	{name: "sed step", files: sedFiles, script: "sed -n '1~2p' a.txt", stdout: "a\nc\n"},
+	{name: "sed plus range", files: sedFiles, script: "sed -n '1,+1p' a.txt", stdout: "a\nb\n"},
+	{name: "sed multiple range", stdin: "1\n2\n3\n4\n5\n", script: "sed -n '2,~4p'", stdout: "2\n3\n4\n"},
+	{name: "sed negate", files: sedFiles, script: "sed '2!d' a.txt", stdout: "b\n"},
+	{name: "sed negate last", files: sedFiles, script: "sed '$!d' a.txt", stdout: "c\n"},
+	{name: "sed custom delimiter address", files: sedFiles, script: "sed -n '\\,b,p' a.txt", stdout: "b\n"},
+	{name: "sed I address range", files: sedFiles, script: "sed '/B/I,+1d' a.txt", stdout: "a\n"},
+	{name: "sed q", files: sedFiles, script: "sed 2q a.txt", stdout: "a\nb\n"},
+	{name: "sed q exit code", files: sedFiles, script: "sed 2q5 a.txt", stdout: "a\nb\n", exit: 5},
+	{name: "sed Q", files: sedFiles, script: "sed 2Q a.txt", stdout: "a\n"},
+	{name: "sed equals", files: sedFiles, script: "sed = b.txt", stdout: "1\nx\n2\ny"},
+	{name: "sed -n equals last", files: sedFiles, script: "sed -n '$=' a.txt", stdout: "3\n"},
+	{name: "sed a one-liner", files: sedFiles, script: "sed '1a foo' a.txt", stdout: "a\nfoo\nb\nc\n"},
+	{name: "sed a after missing newline", files: sedFiles, script: "sed '$a end' b.txt", stdout: "x\ny\nend\n"},
+	{name: "sed i backslash", files: sedFiles, script: "sed '2i\\\nnew' a.txt", stdout: "a\nnew\nb\nc\n"},
+	{name: "sed i keeps blanks after backslash", files: sedFiles, script: "sed '1i\\  foo' a.txt", stdout: "  foo\na\nb\nc\n"},
+	{name: "sed c", files: sedFiles, script: "sed '2c\\\nchanged' a.txt", stdout: "a\nchanged\nc\n"},
+	{name: "sed c range", files: sedFiles, script: "sed '1,2c\\\nchanged' a.txt", stdout: "changed\nc\n"},
+	{name: "sed join lines", files: sedFiles, script: "sed ':a;N;$!ba;s/\\n/,/g' a.txt", stdout: "a,b,c\n"},
+	{name: "sed N at end prints", files: sedFiles, script: "sed 'N;N;N' a.txt", stdout: "a\nb\nc\n"},
+	{name: "sed N pairs", files: sedFiles, script: "sed '$!N;s/\\n/-/' a.txt", stdout: "a-b\nc\n"},
+	{name: "sed N P D", stdin: "1\n2\n3\n", script: "sed '$!N;P;D'", stdout: "1\n2\n3\n"},
+	{name: "sed n", files: sedFiles, script: "sed n a.txt", stdout: "a\nb\nc\n"},
+	{name: "sed n d", files: sedFiles, script: "sed 'n;d' a.txt", stdout: "a\nc\n"},
+	{name: "sed hold reverse", files: sedFiles, script: "sed -n '1!G;h;$p' a.txt", stdout: "c\nb\na\n"},
+	{name: "sed G", files: sedFiles, script: "sed G a.txt", stdout: "a\n\nb\n\nc\n\n"},
+	{name: "sed x", files: sedFiles, script: "sed x a.txt", stdout: "\na\nb\n"},
+	{name: "sed y", files: sedFiles, script: "sed y/abc/xyz/ a.txt", stdout: "x\ny\nz\n"},
+	{name: "sed block", files: sedFiles, script: "sed -n '/b/{p;p}' a.txt", stdout: "b\nb\n"},
+	{name: "sed nested block", files: sedFiles, script: "sed -n '1,2{/b/{s/b/B/;p}}' a.txt", stdout: "B\n"},
+	{name: "sed t", files: sedFiles, script: "sed 's/a/A/;t;s/$/!/' a.txt", stdout: "A\nb!\nc!\n"},
+	{name: "sed T", files: sedFiles, script: "sed 's/a/A/;T;s/$/!/' a.txt", stdout: "A!\nb\nc\n"},
+	{name: "sed b label", files: sedFiles, script: "sed '/a/b skip;s/$/+/;:skip' a.txt", stdout: "a\nb+\nc+\n"},
+	{name: "sed z", files: sedFiles, script: "sed '2z' a.txt", stdout: "a\n\nc\n"},
+	{name: "sed F", files: sedFiles, script: "sed -n '1F' a.txt", stdout: "a.txt\n"},
+	{name: "sed comment", files: sedFiles, script: "sed '# comment\ns/a/A/' a.txt", stdout: "A\nb\nc\n"},
+	{name: "sed hash n", files: sedFiles, script: "sed '#n\n2p' a.txt", stdout: "b\n"},
+	{name: "sed multiple -e", files: sedFiles, script: "sed -e s/a/A/ -e s/b/B/ a.txt", stdout: "A\nB\nc\n"},
+	{name: "sed block across -e", files: sedFiles, script: "sed -n -e '/b/{' -e p -e '}' a.txt", stdout: "b\n"},
+	{name: "sed -f", files: sedFiles, script: "sed -f script.sed a.txt", stdout: "A\nc\n"},
+	{name: "sed blanks around command", files: sedFiles, script: "sed -n '/a/ p ; 3 p' a.txt", stdout: "a\nc\n"},
+	{name: "sed s then semicolon blank", files: sedFiles, script: "sed -n 's/a/A/ ; p' a.txt", stdout: "A\nb\nc\n"},
+	{name: "sed stdin", stdin: "one\ntwo\n", script: "sed s/o/0/g", stdout: "0ne\ntw0\n"},
+	{name: "sed -i", files: sedFiles, script: "sed -i s/a/A/ a.txt", wantFiles: map[string]string{"a.txt": "A\nb\nc\n"}},
+	{name: "sed -i backup", files: sedFiles, script: "sed -i.bak s/a/A/ a.txt", wantFiles: map[string]string{"a.txt": "A\nb\nc\n", "a.txt.bak": "a\nb\nc\n"}},
+	{name: "sed -i separate line numbers", files: sedFiles, script: "sed -i 1d a.txt b.txt", wantFiles: map[string]string{"a.txt": "b\nc\n", "b.txt": "y"}},
+	{name: "sed -i -n p", files: sedFiles, script: "sed -n -i 2p a.txt", wantFiles: map[string]string{"a.txt": "b\n"}},
+	{
+		name: "sed -i missing file", files: sedFiles, script: "sed -i s/a/A/ nope a.txt", stderr: "sed: can't read nope: No such file or directory\n", exit: 2,
+		wantFiles: map[string]string{"a.txt": "A\nb\nc\n"},
+	},
+	{name: "sed -i directory", files: sedFiles, script: "sed -i p d", stderr: "sed: couldn't edit d: not a regular file\n", exit: 4},
+	{name: "sed missing file", files: sedFiles, script: "sed 1d nope a.txt", stdout: "b\nc\n", stderr: "sed: can't read nope: No such file or directory\n", exit: 2},
+	{name: "sed directory", files: sedFiles, script: "sed p d", stderr: "sed: read error on d: Is a directory\n", exit: 4},
+	{name: "sed unterminated s", files: sedFiles, script: "sed s/a/b a.txt", stderr: "sed: -e expression #1, char 5: unterminated `s' command\n", exit: 1},
+	{name: "sed unterminated bracket", files: sedFiles, script: "sed 's/[/Q/' a.txt", stderr: "sed: -e expression #1, char 6: unterminated `s' command\n", exit: 1},
+	{name: "sed unknown command", files: sedFiles, script: "sed foo a.txt", stderr: "sed: -e expression #1, char 1: unknown command: `f'\n", exit: 1},
+	{name: "sed unmatched brace", files: sedFiles, script: "sed -n '/a/{p' a.txt", stderr: "sed: -e expression #1, char 0: unmatched `{'\n", exit: 1},
+	{name: "sed y lengths", files: sedFiles, script: "sed y/ab/c/ a.txt", stderr: "sed: -e expression #1, char 7: strings for `y' command are different lengths\n", exit: 1},
+	{name: "sed regex error", files: sedFiles, script: "sed 's/\\(/x/' a.txt", stderr: "sed: -e expression #1, char 7: Unmatched ( or \\(\n", exit: 1},
+	{name: "sed ERE unmatched close", files: sedFiles, script: "sed -E 's/)/Q/' a.txt", stderr: "sed: -e expression #1, char 6: Unmatched ) or \\)\n", exit: 1},
+	{name: "sed ERE unmatched brace", files: sedFiles, script: "sed -E 's/a{1/Q/' a.txt", stderr: "sed: -e expression #1, char 8: Unmatched \\{\n", exit: 1},
+	{name: "sed bad interval", files: sedFiles, script: "sed 's/a\\{x\\}/Q/' a.txt", stderr: "sed: -e expression #1, char 11: Invalid content of \\{\\}\n", exit: 1},
+	{name: "sed bad reference", files: sedFiles, script: "sed 's/a/\\1/' a.txt", stderr: "sed: -e expression #1, char 7: invalid reference \\1 on `s' command's RHS\n", exit: 1},
+	{name: "sed back reference in regex", files: sedFiles, script: "sed 's/\\1/Q/' a.txt", stderr: "sed: -e expression #1, char 7: Invalid back reference\n", exit: 1},
+	{name: "sed three addresses", files: sedFiles, script: "sed 1,2,3p a.txt", stderr: "sed: -e expression #1, char 4: unknown command: `,'\n", exit: 1},
+	{name: "sed missing command", files: sedFiles, script: "sed 3 a.txt", stderr: "sed: -e expression #1, char 1: missing command\n", exit: 1},
+	{name: "sed unknown s option", files: sedFiles, script: "sed s/a/b/z a.txt", stderr: "sed: -e expression #1, char 7: unknown option to `s'\n", exit: 1},
+	{name: "sed multiple g", files: sedFiles, script: "sed s/a/b/gg a.txt", stderr: "sed: -e expression #1, char 8: multiple `g' options to `s' command\n", exit: 1},
+	{name: "sed zero occurrence", files: sedFiles, script: "sed s/a/b/0 a.txt", stderr: "sed: -e expression #1, char 7: number option to `s' command may not be zero\n", exit: 1},
+	{name: "sed unexpected brace", files: sedFiles, script: "sed '}' a.txt", stderr: "sed: -e expression #1, char 1: unexpected `}'\n", exit: 1},
+	{name: "sed a without text", files: sedFiles, script: "sed a a.txt", stderr: "sed: -e expression #1, char 1: expected \\ after `a', `c' or `i'\n", exit: 1},
+	{name: "sed missing label", files: sedFiles, script: "sed 'b nowhere' a.txt", stderr: "sed: can't find label for jump to `nowhere'\n", exit: 4},
+	{name: "sed -f error location", files: sedFiles, script: "sed -f bad.sed a.txt", stderr: "sed: file bad.sed line 2: unknown command: `f'\n", exit: 1},
+	{name: "sed second expression location", files: sedFiles, script: "sed -e p -e 'k' a.txt", stderr: "sed: -e expression #2, char 1: unknown command: `k'\n", exit: 1},
+	{name: "sed -i without files", script: "sed -i s/a/b/", stderr: "sed: no input files\n", exit: 1, gnuSkip: "GNU sed 4.9 exit status for this case not validated"},
+	{name: "sed no script", script: "sed", stderr: sedUsage, exit: 1, gnuSkip: "usage text lists only the supported options"},
+	{name: "sed invalid option", script: "sed -z p", stderr: "sed: invalid option -- 'z'\n" + sedUsage, exit: 1, gnuSkip: "GNU supports -z; usage text differs"},
+	{name: "sed unsupported w", files: sedFiles, script: "sed 'w out' a.txt", stderr: "sed: -e expression #1, char 1: command `w' is not supported by this sed\n", exit: 1, gnuSkip: "w is not supported"},
+	{name: "sed pipeline", files: sedFiles, script: "grep -n o w.txt | sed 's/:.*//' | wc -l", stdout: "2\n"},
+}
+
+func TestParseReplacement(t *testing.T) {
+	parts := parseReplacement(`x\1&\n\U\\`)
+	kinds := []replacementKind{replaceLiteral, replaceGroup, replaceGroup, replaceLiteral, replaceCase, replaceLiteral}
+	if len(parts) != len(kinds) {
+		t.Fatalf("parts = %+v", parts)
+	}
+	for index, part := range parts {
+		if part.kind != kinds[index] {
+			t.Errorf("part %d = %+v, want kind %d", index, part, kinds[index])
+		}
+	}
+	if parts[3].literal != "\n" || parts[5].literal != `\` || parts[1].group != 1 || parts[2].group != 0 {
+		t.Errorf("parts = %+v", parts)
+	}
+}

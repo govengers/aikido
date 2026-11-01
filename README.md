@@ -22,7 +22,8 @@ Coding agents: start at [llms.txt](llms.txt) and [docs/wiki/Home.md](docs/wiki/H
 - Built-in file tools over any `vfs.Storage`: `read_file` (numbered lines), `write_file`, `edit_file`, `multi_edit`, `move_file`, `delete_file`, `list_files`, `grep`, `glob`, `search`, plus an optional `todo_write` plan tool.
 - File stores: memory, a directory confined by `os.Root`, any `fs.FS`; a copy-on-write overlay with change list and unified diff, mounts by path prefix; conformance suites for your own backends.
 - Images (chat and images endpoint), video jobs, text-to-speech, transcription with a correcting vocabulary, decision models; a `voice` package with speech in and out around an agent turn and an NDJSON `net/http` handler.
-- No shell, no network tools, no logging, no environment reads in the library.
+- `tools/shell`, an opt-in virtual bash over the same file stores: pipes, loops, redirects and GNU-compatible commands (grep, sed, find, xargs, jq, awk, ...) checked against GNU in CI, with no host access unless the caller allows a program (git, kubectl).
+- No host shell, no network tools, no logging, no environment reads in the library.
 
 ## Install
 
@@ -108,6 +109,7 @@ One completion, from [examples/chat-oneshot/main.go](examples/chat-oneshot/main.
 | [`llm/llmtest`](docs/wiki/Testing.md) | scripted `StubClient` |
 | [`retry`](docs/wiki/Errors-and-Retry.md) | `Do`, `Policy`, `AfterError` |
 | [`tools`](docs/wiki/Tools.md) | `Registry`, handlers, schema helpers |
+| [`tools/shell`](docs/wiki/Shell.md) | virtual bash over a `vfs.Storage`, host programs only when allowed |
 | [`agent`](docs/wiki/Agent.md) | `Session`, events, limits, `History`, `Locker`, built-in tools |
 | [`agent/history/memory`](docs/wiki/Agent.md#history-and-locker), [`agent/history/historytest`](docs/wiki/Testing.md#conformance-suites) | in-process `History`, conformance suite |
 | [`vfs`](docs/wiki/Files.md) | `Storage`, `Searchable`, `ScopedStorage`, path rules |
@@ -145,6 +147,7 @@ Each needs `OPENROUTER_API_KEY`: `go run ./examples/<name>`.
 - [chat-oneshot](examples/chat-oneshot/main.go): one completion with `llm.Collect` and its cost.
 - [agent-vfs](examples/agent-vfs/main.go): an agent writes and reads notes in an in-memory workspace.
 - [agent-overlay](examples/agent-overlay/main.go): an agent edits a real directory through an overlay; you see the diff and confirm before anything is written.
+- [loki-agent](examples/loki-agent/main.go): answers questions about logs in Grafana Loki: discovers labels, pulls lines with LogQL into an in-memory workspace, analyzes them with the virtual bash and reports findings, likely cause and next queries.
 - [chatbot](examples/chatbot/main.go): a read-only Q&A loop over an embedded markdown corpus.
 - [image-generation](examples/image-generation/main.go): an image from an image-capable model written to disk.
 - [voicebot](examples/voicebot/main.go): a push-to-talk web page over `voice.Handler`.
@@ -157,6 +160,9 @@ export OPENROUTER_API_KEY=sk-or-...   # or put it into .env in the working direc
 
 aikido chat "Give me one fun fact about Go."
 aikido agent --dir ./notes "Fix the spelling in every file."   # prints changes and diff; --apply writes
+aikido agent --dir ./notes --shell "Replace http:// with https:// in every markdown file."   # adds the virtual bash
+# an unattended worker on a repo: virtual bash, real git and kubectl, the repo's own instructions
+aikido agent --dir ~/worker --direct --shell --allow git --allow kubectl --env KUBECONFIG --system-file ~/worker/CLAUDE.md "Handle the alert: ..."
 aikido video -d 4 -r 720p -a 16:9 --audio=false "A paper boat drifts across a pond."
 aikido decide --noul 'is_bug=Is this a bug report?' 'Checkout shows a blank page after I click Pay.'
 aikido models anthropic/claude-haiku-4.5
@@ -196,7 +202,7 @@ Guarantees and known limits (no shell, path validation, `os.Root` confinement, o
 
 ## Benchmark
 
-[benchmark/](benchmark/) compares the agent with opencode on 12 coding tasks (precise edits, renames, bug fixes, mass replace, config edits, refactors, a multi-step spec) with the same models through OpenRouter. On 01.11.2026 (Claude Haiku 5.5 and GLM 5.3, 144 runs) aikido's file tools solved 47 of 48 runs, opencode 46 of 48, at a lower median time; a shell tool only paid off on shell-shaped tasks ([results](benchmark/RESULTS-2026-11-01.md), [ADR-041](docs/DECISIONS.md#adr-041---shell-access-for-agents)).
+[benchmark/](benchmark/) compares the agent with opencode on 12 coding tasks (precise edits, renames, bug fixes, mass replace, config edits, refactors, a multi-step spec) with the same models through OpenRouter. On 01.11.2026 (Claude Haiku 5.5 and GLM 5.3, 144 runs) aikido's file tools solved 47 of 48 runs, opencode 46 of 48, at a lower median time; a shell tool only paid off on shell-shaped tasks ([results](benchmark/RESULTS-2026-11-01.md), [ADR-041](docs/DECISIONS.md#adr-041---shell-access-for-agents)). The virtual shell (`tools/shell`) gets almost all of a real shell's gain on those tasks without host access. A second suite drives an ops worker through ICM workbooks with git, a fake cluster and a fake log CLI: `aikido agent --direct --shell --allow ...` solved 11 of 12 runs like Claude Code on the same repo and model, 17% faster and 36% cheaper ([results](benchmark/RESULTS-2026-11-01-v1.1.md)).
 
 ## Standards
 

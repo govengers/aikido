@@ -1,0 +1,228 @@
+package shell
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/govengers/aikido/vfs/osfs"
+)
+
+// TestScriptsCannotReachHostFiles runs a workspace on a directory next to a
+// secret host file and checks that no spelling of a path reads, lists or
+// writes outside the workspace.
+func TestScriptsCannotReachHostFiles(t *testing.T) {
+	host := t.TempDir()
+	secret := filepath.Join(host, "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOP SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(host, "workspace")
+	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	storage, err := osfs.New(&osfs.Options{Directory: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := New(&Options{Storage: storage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scripts := []string{
+		"cat " + secret,
+		"cat ../secret.txt",
+		"cat /../secret.txt",
+		"cd .. && cat secret.txt",
+		"cat < " + secret,
+		"source " + secret,
+		"while read -r line; do echo $line; done < ../secret.txt",
+		"echo " + filepath.Dir(secret) + "/*",
+		"ls -R / " + host,
+		"find / " + host,
+		"cp " + secret + " stolen.txt",
+		"base64 /etc/passwd; cat /etc/hosts",
+		"cd ~ && ls",
+		"bash -c 'cat ../secret.txt'",
+		"pwd -P",
+	}
+	for _, script := range scripts {
+		result := mustRun(t, shell, script)
+		if strings.Contains(result.Output, "TOP SECRET") || strings.Contains(result.Output, "secret.txt\n") || strings.Contains(result.Output, "root:") {
+			t.Errorf("Run(%q) reached a host file:\n%s", script, result.Output)
+		}
+	}
+	writes := []string{
+		"echo owned > " + filepath.Join(host, "written.txt"),
+		"echo owned > ../written.txt",
+		"mkdir -p ../written.txt && touch ../written.txt",
+		"echo owned | tee ../written.txt",
+		"cd / && echo owned > ../written.txt",
+	}
+	for _, script := range writes {
+		mustRun(t, shell, script)
+		if _, err := os.Stat(filepath.Join(host, "written.txt")); err == nil {
+			t.Fatalf("Run(%q) wrote a host file outside the workspace", script)
+		}
+	}
+	entries, err := os.ReadDir(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "stolen.txt" {
+			if content, _ := os.ReadFile(filepath.Clean(filepath.Join(workspace, "stolen.txt"))); strings.Contains(string(content), "SECRET") {
+				t.Fatal("cp copied the host secret into the workspace")
+			}
+		}
+	}
+}
+
+// TestHostEnvironmentIsNotInherited checks that a script sees only the
+// variables of Options.Environment.
+func TestHostEnvironmentIsNotInherited(t *testing.T) {
+	t.Setenv("AIKIDO_HOST_SECRET", "leaked")
+	shell, _ := newTestShell(t, nil, &Options{Environment: []string{"VISIBLE=yes"}})
+	result := mustRun(t, shell, `env; echo "[$AIKIDO_HOST_SECRET][$VISIBLE][$HOME]"`)
+	if strings.Contains(result.Output, "leaked") || result.Output != "HOME=/\nVISIBLE=yes\n[][yes][/]\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+// TestInterpreterTempPathsStayVirtual replays the review's FIFO bypass: the
+// interpreter opens "<its temp dir>/sh-interp-*" on the host past the open
+// handler, and TMPDIR picks that directory.
+func TestInterpreterTempPathsStayVirtual(t *testing.T) {
+	name := "sh-interp-aikido-" + strings.ReplaceAll(t.Name(), "/", "-")
+	hostTemp := os.TempDir()
+	t.Cleanup(func() {
+		_ = os.Remove(filepath.Join("/tmp", name))
+		_ = os.Remove(filepath.Join(hostTemp, name))
+	})
+	shell, _ := newTestShell(t, nil, nil)
+	script := "env TMPDIR=/tmp bash -c 'echo x >/tmp/" + name + "'; export TMPDIR=/tmp; echo y >>/tmp/" + name + "; cat /tmp/" + name +
+		"; echo z 2>/dev/null > " + filepath.Join(hostTemp, name) + "; true"
+	if result := mustRun(t, shell, script); result.Output != "x\ny\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	for _, host := range []string{filepath.Join("/tmp", name), filepath.Join(hostTemp, name)} {
+		if _, err := os.Stat(host); !os.IsNotExist(err) {
+			t.Fatalf("the script wrote the host file %s (%v)", host, err)
+		}
+	}
+}
+
+// TestInternalCommandsCannotBeForged replays the review's script: read puts
+// a NUL byte in $REPLY, and calling it named an internal command that
+// indexed missing arguments in a pipeline goroutine.
+func TestInternalCommandsCannotBeForged(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, `printf '\0failure\n' | { read -r; "$REPLY"; } | cat; printf '\0lookup\n' | { read -r; "$REPLY" x; echo $?; }`)
+	if want := "bash: line 1: : command not found\nbash: line 1: : command not found\n127\n"; result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}
+
+// TestNegativeShiftIsRefused replays the review's "shift -1 & wait": the
+// interpreter sliced the parameters with -1 in a background goroutine and
+// the panic ended the host process.
+func TestNegativeShiftIsRefused(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, "set -- a b; shift -1 & wait; builtin shift -2; command shift -3; echo $?; shift 1; echo $1")
+	want := "bash: line 1: shift: -1: shift count out of range\n" +
+		"bash: line 1: shift: -2: shift count out of range\nbash: line 1: shift: -3: shift count out of range\n1\nb\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}
+
+// TestJobCleanupRunsNoScriptCode replays the review's cleanup hang: the
+// closing wait resolved a script function named wait (an endless loop) and,
+// run as a file, ran the EXIT trap a second time.
+func TestJobCleanupRunsNoScriptCode(t *testing.T) {
+	shell, _ := newTestShell(t, nil, &Options{Timeout: 10 * time.Second})
+	started := time.Now()
+	result := mustRun(t, shell, "wait() { while :; do :; done; }; builtin() { while :; do :; done; }; trap 'echo exit-trap' EXIT; sleep 0.01 &")
+	if result.Output != "exit-trap\n" || result.ExitCode != 0 {
+		t.Fatalf("output = %q, exit %d; want one EXIT trap", result.Output, result.ExitCode)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("Run took %v", elapsed)
+	}
+}
+
+// TestOwnerTestsDoNotPanic replays the review's [ -O f ]: the interpreter
+// read the owner from fileInfo.Sys() as a *syscall.Stat_t and panicked on
+// nil, in a pipeline goroutine fatally.
+func TestOwnerTestsDoNotPanic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("-O and -G read no owner on windows")
+	}
+	shell, _ := newTestShell(t, map[string]string{"f": "x"}, nil)
+	result := mustRun(t, shell, "[ -O f ] && echo own; [ -G f ] | cat; ( [ -G f ] ) && echo group; [ -O nope ] || echo missing")
+	if result.Output != "own\ngroup\nmissing\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+// TestHideHiddenPaths replays the review's S22: the CLI hides .env and .git
+// from the file tools, but bash read .env and wrote .git/hooks/pre-commit.
+func TestHideHiddenPaths(t *testing.T) {
+	files := map[string]string{".env": "SECRET=1\n", ".git/config": "[core]\n", "_private/notes": "SECRET\n", "src/a.go": "package a\n"}
+	shell, storage := newTestShell(t, files, &Options{HideHiddenPaths: true})
+	result := mustRun(t, shell, "ls -A; cat .env; find . | sort; echo hook > .git/hooks/pre-commit; grep -r SECRET .; echo $?; echo *; cd .git; echo x > /tmp/.scratch && cat /tmp/.scratch")
+	want := "src\ncat: .env: No such file or directory\n.\n./src\n./src/a.go\nbash: line 1: .git/hooks/pre-commit: No such file or directory\n1\nsrc\n" +
+		"bash: line 1: cd: .git: No such file or directory\nx\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+	if _, _, err := storage.ReadFile(t.Context(), ".git/hooks/pre-commit"); err == nil {
+		t.Fatal("the script wrote .git/hooks/pre-commit")
+	}
+}
+
+// TestNestedShellWithoutHomeHidesTheHostHome replays the review's S7: env -i
+// bash started an interpreter without HOME, which filled in the host
+// user's home directory.
+func TestNestedShellWithoutHomeHidesTheHostHome(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, `env -i bash -c 'echo "[$HOME]"; env'; env -u HOME bash -c 'cd; pwd'; echo "$HOME"`)
+	if result.Output != "[]\nbash: line 1: cd: HOME not set\n/\n/\n" {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+// TestBraceExpansionIsBounded pins the review's S21 scripts: mvdan stops a
+// brace expansion at 16384 words (products included, also through eval),
+// so no cap of the shell's own is needed.
+func TestBraceExpansionIsBounded(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	limit := "brace expansion would exceed 16384 elements\n"
+	testCases := []struct{ script, want string }{
+		{"echo {1..999999999}", limit},
+		{"echo {a,b}{1..1000}{x,y,z}{1..100}", limit},
+		{"eval 'echo {1..999999999}'", limit},
+		{"echo {1..3} {a..c..2} {x,{y,z}}; echo {1..5000}{a,b,c} | wc -w", "1 2 3 a c x y z\n15000\n"},
+	}
+	for _, testCase := range testCases {
+		if result := mustRun(t, shell, testCase.script); result.Output != testCase.want {
+			t.Errorf("Run(%q) = %q, want %q", testCase.script, result.Output, testCase.want)
+		}
+	}
+}
+
+// TestLookupsDoNotProbeTheHost replays the review's S6 and S20: builtin
+// wrappers skipped the pwd -P rewrite (host symlinks), and command -v, type
+// and type -P searched the host PATH or stat'ed host paths.
+func TestLookupsDoNotProbeTheHost(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	script := "cd /tmp; builtin pwd -P; command pwd -P; PATH=/usr/bin:/bin; command -v curl sh ls cd f if; echo $?; f() { :; }; " +
+		"type -t f ls if nope; echo $?; type /bin/sh; command -v /usr/bin/python3; echo $?; type -P ls; echo $?; type -p ls; echo $?; type ls f"
+	want := "/tmp\n/tmp\nsh\nls\ncd\nf\nif\n1\nfunction\nbuiltin\nkeyword\n1\nbash: line 1: type: /bin/sh: not found\n1\n1\n0\nls is a shell builtin\nf is a function\n"
+	if result := mustRun(t, shell, script); result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}

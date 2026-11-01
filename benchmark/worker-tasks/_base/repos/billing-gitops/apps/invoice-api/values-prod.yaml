@@ -1,0 +1,5 @@
+# invoice-api prod
+namespace: billing-prod
+replicas: 3
+paymentGateway:
+  url: https://pay.bank.example/api

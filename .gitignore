@@ -57,3 +57,13 @@ sandbox/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Binaries of `go build ./examples/<name>` or `go build ./cmd/aikido` run in the repo root
+/aikido
+/agent-overlay
+/agent-vfs
+/chat-oneshot
+/chatbot
+/image-generation
+/loki-agent
+/voicebot

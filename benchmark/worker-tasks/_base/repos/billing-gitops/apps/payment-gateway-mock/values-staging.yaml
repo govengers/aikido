@@ -1,0 +1,3 @@
+# payment-gateway-mock: staging only
+namespace: billing-staging
+replicas: 1

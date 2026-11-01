@@ -1,0 +1,5 @@
+# billing-db staging
+namespace: billing-staging
+instances: 1
+storage:
+  size: 5Gi

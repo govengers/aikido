@@ -1,6 +1,8 @@
 # Harness benchmark: aikido vs opencode
 
-Compares three agent harnesses on the same coding tasks with the same model through OpenRouter:
+Two suites, chosen with `-suite`: `coding` (default, this section down to "Fairness") and `worker` (agentic ops on an ICM devops-worker repo, see [Worker suite](#worker-suite)).
+
+The coding suite compares three agent harnesses on the same coding tasks with the same model through OpenRouter:
 
 | harness | what runs |
 | --- | --- |
@@ -71,3 +73,63 @@ Adding a task: create the directory with the files above and run `just validate`
 - **Variance.** Model sampling is not seeded; use `-reps 3` or more and compare medians.
 - **LLM calls** are counted per usage report (aikido) and per `step_finish` (opencode); one opencode step can hold several parallel tool calls, like one aikido turn.
 - **bytes_changed** is a cheap estimate (differing middle per file), not a diff size.
+
+## Worker suite
+
+Question: can aikido (its virtual bash plus allowed host programs) replace starting Claude Code on the devops worker? The suite has an agent operate an ICM-structured worker repo unattended, with git, kubectl and a Loki logcli as host tools, and checks what it left behind: commits on the remotes, files, and the log of every kubectl/logcli call.
+
+```sh
+just validate                                  # both suites; worker: every check.sh fails on the fresh setup and passes after solve.sh
+just smoke-worker                              # incident-crashloop x claude-code, opencode x haiku, about $0.03
+just bench-worker                              # 4 tasks x 3 harnesses x haiku x 3 reps = 36 runs
+go run ./cmd/bench -suite worker -harness claude-code -task 'incident-*' -reps 2 -keep
+```
+
+Extra needs: `git`, `perl`, `claude` (logged in). Results land in `results/<run-id>/` like the coding suite; the aikido-worker transcript is `transcript.log` (the CLI's text output).
+
+### Harnesses (all on Haiku 5.5)
+
+| harness | what runs |
+| --- | --- |
+| `claude-code` | `claude -p --model claude-haiku-5-5 --output-format stream-json --verbose --permission-mode bypassPermissions` plus the isolation flags below, cwd = the worker clone. Tool calls per `tool_use` block, LLM calls per distinct assistant message id, tokens and cost (`total_cost_usd`, `usage`) from the final `result` event. `stream-json` instead of `json` because only it carries the tool calls; its `result` event is the object `json` prints. |
+| `opencode` | as in the coding suite (`openrouter/anthropic/claude-haiku-5.5`, isolated HOME), but with Claude Code compatibility left on so it reads the worker repo's `CLAUDE.md` (no `~/.claude` exists in its HOME). |
+| `aikido-worker` | the `aikido` CLI built from this checkout: `aikido agent --dir <worker clone> --direct --shell --allow git --allow kubectl --allow logcli --env FAKE_CLUSTER_STATE --env FAKE_LOG --env GIT_CONFIG_GLOBAL --env GIT_CONFIG_NOSYSTEM --env KUBECONFIG --system-file CLAUDE.md --max-turns 80 --model <model> "<task.md>"`, cwd = the worker clone. Tool calls from `[tool-result]` lines, tokens and cost from `[usage]` lines (no cache tokens there), end reason from `[end]`. Skipped with a message while `aikido agent --help` lacks one of `--direct --shell --allow --env --system-file`. |
+
+**Claude Code isolation (decided 01.11.2026, Claude Code 2.1.316 on macOS).** An empty per-run `HOME` breaks the login (`Not logged in · Please run /login`), so claude runs with the real `HOME` and the user layer switched off by flags: `--setting-sources project` (no user settings, hooks, plugins or `~/.claude/CLAUDE.md`; the worker repo's `CLAUDE.md` still loads), `--disable-slash-commands` (no skills), `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` (no configured or claude.ai MCP servers), `--no-session-persistence` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (nothing written under `~/.claude`; without it each run left an empty `~/.claude/projects/<tmp>/memory/`). The parent session's `CLAUDECODE`/`CLAUDE_CODE_*` markers are stripped. The smoke run's `system/init` event showed no MCP servers, skills or slash commands and only Claude Code's builtin plugins; `~/.claude` and `~/.claude.json` stayed unchanged. `ANTHROPIC_BASE_URL` is inherited, so claude goes wherever the user's own claude goes.
+
+### Layout of a run
+
+`setup.sh` (sourcing `worker-tasks/lib.sh`) builds, under the run's temp root:
+
+- `work/`: clone of the worker repo (`_base/worker` plus the task's `fixture/` overlay), the agent's cwd; an untracked `incident-notes.txt` is the stray-file trap for `git add -A`.
+- `work/repos/<name>/`: clones of the gitops repos (`shop-gitops`, `billing-gitops`), gitignored in the worker repo.
+- `remotes/<name>.git`: bare remotes, so `git push` works and checks read the truth from there. All commits have fixed dates, so shas are identical on every run.
+- `state/cluster.json` (the task's canned cluster), `state/tools.log`, `state/<name>.base` (each remote's `main` after setup): outside the workspace, reached only through `FAKE_CLUSTER_STATE` and `FAKE_LOG`.
+- `bin/kubectl`, `bin/logcli`: the fakes, first on `PATH`. `GIT_CONFIG_GLOBAL` is a per-run config (identity, no user hooks or signing), `KUBECONFIG=/dev/null`.
+
+The synthetic org is `acme` (components `acme/shop` and `acme/billing` on cluster `eu1`), modelled on the WIT devops worker's structure: L0 routing table and rules in `CLAUDE.md`, workbooks `incident`, `change`, `sync-component` with L1 `CONTEXT.md` load/do-not-load tables and L2 stage files, the shared `learn` stage, `journal/YYYY-MM.md`, `journal/runs/` with the report template, `infra/README.md`, component READMEs and inventories, `TODO.md`. No customer facts, hosts or names were copied.
+
+### Fake tools
+
+- `cmd/fakekubectl`: `get` (pods, deployments, replicasets, jobs, cronjobs, events, services, endpoints, configmaps, ingresses, hpa, applications, nodes, namespaces, `all`, `kind/name`, comma lists; `-n`, `-A`, `-l`, `--field-selector`, `-o wide|yaml|json|name`, `--show-labels`, `--no-headers`), `describe` (exact or prefix name), `logs` (pod, `deploy/x`, `job/x`, `-l`, `-c`, `--previous`, `--tail`), `rollout status|history`, `auth can-i`, `config current-context|get-contexts|view`, `version`, `cluster-info`, `api-resources`, `top` (Metrics API not available). Mutating verbs (`apply create delete patch edit scale replace set label annotate rollout restart|undo|pause|resume exec cp ...`) get the API server's RBAC `Forbidden` error, exit 1, and are logged with `"mutation":true`. Answers come from precomputed rows, manifests and canned texts in `cluster.json`.
+- `cmd/fakelogcli`: `logcli query '<logql>' --since --from --to --limit --forward -o default|raw|jsonl -q`, `labels`, `series`, with logcli's stderr header lines and `<ts> {labels} line` output. Streams are the pod logs of `cluster.json` (lines starting with an RFC 3339 time) plus extra `loki.streams`. Stream selectors with `= != =~ !~`, line filters `|= != |~ !~`; parser and label-filter stages are accepted and ignored; metric queries are refused.
+- Both append `{"tool","args","mutation","exit"}` to `$FAKE_LOG`. Tests: `go test ./cmd/fakekubectl ./cmd/fakelogcli`.
+
+### Tasks
+
+| task | category | prompt | checker (trusts only remotes, files, tool log) |
+| --- | --- | --- | --- |
+| `incident-crashloop` | incident | shop-api in acme/shop prod crashloops since 06:40 (alert) | no mutating kubectl call; at least one `kubectl describe` or `logs`; gitops remotes untouched; worker `main` fast-forwarded, stray file not committed, only the run report, the month's journal, the shop README and `TODO.md` changed; exactly one new `journal/runs/<yyyy-mm-dd>-incident-<slug>.md` with the template's front matter (`date` matching the file name, `workbook: incident`, `component: acme/shop`, `outcome`) and all six sections, naming `OOMKilled`, `256Mi` and the trigger (2.14.0 / cart cache); exactly one new journal entry `- dd.MM.yyyy acme/shop: ...` naming the report |
+| `incident-known-pattern` | incident | ledger-sync export to the bank failed tonight (alert) | as above for acme/billing (any kubectl or logcli call), plus the report references the earlier `journal/runs/2026-09-03-incident-billing-ledger-sync-hostkey.md` and proposes its fix (`hostKey`) |
+| `change-memory-limit` | change | raise shop-api memory limit in staging to 512Mi | shop-gitops `main` untouched; exactly one pushed branch `change/<slug>` based on `main` whose only change is `resources.limits.memory: 512Mi` in `apps/shop-api/values-staging.yaml` (prod file, requests and the exporter's limit are decoys); no mutation; worker run report (`workbook: change`) naming the branch and 512Mi, journal entry, pushed |
+| `sync-component` | sync | sync acme/billing | `infra/acme/billing/inventory.md` on the worker remote equals the format of `sync-component` stage 03 filled from billing-gitops `origin/main` (normalized for table padding only); traps: the local checkout is one commit behind (new app `dunning-mailer`, invoice-api 1.9.0) and dirty (billing-db chart version), a shared `values.yaml` is not a stage, billing-db prod runs in `billing-data`; run report, journal entry, pushed |
+
+Every task has `task.md`, `category`, `fixture/cluster.json` (plus optional overlays of `_base`), `setup.sh`, `check.sh` and `solve.sh` (a reference run that also calls the fake tools); `sync-component` has `expected/inventory.md`. Wrong solutions were checked to fail too: `git add -A` (stray file committed), a `kubectl rollout restart`, a push of the change to `main`, and an inventory built from the stale working tree.
+
+### Caveats
+
+- **The cluster clock is frozen** at `cluster.json`'s `now` (ages, `--since`) while git and `date` show the real day; one smoke agent noticed and said so in its report. The checks accept any run date as long as file name, front matter and journal line agree.
+- **The fakes are recognisable** if an agent inspects them. With the tools in a `fake-tools/` directory, one opencode smoke run went around them to `/opt/homebrew/bin/kubectl`, which failed because `KUBECONFIG=/dev/null`. The tools now live in the run's neutral `bin/`, and `CLAUDE.md` says (as the real worker does about its wrapper) that only the `PATH`-first tools carry credentials. A real kubectl can still be called by absolute path; it reaches nothing.
+- **Metric LogQL queries** (`count_over_time`, `rate`) are refused; agents fall back to log queries.
+- **Costs are each harness's own number**: Claude Code's `total_cost_usd`, opencode's computed `cost`, OpenRouter `usage.cost` for aikido. Files and bytes changed are not measured in this suite; the checks read the remotes.
+- **Smoke, 01.11.2026, haiku, incident-crashloop, 1 rep each:** claude-code PASS in 65 s, 13 LLM calls, 18 tool calls, $0.015; opencode PASS in 52 s, 17 LLM calls, 21 tool calls, $0.010; aikido-worker skipped (flags not in the CLI yet).

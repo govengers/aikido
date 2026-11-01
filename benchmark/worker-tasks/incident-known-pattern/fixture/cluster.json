@@ -1,0 +1,71 @@
+{
+  "now": "2026-11-01T06:05:00Z",
+  "context": "eu1",
+  "namespaces": {
+    "billing-prod": {
+      "pods": [
+        {
+          "row": {"NAME": "invoice-api-7c9f8d6b5-4kz2m", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "5d", "IP": "10.42.0.61", "NODE": "eu1-worker-1"},
+          "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "invoice-api-7c9f8d6b5-4kz2m", "namespace": "billing-prod", "labels": {"app": "invoice-api"}}, "spec": {"containers": [{"name": "invoice-api", "image": "registry.acme.example/billing/invoice-api:2026.10.2"}]}, "status": {"phase": "Running"}},
+          "logs": {"invoice-api": "2026-11-01T05:58:12Z INFO  POST /invoices 201 88ms\n2026-11-01T06:01:40Z INFO  GET /invoices/INV-2026-11-0042.pdf 200 412ms\n"}
+        },
+        {
+          "row": {"NAME": "invoice-api-7c9f8d6b5-9wq7t", "READY": "1/1", "STATUS": "Running", "RESTARTS": "0", "AGE": "5d", "IP": "10.42.1.44", "NODE": "eu1-worker-2"},
+          "object": {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "invoice-api-7c9f8d6b5-9wq7t", "namespace": "billing-prod", "labels": {"app": "invoice-api"}}, "spec": {"containers": [{"name": "invoice-api", "image": "registry.acme.example/billing/invoice-api:2026.10.2"}]}, "status": {"phase": "Running"}},
+          "logs": {"invoice-api": "2026-11-01T06:02:03Z INFO  POST /invoices 201 91ms\n"}
+        },
+        {
+          "row": {"NAME": "ledger-sync-29361600-8kq2d", "READY": "0/1", "STATUS": "Error", "RESTARTS": "0", "AGE": "4h5m", "IP": "10.42.1.70", "NODE": "eu1-worker-2"},
+          "object": {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": "ledger-sync-29361600-8kq2d", "namespace": "billing-prod", "creationTimestamp": "2026-11-01T02:00:00Z", "labels": {"app": "ledger-sync", "job-name": "ledger-sync-29361600"}, "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "ledger-sync-29361600", "controller": true}]},
+            "spec": {"restartPolicy": "Never", "containers": [{"name": "ledger-sync", "image": "registry.acme.example/billing/ledger-sync:3.2.1", "env": [{"name": "SFTP_HOST", "value": "sftp.bank.example"}, {"name": "SFTP_HOST_KEY", "valueFrom": {"configMapKeyRef": {"name": "ledger-sync", "key": "hostKey"}}}]}]},
+            "status": {"phase": "Failed", "containerStatuses": [{"name": "ledger-sync", "ready": false, "restartCount": 0, "state": {"terminated": {"reason": "Error", "exitCode": 2, "startedAt": "2026-11-01T02:00:03Z", "finishedAt": "2026-11-01T02:00:05Z"}}}]}
+          },
+          "describe": "Name:             ledger-sync-29361600-8kq2d\nNamespace:        billing-prod\nNode:             eu1-worker-2/10.40.0.12\nStart Time:       Sun, 01 Nov 2026 02:00:00 +0000\nLabels:           app=ledger-sync\n                  job-name=ledger-sync-29361600\nStatus:           Failed\nControlled By:    Job/ledger-sync-29361600\nContainers:\n  ledger-sync:\n    Image:          registry.acme.example/billing/ledger-sync:3.2.1\n    State:          Terminated\n      Reason:       Error\n      Exit Code:    2\n      Started:      Sun, 01 Nov 2026 02:00:03 +0000\n      Finished:     Sun, 01 Nov 2026 02:00:05 +0000\n    Ready:          False\n    Restart Count:  0\n    Environment:\n      SFTP_HOST:      sftp.bank.example\n      SFTP_HOST_KEY:  <set to the key 'hostKey' of config map 'ledger-sync'>\nEvents:\n  Type    Reason     Age   From               Message\n  ----    ------     ----  ----               -------\n  Normal  Scheduled  4h5m  default-scheduler  Successfully assigned billing-prod/ledger-sync-29361600-8kq2d to eu1-worker-2\n  Normal  Started    4h5m  kubelet            Started container ledger-sync\n",
+          "logs": {"ledger-sync": "2026-11-01T02:00:04Z INFO  ledger-sync 3.2.1 run=29361600 entries=1843 target=sftp.bank.example:22\n2026-11-01T02:00:05Z ERROR sftp: ssh: handshake failed: knownhosts: key mismatch for sftp.bank.example (got ssh-ed25519 SHA256:Wq3pN0Ld5pXcY2rH8vKf9aZtE1uB6mJ4sQ7gD2oR8yU)\n2026-11-01T02:00:05Z ERROR export aborted: 0 of 1843 ledger entries sent\n"}
+        },
+        {
+          "row": {"NAME": "ledger-sync-29361600-w5n7r", "READY": "0/1", "STATUS": "Error", "RESTARTS": "0", "AGE": "4h4m", "IP": "10.42.0.72", "NODE": "eu1-worker-1"},
+          "object": {"apiVersion": "v1", "kind": "Pod",
+            "metadata": {"name": "ledger-sync-29361600-w5n7r", "namespace": "billing-prod", "creationTimestamp": "2026-11-01T02:00:16Z", "labels": {"app": "ledger-sync", "job-name": "ledger-sync-29361600"}, "ownerReferences": [{"apiVersion": "batch/v1", "kind": "Job", "name": "ledger-sync-29361600", "controller": true}]},
+            "spec": {"restartPolicy": "Never", "containers": [{"name": "ledger-sync", "image": "registry.acme.example/billing/ledger-sync:3.2.1"}]},
+            "status": {"phase": "Failed", "containerStatuses": [{"name": "ledger-sync", "ready": false, "restartCount": 0, "state": {"terminated": {"reason": "Error", "exitCode": 2, "startedAt": "2026-11-01T02:00:18Z", "finishedAt": "2026-11-01T02:00:20Z"}}}]}
+          },
+          "logs": {"ledger-sync": "2026-11-01T02:00:19Z INFO  ledger-sync 3.2.1 run=29361600 entries=1843 target=sftp.bank.example:22\n2026-11-01T02:00:20Z ERROR sftp: ssh: handshake failed: knownhosts: key mismatch for sftp.bank.example (got ssh-ed25519 SHA256:Wq3pN0Ld5pXcY2rH8vKf9aZtE1uB6mJ4sQ7gD2oR8yU)\n2026-11-01T02:00:20Z ERROR export aborted: 0 of 1843 ledger entries sent\n"}
+        }
+      ],
+      "deployments": [
+        {"row": {"NAME": "invoice-api", "READY": "3/3", "UP-TO-DATE": "3", "AVAILABLE": "3", "AGE": "61d", "CONTAINERS": "invoice-api", "IMAGES": "registry.acme.example/billing/invoice-api:2026.10.2", "SELECTOR": "app=invoice-api"}, "object": {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "invoice-api", "namespace": "billing-prod", "labels": {"app": "invoice-api"}}}}
+      ],
+      "cronjobs": [
+        {
+          "row": {"NAME": "ledger-sync", "SCHEDULE": "0 2 * * *", "TIMEZONE": "Etc/UTC", "SUSPEND": "False", "ACTIVE": "0", "LAST SCHEDULE": "4h5m", "AGE": "61d", "CONTAINERS": "ledger-sync", "IMAGES": "registry.acme.example/billing/ledger-sync:3.2.1", "SELECTOR": "<none>"},
+          "object": {"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "ledger-sync", "namespace": "billing-prod", "labels": {"app": "ledger-sync"}}, "spec": {"schedule": "0 2 * * *", "timeZone": "Etc/UTC", "jobTemplate": {"spec": {"backoffLimit": 1}}}, "status": {"lastScheduleTime": "2026-11-01T02:00:00Z", "lastSuccessfulTime": "2026-10-31T02:00:41Z"}},
+          "describe": "Name:                          ledger-sync\nNamespace:                     billing-prod\nLabels:                        app=ledger-sync\nSchedule:                      0 2 * * *\nTimeZone:                      Etc/UTC\nConcurrency Policy:            Forbid\nSuspend:                       False\nSuccessful Job History Limit:  3\nFailed Job History Limit:      1\nPod Template:\n  Containers:\n   ledger-sync:\n    Image:      registry.acme.example/billing/ledger-sync:3.2.1\n    Environment:\n      SFTP_HOST:      sftp.bank.example\n      SFTP_HOST_KEY:  <set to the key 'hostKey' of config map 'ledger-sync'>\nLast Schedule Time:  Sun, 01 Nov 2026 02:00:00 +0000\nActive Jobs:         <none>\nEvents:\n  Type    Reason            Age   From                Message\n  ----    ------            ----  ----                -------\n  Normal  SuccessfulCreate  4h5m  cronjob-controller  Created job ledger-sync-29361600\n  Normal  SawCompletedJob   4h4m  cronjob-controller  Saw completed job: ledger-sync-29361600, status: Failed\n"
+        }
+      ],
+      "jobs": [
+        {"row": {"NAME": "ledger-sync-29360160", "STATUS": "Complete", "COMPLETIONS": "1/1", "DURATION": "41s", "AGE": "28h", "CONTAINERS": "ledger-sync", "IMAGES": "registry.acme.example/billing/ledger-sync:3.2.1", "SELECTOR": "batch.kubernetes.io/controller-uid=1b2f"}, "object": {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "ledger-sync-29360160", "namespace": "billing-prod", "labels": {"app": "ledger-sync"}}, "status": {"succeeded": 1}}},
+        {"row": {"NAME": "ledger-sync-29361600", "STATUS": "Failed", "COMPLETIONS": "0/1", "DURATION": "4h5m", "AGE": "4h5m", "CONTAINERS": "ledger-sync", "IMAGES": "registry.acme.example/billing/ledger-sync:3.2.1", "SELECTOR": "batch.kubernetes.io/controller-uid=7e9a"}, "object": {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "ledger-sync-29361600", "namespace": "billing-prod", "labels": {"app": "ledger-sync"}}, "spec": {"backoffLimit": 1}, "status": {"failed": 2, "conditions": [{"type": "Failed", "status": "True", "reason": "BackoffLimitExceeded", "message": "Job has reached the specified backoff limit"}]}},
+          "describe": "Name:             ledger-sync-29361600\nNamespace:        billing-prod\nControlled By:    CronJob/ledger-sync\nParallelism:      1\nCompletions:      1\nBackoff Limit:    1\nStart Time:       Sun, 01 Nov 2026 02:00:00 +0000\nPods Statuses:    0 Active (0 Ready) / 0 Succeeded / 2 Failed\nEvents:\n  Type     Reason                Age   From            Message\n  ----     ------                ----  ----            -------\n  Normal   SuccessfulCreate      4h5m  job-controller  Created pod: ledger-sync-29361600-8kq2d\n  Normal   SuccessfulCreate      4h4m  job-controller  Created pod: ledger-sync-29361600-w5n7r\n  Warning  BackoffLimitExceeded  4h4m  job-controller  Job has reached the specified backoff limit\n"}
+      ],
+      "events": [
+        {"row": {"LAST SEEN": "4h5m", "TYPE": "Normal", "REASON": "SuccessfulCreate", "OBJECT": "cronjob/ledger-sync", "MESSAGE": "Created job ledger-sync-29361600"}, "object": {"apiVersion": "v1", "kind": "Event", "type": "Normal", "reason": "SuccessfulCreate", "involvedObject": {"kind": "CronJob", "name": "ledger-sync"}, "message": "Created job ledger-sync-29361600"}},
+        {"row": {"LAST SEEN": "4h4m", "TYPE": "Warning", "REASON": "BackoffLimitExceeded", "OBJECT": "job/ledger-sync-29361600", "MESSAGE": "Job has reached the specified backoff limit"}, "object": {"apiVersion": "v1", "kind": "Event", "type": "Warning", "reason": "BackoffLimitExceeded", "involvedObject": {"kind": "Job", "name": "ledger-sync-29361600"}, "message": "Job has reached the specified backoff limit"}},
+        {"row": {"LAST SEEN": "4h4m", "TYPE": "Normal", "REASON": "SawCompletedJob", "OBJECT": "cronjob/ledger-sync", "MESSAGE": "Saw completed job: ledger-sync-29361600, status: Failed"}, "object": {"apiVersion": "v1", "kind": "Event", "type": "Normal", "reason": "SawCompletedJob", "involvedObject": {"kind": "CronJob", "name": "ledger-sync"}, "message": "Saw completed job: ledger-sync-29361600, status: Failed"}}
+      ]
+    }
+  },
+  "loki": {
+    "url": "http://loki.monitoring.eu1.acme.example",
+    "streams": [
+      {
+        "labels": {"namespace": "billing-prod", "app": "ledger-sync", "pod": "ledger-sync-29360160-p2x4v", "container": "ledger-sync", "cluster": "eu1"},
+        "entries": [
+          {"ts": "2026-10-31T02:00:04Z", "line": "2026-10-31T02:00:04Z INFO  ledger-sync 3.2.1 run=29360160 entries=1790 target=sftp.bank.example:22"},
+          {"ts": "2026-10-31T02:00:41Z", "line": "2026-10-31T02:00:41Z INFO  export done: 1790 of 1790 ledger entries sent"}
+        ]
+      }
+    ]
+  }
+}

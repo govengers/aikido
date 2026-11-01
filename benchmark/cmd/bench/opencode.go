@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,45 +53,14 @@ func runOpencode(ctx context.Context, run *job, observed *metrics) error {
 	command.Dir = run.WorkDirectory
 	command.Env = opencodeEnvironment(run, home)
 	killGroup(command)
-
-	stderr, err := os.Create(filepath.Join(run.LogDirectory, "stderr.log"))
-	if err != nil {
-		return err
-	}
-	defer stderr.Close()
-	transcript, err := os.Create(filepath.Join(run.LogDirectory, "transcript.jsonl"))
-	if err != nil {
-		return err
-	}
-	defer transcript.Close()
-	command.Stderr = stderr
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := command.Start(); err != nil {
-		return err
-	}
-	eventError := parseOpencodeEvents(io.TeeReader(stdout, transcript), observed)
-	waitError := command.Wait()
-	switch {
-	case ctx.Err() != nil:
-		observed.EndReason = "timeout"
-		return fmt.Errorf("timeout after %s", run.Timeout)
-	case waitError != nil:
-		observed.EndReason = "error"
-		stderrText, _ := fs.ReadFile(os.DirFS(run.LogDirectory), "stderr.log")
-		return fmt.Errorf("opencode: %w: %s", waitError, tail(string(stderrText), 300))
-	case eventError != nil:
-		observed.EndReason = "error"
-		return eventError
-	}
-	observed.EndReason = "stop"
-	return nil
+	return runStreaming(ctx, run, command, streamParser{transcript: "transcript.jsonl", parse: func(stream io.Reader) error { return parseOpencodeEvents(stream, observed) }}, observed)
 }
 
 // opencodeEnvironment is childEnv without the user's HOME, XDG and OPENCODE
-// variables, plus the Go caches, the API key and the run's own home tree.
+// variables, plus the Go caches, the API key, the run's own home tree and the
+// worker suite's environment. Coding runs disable opencode's Claude Code
+// compatibility; worker runs keep it, because the worker repo's instructions
+// are its CLAUDE.md (the isolated HOME has no ~/.claude to leak in).
 func opencodeEnvironment(run *job, home string) []string {
 	var environment []string
 	for _, variable := range childEnv(run.WorkDirectory) {
@@ -104,6 +71,10 @@ func opencodeEnvironment(run *job, home string) []string {
 		environment = append(environment, variable)
 	}
 	environment = append(environment, goEnvironmentOnce()...)
+	environment = append(environment, run.Env...)
+	if !run.Task.Worker {
+		environment = append(environment, "OPENCODE_DISABLE_CLAUDE_CODE=1")
+	}
 	return append(environment,
 		"OPENROUTER_API_KEY="+run.APIKey,
 		"HOME="+home,
@@ -111,7 +82,6 @@ func opencodeEnvironment(run *job, home string) []string {
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
 		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
-		"OPENCODE_DISABLE_CLAUDE_CODE=1",
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 	)
 }
