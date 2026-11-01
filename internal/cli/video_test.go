@@ -21,38 +21,41 @@ func TestVideoCommand_WritesClipAndThreadsFlags(t *testing.T) {
 		Video: clip, ContentType: "video/mp4", JobID: "job1",
 		Usage: &llm.Usage{CostUSD: 0.12, Duration: 48 * time.Second},
 	}})
-	dir := t.TempDir()
-	frame := filepath.Join(dir, "first.png")
-	if err := os.WriteFile(frame, fakePNG, 0o644); err != nil {
+	directory := t.TempDir()
+	frame := filepath.Join(directory, "first.png")
+	if err := os.WriteFile(frame, fakePNG, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	var out bytes.Buffer
+	var out, notices bytes.Buffer
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
-	app.Writer = &out
+	app.Writer, app.ErrWriter = &out, &notices
 	err := app.Run(context.Background(), []string{
-		"aikido", "video", "--out", dir, "-d", "4", "-r", "720p", "-a", "9:16",
+		"aikido", "video", "--out", directory, "-d", "4", "-r", "720p", "-a", "9:16",
 		"--audio=false", "--first-frame", frame, "a", "cat", "yawns",
 	})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
+	if want := "aikido: rendering with " + defaultVideoModel + ", this takes one to five minutes\n"; notices.String() != want {
+		t.Errorf("stderr = %q, want %q", notices.String(), want)
+	}
 
-	reqs := stub.VideoRequests()
-	if len(reqs) != 1 {
-		t.Fatalf("requests = %d", len(reqs))
+	requests := stub.VideoRequests()
+	if len(requests) != 1 {
+		t.Fatalf("requests = %d", len(requests))
 	}
-	r := reqs[0]
-	if r.Model != defaultVideoModel || r.Prompt != "a cat yawns" || r.DurationSeconds != 4 || r.Resolution != "720p" || r.AspectRatio != "9:16" {
-		t.Errorf("request = %+v", r)
+	request := requests[0]
+	if request.Model != defaultVideoModel || request.Prompt != "a cat yawns" || request.DurationSeconds != 4 || request.Resolution != "720p" || request.AspectRatio != "9:16" {
+		t.Errorf("request = %+v", request)
 	}
-	if r.GenerateAudio == nil || *r.GenerateAudio || r.Seed != nil {
-		t.Errorf("audio/seed = %v/%v, want false/unset", r.GenerateAudio, r.Seed)
+	if request.GenerateAudio == nil || *request.GenerateAudio || request.Seed != nil {
+		t.Errorf("audio/seed = %v/%v, want false/unset", request.GenerateAudio, request.Seed)
 	}
-	if r.FirstFrame == nil || !strings.HasPrefix(r.FirstFrame.URL, "data:image/png;base64,") || r.LastFrame != nil {
-		t.Errorf("frames = %+v / %+v", r.FirstFrame, r.LastFrame)
+	if request.FirstFrame == nil || !strings.HasPrefix(request.FirstFrame.URL, "data:image/png;base64,") || request.LastFrame != nil {
+		t.Errorf("frames = %+v / %+v", request.FirstFrame, request.LastFrame)
 	}
-	matches, _ := filepath.Glob(filepath.Join(dir, "video-*.mp4"))
+	matches, _ := filepath.Glob(filepath.Join(directory, "video-*.mp4"))
 	if len(matches) != 1 {
 		t.Fatalf("clips written = %v", matches)
 	}
@@ -73,24 +76,24 @@ func TestVideoCommand_AudioUnsetStaysNil(t *testing.T) {
 	if !errors.Is(err, llm.ErrContentFiltered) || !strings.Contains(err.Error(), "job9") {
 		t.Fatalf("err = %v, want the filter error with the job id", err)
 	}
-	if r := stub.VideoRequests()[0]; r.GenerateAudio != nil || r.DurationSeconds != 0 {
-		t.Errorf("unset flags were sent: %+v", r)
+	if request := stub.VideoRequests()[0]; request.GenerateAudio != nil || request.DurationSeconds != 0 {
+		t.Errorf("unset flags were sent: %+v", request)
 	}
 }
 
 func TestDurations(t *testing.T) {
-	cases := []struct {
-		in   []int
-		want string
+	testCases := []struct {
+		input []int
+		want  string
 	}{
 		{[]int{3, 4, 5, 6}, "3-6"},
 		{[]int{8, 4, 6}, "4,6,8"},
 		{[]int{5, 10}, "5,10"},
 		{nil, "-"},
 	}
-	for _, c := range cases {
-		if got := durations(c.in); got != c.want {
-			t.Errorf("durations(%v) = %q, want %q", c.in, got, c.want)
+	for _, testCase := range testCases {
+		if got := durations(testCase.input); got != testCase.want {
+			t.Errorf("durations(%v) = %q, want %q", testCase.input, got, testCase.want)
 		}
 	}
 }

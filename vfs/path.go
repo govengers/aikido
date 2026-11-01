@@ -8,7 +8,9 @@ import (
 // MaximumPathBytes is the structural cap on a path's byte length.
 const MaximumPathBytes = 512
 
-// ValidatePath enforces aikido-wide structural invariants on a path.
+// ValidatePath enforces aikido-wide structural invariants on a path (see
+// Storage). The returned error matches ErrPathInvalid and names the broken
+// rule.
 //
 // Caller-policy filters (max bytes, allowed extensions, hidden-path filtering)
 // live on agent.VFSToolOptions, not here.
@@ -31,8 +33,8 @@ func ValidatePath(path string) error {
 	if strings.Contains(path, "//") {
 		return fmt.Errorf("%w: double slash", ErrPathInvalid)
 	}
-	for _, seg := range strings.Split(path, "/") {
-		if seg == ".." {
+	for segment := range strings.SplitSeq(path, "/") {
+		if segment == ".." {
 			return fmt.Errorf("%w: parent-directory segment", ErrPathInvalid)
 		}
 	}

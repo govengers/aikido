@@ -13,7 +13,7 @@
 //	storage, err := embedfs.New(&embedfs.Options{FileSystem: knowledge})
 //
 // Storage satisfies vfs.Searchable with case-insensitive substring matching
-// against file contents — same syntax as vfs/memory.
+// against file contents, the same syntax as vfs/memory.
 package embedfs
 
 import (
@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/http"
 	"sort"
 	"strings"
 
@@ -55,27 +54,28 @@ func New(options *Options) (*Storage, error) {
 	return &Storage{fsys: options.FileSystem}, nil
 }
 
-// ListFiles walks the entire fs and returns every file (no directories).
-// Paths are relative; deterministic alphabetical order.
+// ListFiles walks the whole FileSystem and returns every file (no
+// directories) sorted by path. It returns ctx.Err() if ctx is done and a
+// wrapped fs error if the walk fails.
 func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var out []vfs.FileMetadata
-	err := fs.WalkDir(s.fsys, ".", func(p string, d fs.DirEntry, err error) error {
+	var files []vfs.FileMetadata
+	err := fs.WalkDir(s.fsys, ".", func(filePath string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if p == "." || d.IsDir() {
+		if entry.IsDir() {
 			return nil
 		}
-		info, err := d.Info()
+		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		out = append(out, vfs.FileMetadata{
-			Path:        p,
-			ContentType: contentTypeFor(p),
+		files = append(files, vfs.FileMetadata{
+			Path:        filePath,
+			ContentType: contentTypeFor(filePath),
 			Size:        info.Size(),
 			UpdatedAt:   info.ModTime(),
 		})
@@ -84,67 +84,70 @@ func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
 	if err != nil {
 		return nil, fmt.Errorf("aikido/vfs/embedfs: walk: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	sort.Slice(files, func(left, right int) bool { return files[left].Path < files[right].Path })
+	return files, nil
 }
 
-// ReadFile returns the bytes for the requested path.
-func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMetadata, error) {
+// ReadFile returns the content and metadata of filePath. It returns an error
+// matching vfs.ErrPathInvalid for a structurally invalid path and
+// vfs.ErrFileNotFound for a missing file. UpdatedAt is zero when the
+// FileSystem cannot stat the file.
+func (s *Storage) ReadFile(ctx context.Context, filePath string) ([]byte, vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
-	if err := vfs.ValidatePath(p); err != nil {
+	if err := vfs.ValidatePath(filePath); err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
-	data, err := fs.ReadFile(s.fsys, p)
+	content, err := fs.ReadFile(s.fsys, filePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, filePath)
+	}
 	if err != nil {
-		if isNotExist(err) {
-			return nil, vfs.FileMetadata{}, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, p)
-		}
-		return nil, vfs.FileMetadata{}, fmt.Errorf("aikido/vfs/embedfs: ReadFile: %w", err)
+		return nil, vfs.FileMetadata{}, fmt.Errorf("aikido/vfs/embedfs: read %s: %w", filePath, err)
 	}
-	info, statErr := fs.Stat(s.fsys, p)
-	meta := vfs.FileMetadata{
-		Path:        p,
-		ContentType: contentTypeFor(p),
-		Size:        int64(len(data)),
+	metadata := vfs.FileMetadata{
+		Path:        filePath,
+		ContentType: contentTypeFor(filePath),
+		Size:        int64(len(content)),
 	}
-	if statErr == nil {
-		meta.UpdatedAt = info.ModTime()
+	if info, statError := fs.Stat(s.fsys, filePath); statError == nil {
+		metadata.UpdatedAt = info.ModTime()
 	}
-	return data, meta, nil
+	return content, metadata, nil
 }
 
-// WriteFile always returns vfs.ErrReadOnly.
-func (s *Storage) WriteFile(_ context.Context, p string, _ []byte, _ string) error {
-	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+// WriteFile always returns an error matching vfs.ErrReadOnly.
+func (s *Storage) WriteFile(_ context.Context, filePath string, _ []byte, _ string) error {
+	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, filePath)
 }
 
-// DeleteFile always returns vfs.ErrReadOnly.
-func (s *Storage) DeleteFile(_ context.Context, p string) error {
-	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, p)
+// DeleteFile always returns an error matching vfs.ErrReadOnly.
+func (s *Storage) DeleteFile(_ context.Context, filePath string) error {
+	return fmt.Errorf("%w: %s", vfs.ErrReadOnly, filePath)
 }
 
-// Search performs a case-insensitive substring search against file contents.
+// Search returns the paths, sorted, of every file whose content contains query,
+// compared case-insensitively. An empty query matches every file.
 func (s *Storage) Search(ctx context.Context, query string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	q := strings.ToLower(query)
+	lowerQuery := strings.ToLower(query)
 	var hits []string
-	err := fs.WalkDir(s.fsys, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(s.fsys, ".", func(filePath string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if entry.IsDir() {
 			return nil
 		}
-		data, err := fs.ReadFile(s.fsys, p)
+		content, err := fs.ReadFile(s.fsys, filePath)
 		if err != nil {
 			return err
 		}
-		if q == "" || strings.Contains(strings.ToLower(string(data)), q) {
-			hits = append(hits, p)
+		if strings.Contains(strings.ToLower(string(content)), lowerQuery) {
+			hits = append(hits, filePath)
 		}
 		return nil
 	})
@@ -155,24 +158,15 @@ func (s *Storage) Search(ctx context.Context, query string) ([]string, error) {
 	return hits, nil
 }
 
-// SearchSyntax describes the query syntax this backend accepts.
+// SearchSyntax describes the query syntax Search accepts, for the model.
 func (s *Storage) SearchSyntax() string {
 	return "Case-insensitive substring search against file contents. " +
 		"Pass a single substring; the backend returns every file whose contents contain it."
 }
 
-func contentTypeFor(p string) string {
-	if ct := vfs.ContentTypeFor(p); ct != "" {
-		return ct
-	}
-	if ct := http.DetectContentType([]byte(p)); ct != "" {
-		return ct
+func contentTypeFor(filePath string) string {
+	if contentType := vfs.ContentTypeFor(filePath); contentType != "" {
+		return contentType
 	}
 	return "application/octet-stream"
-}
-
-func isNotExist(err error) bool {
-	return err != nil && (err == fs.ErrNotExist ||
-		strings.Contains(err.Error(), "file does not exist") ||
-		strings.Contains(err.Error(), "no such file"))
 }

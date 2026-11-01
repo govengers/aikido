@@ -12,7 +12,6 @@ package osfs
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,7 +22,8 @@ import (
 	"github.com/govengers/aikido/vfs"
 )
 
-// Storage is the local-disk implementation. Close it when done.
+// Storage is the local-disk implementation. It is safe for concurrent use;
+// Close it when done.
 type Storage struct {
 	root *os.Root
 }
@@ -37,7 +37,9 @@ type Options struct {
 	Directory string
 }
 
-// New opens options.Directory as the storage root. Close the Storage when done.
+// New opens options.Directory as the storage root. It returns an error if
+// options is nil, Directory is empty or the directory cannot be opened. Close
+// the Storage when done.
 func New(options *Options) (*Storage, error) {
 	if options == nil || options.Directory == "" {
 		return nil, errors.New("aikido/vfs/osfs: Directory is required")
@@ -49,143 +51,167 @@ func New(options *Options) (*Storage, error) {
 	return &Storage{root: root}, nil
 }
 
-// Close releases the root directory handle.
+// Close releases the root directory handle. The Storage must not be used
+// afterwards.
 func (s *Storage) Close() error { return s.root.Close() }
 
+// ListFiles walks the root and returns every regular file sorted by path,
+// skipping .git directories. An empty root yields an empty, non-nil slice.
 func (s *Storage) ListFiles(ctx context.Context) ([]vfs.FileMetadata, error) {
-	var out []vfs.FileMetadata
-	err := fs.WalkDir(s.root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+	files := []vfs.FileMetadata{}
+	err := fs.WalkDir(s.root.FS(), ".", func(filePath string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if d.Name() == ".git" {
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
 				return fs.SkipDir
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
+		if !entry.Type().IsRegular() {
 			return nil
 		}
-		info, err := d.Info()
+		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
-		out = append(out, metaFor(p, info))
+		files = append(files, metadataFor(filePath, info))
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aikido/vfs/osfs: list: %w", err)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	if out == nil {
-		out = []vfs.FileMetadata{}
-	}
-	return out, nil
+	sort.Slice(files, func(left, right int) bool { return files[left].Path < files[right].Path })
+	return files, nil
 }
 
-func (s *Storage) ReadFile(ctx context.Context, p string) ([]byte, vfs.FileMetadata, error) {
+// ReadFile returns the content and metadata of filePath. It returns an error
+// matching vfs.ErrPathInvalid for an invalid path or one that resolves outside
+// the root, and vfs.ErrFileNotFound for a missing file or anything that is not
+// a regular file.
+func (s *Storage) ReadFile(ctx context.Context, filePath string) ([]byte, vfs.FileMetadata, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
-	if err := vfs.ValidatePath(p); err != nil {
+	if err := vfs.ValidatePath(filePath); err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
-	info, err := s.regularFile(p)
+	info, err := s.regularFile(filePath)
 	if err != nil {
 		return nil, vfs.FileMetadata{}, err
 	}
-	content, err := s.root.ReadFile(p)
+	content, err := s.root.ReadFile(filePath)
 	if err != nil {
-		return nil, vfs.FileMetadata{}, mapErr(p, err)
+		return nil, vfs.FileMetadata{}, mapError(filePath, err)
 	}
-	meta := metaFor(p, info)
-	meta.Size = int64(len(content))
-	return content, meta, nil
+	metadata := metadataFor(filePath, info)
+	metadata.Size = int64(len(content))
+	return content, metadata, nil
 }
 
-func (s *Storage) WriteFile(ctx context.Context, p string, content []byte, _ string) error {
+// WriteFile atomically replaces filePath with content, creating parent
+// directories as needed. The content type is ignored (see the package
+// comment). It returns an error matching vfs.ErrPathInvalid for an invalid
+// path.
+func (s *Storage) WriteFile(ctx context.Context, filePath string, content []byte, _ string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := vfs.ValidatePath(p); err != nil {
+	if err := vfs.ValidatePath(filePath); err != nil {
 		return err
 	}
-	dir := path.Dir(p)
-	if dir != "." {
-		if err := s.root.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("aikido/vfs/osfs: mkdir %q: %w", dir, err)
+	directory := path.Dir(filePath)
+	if directory != "." {
+		if err := s.root.MkdirAll(directory, 0o755); err != nil {
+			return fmt.Errorf("aikido/vfs/osfs: mkdir %q: %w", directory, err)
 		}
 	}
-	var suffix [8]byte
-	_, _ = rand.Read(suffix[:])
-	tmp := path.Join(dir, "."+path.Base(p)+".tmp-"+hex.EncodeToString(suffix[:]))
-	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", p, err)
+	temporaryPath := path.Join(directory, "."+path.Base(filePath)+".tmp-"+rand.Text())
+	if err := s.writeNewFile(temporaryPath, content); err != nil {
+		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", filePath, err)
 	}
-	_, werr := f.Write(content)
-	cerr := f.Close()
-	if err := errors.Join(werr, cerr); err != nil {
-		_ = s.root.Remove(tmp)
-		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", p, err)
-	}
-	if err := s.root.Rename(tmp, p); err != nil {
-		_ = s.root.Remove(tmp)
-		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", p, err)
+	if err := s.root.Rename(temporaryPath, filePath); err != nil {
+		_ = s.root.Remove(temporaryPath) // best-effort cleanup; the rename error is what the caller needs
+		return fmt.Errorf("aikido/vfs/osfs: write %q: %w", filePath, err)
 	}
 	return nil
 }
 
-func (s *Storage) DeleteFile(ctx context.Context, p string) error {
+// DeleteFile removes filePath. It returns an error matching vfs.ErrPathInvalid
+// for an invalid path and vfs.ErrFileNotFound for a missing file or anything
+// that is not a regular file.
+func (s *Storage) DeleteFile(ctx context.Context, filePath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := vfs.ValidatePath(p); err != nil {
+	if err := vfs.ValidatePath(filePath); err != nil {
 		return err
 	}
-	if _, err := s.regularFile(p); err != nil {
+	if _, err := s.regularFile(filePath); err != nil {
 		return err
 	}
-	if err := s.root.Remove(p); err != nil {
-		return mapErr(p, err)
+	if err := s.root.Remove(filePath); err != nil {
+		return mapError(filePath, err)
 	}
 	return nil
 }
 
-// regularFile stats p (following symlinks inside the root) and reports
-// anything that is not a regular file as not found.
-func (s *Storage) regularFile(p string) (fs.FileInfo, error) {
-	info, err := s.root.Stat(p)
+// writeNewFile creates filePath, which must not exist yet, and writes content;
+// on failure it removes the partial file.
+func (s *Storage) writeNewFile(filePath string, content []byte) error {
+	file, err := s.root.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return nil, mapErr(p, err)
+		return err
+	}
+	_, writeError := file.Write(content)
+	if err := errors.Join(writeError, file.Close()); err != nil {
+		_ = s.root.Remove(filePath) // best-effort cleanup; the write error is what the caller needs
+		return err
+	}
+	return nil
+}
+
+// regularFile stats filePath (following symlinks inside the root) and reports
+// anything that is not a regular file as not found.
+func (s *Storage) regularFile(filePath string) (fs.FileInfo, error) {
+	info, err := s.root.Stat(filePath)
+	if err != nil {
+		return nil, mapError(filePath, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, p)
+		return nil, fmt.Errorf("%w: %s", vfs.ErrFileNotFound, filePath)
 	}
 	return info, nil
 }
 
-func metaFor(p string, info fs.FileInfo) vfs.FileMetadata {
-	ct := vfs.ContentTypeFor(p)
-	if ct == "" {
-		ct = "application/octet-stream"
+func metadataFor(filePath string, info fs.FileInfo) vfs.FileMetadata {
+	contentType := vfs.ContentTypeFor(filePath)
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
-	return vfs.FileMetadata{Path: p, ContentType: ct, Size: info.Size(), UpdatedAt: info.ModTime()}
+	return vfs.FileMetadata{Path: filePath, ContentType: contentType, Size: info.Size(), UpdatedAt: info.ModTime()}
 }
 
-// mapErr turns not-exist into vfs.ErrFileNotFound and a root escape into
+// mapError turns not-exist into vfs.ErrFileNotFound and a root escape into
 // vfs.ErrPathInvalid; anything else is wrapped as is.
-func mapErr(p string, err error) error {
+func mapError(filePath string, err error) error {
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%w: %s", vfs.ErrFileNotFound, p)
+		return fmt.Errorf("%w: %s", vfs.ErrFileNotFound, filePath)
 	}
-	var pe *fs.PathError
-	if errors.As(err, &pe) && pe.Err.Error() == "path escapes from parent" {
-		return fmt.Errorf("%w: %s escapes the storage root", vfs.ErrPathInvalid, p)
+	if escapesRoot(err) {
+		return fmt.Errorf("%w: %s escapes the storage root", vfs.ErrPathInvalid, filePath)
 	}
-	return fmt.Errorf("aikido/vfs/osfs: %s: %w", p, err)
+	return fmt.Errorf("aikido/vfs/osfs: %s: %w", filePath, err)
+}
+
+// escapesRoot reports whether err is os.Root's refusal to leave the root. The
+// os package keeps that error unexported (errPathEscapes), so its message is
+// the only handle; TestSymlinkEscapeRejected fails if a Go release changes it.
+func escapesRoot(err error) bool {
+	var pathError *fs.PathError
+	return errors.As(err, &pathError) && pathError.Err.Error() == "path escapes from parent"
 }
