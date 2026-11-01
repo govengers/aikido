@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/govengers/aikido/llm"
 
@@ -22,53 +21,37 @@ func chatCommand(factory ClientFactory) *urfavecli.Command {
 			&urfavecli.StringFlag{Name: "system", Aliases: []string{"s"}, Usage: "System prompt"},
 			&urfavecli.IntFlag{Name: "max-tokens", Value: 512, Usage: "Max output tokens"},
 			&urfavecli.FloatFlag{Name: "temperature", Aliases: []string{"t"}, Value: -1, Usage: "Sampling temperature; <0 leaves provider default"},
-			providerFlag,
+			newProviderFlag(),
 		},
-		Action: func(ctx context.Context, cmd *urfavecli.Command) error {
+		Action: func(ctx context.Context, command *urfavecli.Command) error {
 			client, err := factory()
 			if err != nil {
 				return err
 			}
-			return runChat(withProviderFlag(ctx, cmd), chatOpts{
-				model:       cmd.String("model"),
-				system:      cmd.String("system"),
-				maxTokens:   int(cmd.Int("max-tokens")),
-				temperature: cmd.Float("temperature"),
-				prompt:      strings.TrimSpace(strings.Join(cmd.Args().Slice(), " ")),
-			}, resolveWriter(cmd), client)
+			return runChat(withProviderFlag(ctx, command), chatOptions{
+				model:         command.String("model"),
+				system:        command.String("system"),
+				maximumTokens: command.Int("max-tokens"),
+				temperature:   command.Float("temperature"),
+				prompt:        promptFromArguments(command),
+			}, resolveWriter(command), client)
 		},
 	}
 }
 
-type chatOpts struct {
-	model       string
-	system      string
-	prompt      string
-	maxTokens   int
-	temperature float64
+type chatOptions struct {
+	model         string
+	system        string
+	prompt        string
+	maximumTokens int
+	temperature   float64 // negative leaves the provider default
 }
 
-func runChat(ctx context.Context, o chatOpts, out io.Writer, client llm.Client) error {
-	if o.prompt == "" {
+func runChat(ctx context.Context, options chatOptions, out io.Writer, client llm.Client) error {
+	if options.prompt == "" {
 		return errors.New("missing prompt: aikido chat [flags] <prompt...>")
 	}
-
-	msgs := make([]llm.Message, 0, 2)
-	if o.system != "" {
-		msgs = append(msgs, llm.Message{Role: llm.RoleSystem, Content: o.system})
-	}
-	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: o.prompt})
-
-	req := llm.Request{
-		Model:         o.model,
-		Messages:      msgs,
-		MaximumTokens: o.maxTokens,
-	}
-	if o.temperature >= 0 {
-		req.Temperature = new(float32(o.temperature))
-	}
-
-	response, err := llm.Collect(ctx, client, req)
+	response, err := llm.Collect(ctx, client, chatRequest(options))
 	if err != nil {
 		return err
 	}
@@ -77,4 +60,21 @@ func runChat(ctx context.Context, o chatOpts, out io.Writer, client llm.Client) 
 		fmt.Fprintf(out, "\n%s\n", formatUsage(response.Usage))
 	}
 	return nil
+}
+
+func chatRequest(options chatOptions) llm.Request {
+	messages := make([]llm.Message, 0, 2)
+	if options.system != "" {
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: options.system})
+	}
+	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: options.prompt})
+	request := llm.Request{
+		Model:         options.model,
+		Messages:      messages,
+		MaximumTokens: options.maximumTokens,
+	}
+	if options.temperature >= 0 {
+		request.Temperature = new(float32(options.temperature))
+	}
+	return request
 }

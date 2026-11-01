@@ -12,12 +12,12 @@ import (
 func TestRunSkillInstall_WritesSkillFile(t *testing.T) {
 	root := t.TempDir()
 	var out bytes.Buffer
-	if err := runSkillInstall(skillInstallOpts{dir: root}, &out); err != nil {
+	if err := runSkillInstall(skillInstallOptions{directory: root}, &out); err != nil {
 		t.Fatalf("runSkillInstall: %v", err)
 	}
 
 	target := filepath.Join(root, skillName, "SKILL.md")
-	data, err := os.ReadFile(target)
+	data, err := os.ReadFile(target) //nolint:gosec // G304: the test reads its own temp output
 	if err != nil {
 		t.Fatalf("read installed skill: %v", err)
 	}
@@ -36,11 +36,11 @@ func TestRunSkillInstall_WritesSkillFile(t *testing.T) {
 func TestRunSkillInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 	root := t.TempDir()
 	var out bytes.Buffer
-	if err := runSkillInstall(skillInstallOpts{dir: root}, &out); err != nil {
+	if err := runSkillInstall(skillInstallOptions{directory: root}, &out); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 
-	err := runSkillInstall(skillInstallOpts{dir: root}, &out)
+	err := runSkillInstall(skillInstallOptions{directory: root}, &out)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected 'already exists' error, got %v", err)
 	}
@@ -49,18 +49,21 @@ func TestRunSkillInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 func TestRunSkillInstall_ForceOverwrites(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, skillName, "SKILL.md")
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(target, []byte("stale"), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	var out bytes.Buffer
-	if err := runSkillInstall(skillInstallOpts{dir: root, force: true}, &out); err != nil {
+	if err := runSkillInstall(skillInstallOptions{directory: root, force: true}, &out); err != nil {
 		t.Fatalf("force install: %v", err)
 	}
-	data, _ := os.ReadFile(target)
+	data, err := os.ReadFile(target) //nolint:gosec // G304: the test reads its own temp output
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(data) == "stale" {
 		t.Errorf("force did not overwrite the existing file")
 	}
@@ -69,7 +72,7 @@ func TestRunSkillInstall_ForceOverwrites(t *testing.T) {
 func TestRunSkillInstall_PrintDoesNotWriteFiles(t *testing.T) {
 	root := t.TempDir()
 	var out bytes.Buffer
-	if err := runSkillInstall(skillInstallOpts{dir: root, print: true}, &out); err != nil {
+	if err := runSkillInstall(skillInstallOptions{directory: root, print: true}, &out); err != nil {
 		t.Fatalf("print: %v", err)
 	}
 	if !strings.Contains(out.String(), "name: "+skillName) {
@@ -82,7 +85,7 @@ func TestRunSkillInstall_PrintDoesNotWriteFiles(t *testing.T) {
 
 func TestSkillsRoot(t *testing.T) {
 	if got, err := skillsRoot("user", "/explicit/override"); err != nil || got != "/explicit/override" {
-		t.Errorf("dir override = (%q, %v), want /explicit/override", got, err)
+		t.Errorf("directory override = (%q, %v), want /explicit/override", got, err)
 	}
 	if got, err := skillsRoot("project", ""); err != nil || got != filepath.Join(".claude", "skills") {
 		t.Errorf("project scope = (%q, %v)", got, err)
@@ -96,10 +99,10 @@ func TestSkillInstallCommand_WiredIntoApp(t *testing.T) {
 	root := t.TempDir()
 	// The ClientFactory is never invoked: skill install needs no LLM client.
 	app := NewApp(nil)
-	var buf bytes.Buffer
-	app.Writer = &buf
-	args := []string{"aikido", "skill", "install", "--dir", root}
-	if err := app.Run(context.Background(), args); err != nil {
+	var buffer bytes.Buffer
+	app.Writer = &buffer
+	arguments := []string{"aikido", "skill", "install", "--dir", root}
+	if err := app.Run(context.Background(), arguments); err != nil {
 		t.Fatalf("app.Run skill install: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, skillName, "SKILL.md")); err != nil {
