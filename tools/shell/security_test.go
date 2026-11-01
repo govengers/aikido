@@ -123,3 +123,16 @@ func TestInternalCommandsCannotBeForged(t *testing.T) {
 		t.Fatalf("output = %q, want %q", result.Output, want)
 	}
 }
+
+// TestNegativeShiftIsRefused replays the review's "shift -1 & wait": the
+// interpreter sliced the parameters with -1 in a background goroutine and
+// the panic ended the host process.
+func TestNegativeShiftIsRefused(t *testing.T) {
+	shell, _ := newTestShell(t, nil, nil)
+	result := mustRun(t, shell, "set -- a b; shift -1 & wait; builtin shift -2; command shift -3; echo $?; shift 1; echo $1")
+	want := "bash: line 1: shift: -1: shift count out of range\n" +
+		"bash: line 1: shift: -2: shift count out of range\nbash: line 1: shift: -3: shift count out of range\n1\nb\n"
+	if result.Output != want {
+		t.Fatalf("output = %q, want %q", result.Output, want)
+	}
+}

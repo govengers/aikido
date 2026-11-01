@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -309,25 +310,63 @@ func (s *session) rewrite(ctx context.Context, arguments []string) ([]string, er
 		name, _, _ := strings.Cut(arguments[0], "\x00")
 		return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + name + ": command not found", strconv.Itoa(statusNotFound)}, nil
 	}
+	wrappers := builtinWrappers(arguments)
+	if wrappers == len(arguments) {
+		return arguments, nil
+	}
+	rewritten := s.rewriteCall(ctx, handler, arguments[wrappers:])
+	if rewritten[0] == internalFailure || rewritten[0] == internalLookup {
+		return rewritten, nil
+	}
+	return append(slices.Clone(arguments[:wrappers]), rewritten...), nil
+}
+
+// builtinWrappers counts the leading "builtin" and "command" words (command
+// without an option) that run the builtin after them, so "builtin pwd -P"
+// is rewritten like "pwd -P".
+func builtinWrappers(arguments []string) int {
+	index := 0
+	for index < len(arguments) {
+		switch {
+		case arguments[index] == "builtin":
+		case arguments[index] == "command" && index+1 < len(arguments) && !strings.HasPrefix(arguments[index+1], "-"):
+		default:
+			return index
+		}
+		index++
+	}
+	return index
+}
+
+// rewriteCall rewrites one builtin call without its wrappers.
+func (s *session) rewriteCall(ctx context.Context, handler interp.HandlerContext, arguments []string) []string {
 	switch arguments[0] {
 	case "cd":
-		return s.rewriteChangeDirectory(ctx, handler, arguments), nil
+		return s.rewriteChangeDirectory(ctx, handler, arguments)
 	case "source", ".":
 		if len(arguments) > 1 && !strings.Contains(arguments[1], "/") {
 			// Without a slash the builtin searches PATH on the host; the
 			// virtual shell sources from the working directory.
 			arguments = append([]string{arguments[0], "./" + arguments[1]}, arguments[2:]...)
 		}
-		return s.rewriteSource(ctx, handler, arguments), nil
+		return s.rewriteSource(ctx, handler, arguments)
 	case "eval", "trap":
-		return s.rewriteScriptArguments(arguments), nil
+		return s.rewriteScriptArguments(arguments)
 	case "pwd":
 		// -P resolves symlinks on the host; workspace paths have none.
-		return []string{"pwd"}, nil
+		return []string{"pwd"}
 	case "command", "type":
-		return s.rewriteLookup(arguments), nil
+		return s.rewriteLookup(arguments)
+	case "shift":
+		// The interpreter slices the parameters with a negative count and
+		// panics, in a goroutine for "shift -1 &".
+		if len(arguments) == 2 {
+			if count, err := strconv.Atoi(arguments[1]); err == nil && count < 0 {
+				return []string{internalFailure, "bash: " + linePrefix(handler.Pos) + "shift: " + arguments[1] + ": shift count out of range", "1"}
+			}
+		}
 	}
-	return arguments, nil
+	return arguments
 }
 
 // rewriteChangeDirectory checks cd's target first, so a failure reads like
