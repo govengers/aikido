@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -56,6 +57,9 @@ const (
 //
 // start is when the call began; the usage event carries the provider and the
 // call's timing (llm.Usage.SetTiming) measured from it.
+//
+// A panic while decoding (CON-001) surfaces as EventError before the
+// EventEnd instead of crashing the consumer's process.
 func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, start time.Time) {
 	decoder := &streamDecoder{
 		send:      func(event llm.Event) { emit(ctx, out, event) },
@@ -63,6 +67,7 @@ func processStream(ctx context.Context, body io.Reader, out chan<- llm.Event, st
 		start:     start,
 	}
 	defer decoder.end()
+	defer decoder.recoverPanic()
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, initialLineBufferSize), maximumLineSize)
@@ -250,6 +255,16 @@ func (d *streamDecoder) handleReadError(err error) {
 		return
 	}
 	d.fail(fmt.Errorf("openrouter mid-stream read: %v: %w", err, llm.ErrServerError)) //nolint:errorlint // LIB-010: like transportError, the read error is text, ErrServerError the contract
+}
+
+// recoverPanic must be deferred directly: recover only works there.
+func (d *streamDecoder) recoverPanic() {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	d.finishReason = finishReasonError
+	d.send(llm.Event{Kind: llm.EventError, Err: fmt.Errorf("openrouter: stream decoder panic: %v\n%s", recovered, debug.Stack())})
 }
 
 // end emits the closing EventEnd.
