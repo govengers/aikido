@@ -248,6 +248,26 @@ func TestCommit_CaseOnlyRenameOnDisk(t *testing.T) {
 	}
 }
 
+// Regression: a case-variant delete turned an unchanged rewrite into a
+// create, also on a case-sensitive base that holds both spellings, so
+// Changes showed the whole file as added and Commit rewrote it.
+func TestChanges_CaseVariantDeleteOnCaseSensitiveBase(t *testing.T) {
+	base := baseWith(t, map[string]string{"Readme.md": "old\n", "README.md": "hello\n"})
+	storage := newOverlay(t, base)
+	deleteFile(t, storage, "Readme.md")
+	write(t, storage, "README.md", "hello\n")
+	if got := describe(changesOf(t, storage)); !slices.Equal(got, []string{"delete Readme.md"}) {
+		t.Errorf("Changes = %v; want [delete Readme.md]", got)
+	}
+
+	failing := newOverlay(t, &failingStorage{Storage: base, failList: true})
+	deleteFile(t, failing, "Readme.md")
+	write(t, failing, "README.md", "hello\n")
+	if _, err := failing.Changes(context.Background()); !errors.Is(err, errInjected) {
+		t.Errorf("Changes over a failing base listing err = %v; want the injected error", err)
+	}
+}
+
 // renameCaseOnly does what move_file does for Readme.md -> README.md: write
 // the destination, then delete the source.
 func renameCaseOnly(t *testing.T, storage *overlay.Storage) {

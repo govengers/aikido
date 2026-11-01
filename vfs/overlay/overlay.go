@@ -231,10 +231,12 @@ func (s *Storage) SearchSyntax() string {
 // bytes, and a delete of a file the base does not have (such as a file
 // created and deleted again in the overlay). A write of the base's bytes is
 // listed as ChangeCreate when a pending delete names the same path in another
-// case (a case-only rename): on a case-insensitive base the delete removes
-// the file the write puts back. Content types are not compared, since
+// case (a case-only rename) and the base does not list the write's exact
+// path: on a case-insensitive base the delete removes the file the write puts
+// back. A base that lists both spellings is case-sensitive, and there the
+// write stays no change. Content types are not compared, since
 // backends such as vfs/osfs do not store them. Errors of the base's ReadFile
-// other than vfs.ErrFileNotFound are returned wrapped.
+// other than vfs.ErrFileNotFound, and of its ListFiles, are returned wrapped.
 func (s *Storage) Changes(ctx context.Context) ([]Change, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -316,10 +318,12 @@ func (s *Storage) changeFor(ctx context.Context, path string) (change Change, ch
 		return change, baseHasFile, nil
 	case !baseHasFile:
 		change.Kind = ChangeCreate
-	case bytes.Equal(previous, current.content) && s.hasCaseVariantTombstone(path):
-		change.Kind, change.Previous = ChangeCreate, nil
 	case bytes.Equal(previous, current.content):
-		return Change{}, false, nil
+		recreated, err := s.recreatedByCaseOnlyRename(ctx, path)
+		if err != nil || !recreated {
+			return Change{}, false, err
+		}
+		change.Kind, change.Previous = ChangeCreate, nil
 	default:
 		change.Kind = ChangeModify
 	}
@@ -328,10 +332,27 @@ func (s *Storage) changeFor(ctx context.Context, path string) (change Change, ch
 	return change, true, nil
 }
 
+// recreatedByCaseOnlyRename reports whether a write of path's base bytes must
+// still be committed: a pending delete names path in another case and the
+// base does not list path itself. Then the base is case-insensitive and
+// answered the read of path with the file that delete removes, so Commit
+// deletes the file first and the write must recreate it. A case-sensitive
+// base that holds both spellings lists path, and the write is no change. The
+// caller holds the lock.
+func (s *Storage) recreatedByCaseOnlyRename(ctx context.Context, path string) (bool, error) {
+	if !s.hasCaseVariantTombstone(path) {
+		return false, nil
+	}
+	baseFiles, err := s.base.ListFiles(ctx)
+	if err != nil {
+		return false, fmt.Errorf("aikido/vfs/overlay: list base: %w", err)
+	}
+	listed := slices.ContainsFunc(baseFiles, func(file vfs.FileMetadata) bool { return file.Path == path })
+	return !listed, nil
+}
+
 // hasCaseVariantTombstone reports whether a pending delete names path in
-// another case. A case-insensitive base answers a read of path with that
-// file, so the write only looks like no change; Commit deletes the file
-// first and the write must recreate it. The caller holds the lock.
+// another case. The caller holds the lock.
 func (s *Storage) hasCaseVariantTombstone(path string) bool {
 	for other, current := range s.entries {
 		if current.deleted && other != path && strings.EqualFold(other, path) {
