@@ -34,9 +34,9 @@ type Architecture struct {
 
 // TopProvider is the limits of the provider OpenRouter routes to by default.
 type TopProvider struct {
-	ContextLength       int  `json:"context_length"`
+	ContextLength           int  `json:"context_length"`
 	MaximumCompletionTokens int  `json:"max_completion_tokens"`
-	IsModerated         bool `json:"is_moderated"`
+	IsModerated             bool `json:"is_moderated"`
 }
 
 // Pricing is in USD per token (per request / per image for those fields).
@@ -83,15 +83,15 @@ type ModelEndpoints struct {
 
 // Endpoint is one provider serving a model, with its live performance.
 type Endpoint struct {
-	Name                string   `json:"name"`
-	ProviderName        string   `json:"provider_name"`
-	Tag                 string   `json:"tag"` // provider slug for ProviderPrefs ("azure/global")
-	Quantization        string   `json:"quantization"`
-	ContextLength       int      `json:"context_length"`
+	Name                    string   `json:"name"`
+	ProviderName            string   `json:"provider_name"`
+	Tag                     string   `json:"tag"` // provider slug for ProviderPrefs ("azure/global")
+	Quantization            string   `json:"quantization"`
+	ContextLength           int      `json:"context_length"`
 	MaximumCompletionTokens int      `json:"max_completion_tokens"`
 	MaximumPromptTokens     int      `json:"max_prompt_tokens"`
-	Pricing             Pricing  `json:"pricing"`
-	SupportedParameters []string `json:"supported_parameters"`
+	Pricing                 Pricing  `json:"pricing"`
+	SupportedParameters     []string `json:"supported_parameters"`
 	// Status is 0 when the endpoint is healthy; negative values mean degraded
 	// or down.
 	Status int `json:"status"`

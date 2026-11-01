@@ -90,20 +90,20 @@ func main() {
 		Tools:        registry,
 		Model:        "anthropic/claude-haiku-4.5",
 		SystemPrompt: systemPrompt,
-		MaximumTurns:     10,
+		MaximumTurns: 10,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	pipeline, err := voice.New(&voice.Options{
-		Transcriber:      client,
-		Vocabulary:       vocabulary,
-		Speech:           client,
-		SpeechModel:      voice.DefaultSpeechModel, // elevenlabs/eleven-v4-turbo
-		Voice:            "sarah",
+		Transcriber:           client,
+		Vocabulary:            vocabulary,
+		Speech:                client,
+		SpeechModel:           voice.DefaultSpeechModel, // elevenlabs/eleven-v4-turbo
+		Voice:                 "sarah",
 		SpeechUSDPerCharacter: 0.00002,
-		SpokenStyle:      voice.DefaultSpokenStyle,
+		SpokenStyle:           voice.DefaultSpokenStyle,
 	})
 	if err != nil {
 		log.Fatal(err)

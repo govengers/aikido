@@ -77,7 +77,7 @@ func main() {
 		Tools:        registry,
 		Model:        "anthropic/claude-haiku-4.5",
 		SystemPrompt: systemPrompt,
-		MaximumTurns:     10,
+		MaximumTurns: 10,
 	})
 	if err != nil {
 		log.Fatal(err)

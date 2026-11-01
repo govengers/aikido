@@ -40,8 +40,8 @@ func main() {
 			{Role: llm.RoleSystem, Content: "Be concise. Reply in one sentence."},
 			{Role: llm.RoleUser, Content: "Give me one fun fact about the Go programming language."},
 		},
-		MaximumTokens:   200,
-		Temperature: new(float32(0.7)),
+		MaximumTokens: 200,
+		Temperature:   new(float32(0.7)),
 	})
 	if err != nil {
 		log.Fatalf("Collect: %v", err)

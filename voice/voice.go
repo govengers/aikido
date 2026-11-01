@@ -168,7 +168,7 @@ type Event struct {
 // SpeechChunk is one synthesized sentence. Text is what was spoken, after
 // Speakable.
 type SpeechChunk struct {
-	Sequence          int
+	Sequence     int
 	Text         string
 	Audio        []byte
 	ContentType  string
@@ -180,12 +180,12 @@ type SpeechChunk struct {
 // Options.SpeechUSDPerChar. LLM sums the token and cost fields of LLMCalls;
 // the per-call provider, latency and throughput live in LLMCalls only.
 type Usage struct {
-	Transcription *llm.Usage
-	LLM           llm.Usage
-	LLMCalls      []llm.Usage
-	SpeechCharacters   int
-	SpeechCostUSD float64
-	CostUSD       float64
+	Transcription    *llm.Usage
+	LLM              llm.Usage
+	LLMCalls         []llm.Usage
+	SpeechCharacters int
+	SpeechCostUSD    float64
+	CostUSD          float64
 }
 
 // Run starts one turn on r and returns its events. Invalid input (nothing to

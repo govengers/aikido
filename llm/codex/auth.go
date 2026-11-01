@@ -141,11 +141,11 @@ func ParseLogin(raw []byte) (Tokens, error) {
 // DeviceCode is a started device login: show VerificationURL and UserCode to
 // the user, then call PollDeviceLogin.
 type DeviceCode struct {
-	DeviceAuthorizationID    string
-	UserCode        string
-	VerificationURL string
-	Interval        time.Duration
-	ExpiresAt       time.Time
+	DeviceAuthorizationID string
+	UserCode              string
+	VerificationURL       string
+	Interval              time.Duration
+	ExpiresAt             time.Time
 }
 
 // StartDeviceLogin asks the issuer for a device code.
@@ -177,11 +177,11 @@ func StartDeviceLogin(ctx context.Context, o *LoginOptions) (DeviceCode, error) 
 	}
 	seconds, _ := strconv.Atoi(strings.Trim(string(resp.Interval), `" `))
 	return DeviceCode{
-		DeviceAuthorizationID:    resp.DeviceAuthID,
-		UserCode:        resp.UserCode,
-		VerificationURL: o.issuer() + "/codex/device",
-		Interval:        time.Duration(max(seconds, 3)) * time.Second,
-		ExpiresAt:       time.Now().Add(deviceCodeTTL),
+		DeviceAuthorizationID: resp.DeviceAuthID,
+		UserCode:              resp.UserCode,
+		VerificationURL:       o.issuer() + "/codex/device",
+		Interval:              time.Duration(max(seconds, 3)) * time.Second,
+		ExpiresAt:             time.Now().Add(deviceCodeTTL),
 	}, nil
 }
 

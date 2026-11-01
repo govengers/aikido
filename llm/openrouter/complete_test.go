@@ -402,9 +402,9 @@ func TestComplete_ImageConfigOnWire(t *testing.T) {
 	c := newTestClient(t, srv)
 
 	if _, err := c.Complete(context.Background(), llm.Request{
-		Model:       "any",
-		Messages:    []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
-		Modalities:  []string{"image", "text"},
+		Model:              "any",
+		Messages:           []llm.Message{{Role: llm.RoleUser, Content: "hi"}},
+		Modalities:         []string{"image", "text"},
 		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -711,7 +711,7 @@ func TestComplete_ChatImageFixture(t *testing.T) {
 			Content: "a red cube on white",
 			Images:  []llm.ImagePart{{URL: "data:image/jpeg;base64,QUJD", ContentType: "image/jpeg"}},
 		}},
-		Modalities:  []string{"image", "text"},
+		Modalities:         []string{"image", "text"},
 		ImageConfiguration: &llm.ImageConfiguration{AspectRatio: "16:9", ImageSize: "2K"},
 	})
 	if err != nil {

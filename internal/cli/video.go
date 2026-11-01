@@ -55,12 +55,12 @@ func videoCommand(factory ClientFactory) *urfavecli.Command {
 			}
 			o := videoOpts{
 				req: llm.VideoRequest{
-					Model:       cmd.String("model"),
-					Prompt:      strings.TrimSpace(strings.Join(cmd.Args().Slice(), " ")),
-					AspectRatio: cmd.String("aspect"),
-					Resolution:  cmd.String("resolution"),
-					Size:        cmd.String("size"),
-					DurationSeconds:    int(cmd.Int("duration")),
+					Model:           cmd.String("model"),
+					Prompt:          strings.TrimSpace(strings.Join(cmd.Args().Slice(), " ")),
+					AspectRatio:     cmd.String("aspect"),
+					Resolution:      cmd.String("resolution"),
+					Size:            cmd.String("size"),
+					DurationSeconds: int(cmd.Int("duration")),
 				},
 				outDir:     cmd.String("out"),
 				firstFrame: cmd.String("first-frame"),

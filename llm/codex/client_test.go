@@ -73,7 +73,7 @@ func TestComplete_RequestShapeAndText(t *testing.T) {
 			{Role: llm.RoleUser, Content: "what is this?", Images: []llm.ImagePart{{Data: []byte("\x89PNG\r\n\x1a\n0000"), ContentType: "image/png"}}},
 		},
 		ResponseFormat: &llm.JSONSchema{Name: "meal", Strict: true, Schema: json.RawMessage(`{"type":"object"}`)},
-		MaximumTokens:      500,
+		MaximumTokens:  500,
 	})
 	if err != nil || res.Text != `{"kcal":640}` || res.Usage == nil || res.Usage.PromptTokens != 900 || res.FinishReason != "stop" {
 		t.Fatalf("Complete = %+v, %v", res, err)

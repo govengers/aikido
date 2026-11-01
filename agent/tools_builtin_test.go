@@ -308,9 +308,11 @@ func TestVFSToolsViaSession_RoundTrip(t *testing.T) {
 type nonSearchableStorage struct{}
 
 func (nonSearchableStorage) ListFiles(_ context.Context) ([]vfs.FileMetadata, error) { return nil, nil }
+
 func (nonSearchableStorage) ReadFile(_ context.Context, _ string) ([]byte, vfs.FileMetadata, error) {
 	return nil, vfs.FileMetadata{}, vfs.ErrFileNotFound
 }
+
 func (nonSearchableStorage) WriteFile(_ context.Context, _ string, _ []byte, _ string) error {
 	return nil
 }

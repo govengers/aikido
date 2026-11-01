@@ -131,16 +131,16 @@ func toWireCall(u llm.Usage) wireCall {
 }
 
 type wireEvent struct {
-	Type        EventKind  `json:"type"`
-	Text        string     `json:"text,omitempty"`
-	Raw         string     `json:"raw,omitempty"`
-	Tool        *wireTool  `json:"tool,omitempty"`
-	Seq         *int       `json:"seq,omitempty"`
-	ContentType string     `json:"content_type,omitempty"`
-	Audio       []byte     `json:"audio,omitempty"`
-	Error       string     `json:"error,omitempty"`
+	Type        EventKind       `json:"type"`
+	Text        string          `json:"text,omitempty"`
+	Raw         string          `json:"raw,omitempty"`
+	Tool        *wireTool       `json:"tool,omitempty"`
+	Seq         *int            `json:"seq,omitempty"`
+	ContentType string          `json:"content_type,omitempty"`
+	Audio       []byte          `json:"audio,omitempty"`
+	Error       string          `json:"error,omitempty"`
 	EndReason   agent.EndReason `json:"end_reason,omitempty"`
-	Usage       *wireUsage `json:"usage,omitempty"`
+	Usage       *wireUsage      `json:"usage,omitempty"`
 }
 
 func (h *Handler) toWire(ev Event) wireEvent {

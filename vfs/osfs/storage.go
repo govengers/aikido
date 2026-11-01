@@ -16,10 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"sort"
-
-	"os"
 
 	"github.com/govengers/aikido/vfs"
 )

@@ -13,18 +13,18 @@ import (
 // not appear on the wire. Pointer types are used where zero is a valid
 // user-set value (notably Temperature: 0 for deterministic decoding).
 type chatRequest struct {
-	Model       string           `json:"model"`
-	Messages    []apiMessage     `json:"messages"`
-	Tools       []apiTool        `json:"tools,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Temperature *float32         `json:"temperature,omitempty"`
-	Stop        []string         `json:"stop,omitempty"`
-	Reasoning   *apiReasoning    `json:"reasoning,omitempty"`
-	Provider    *ProviderPreferences   `json:"provider,omitempty"`
-	Modalities  []string         `json:"modalities,omitempty"`
-	ImageConfig *apiImageConfig  `json:"image_config,omitempty"`
-	Usage       *apiUsageOptions `json:"usage,omitempty"`
+	Model       string               `json:"model"`
+	Messages    []apiMessage         `json:"messages"`
+	Tools       []apiTool            `json:"tools,omitempty"`
+	Stream      bool                 `json:"stream,omitempty"`
+	MaxTokens   int                  `json:"max_tokens,omitempty"`
+	Temperature *float32             `json:"temperature,omitempty"`
+	Stop        []string             `json:"stop,omitempty"`
+	Reasoning   *apiReasoning        `json:"reasoning,omitempty"`
+	Provider    *ProviderPreferences `json:"provider,omitempty"`
+	Modalities  []string             `json:"modalities,omitempty"`
+	ImageConfig *apiImageConfig      `json:"image_config,omitempty"`
+	Usage       *apiUsageOptions     `json:"usage,omitempty"`
 	// ResponseFormat carries structured-output requests (llm.JSONSchema).
 	ResponseFormat *apiResponseFormat `json:"response_format,omitempty"`
 }
@@ -484,7 +484,7 @@ type decisionsRequest struct {
 	Model     string                         `json:"model"`
 	State     any                            `json:"state"`
 	Questions map[string]apiDecisionQuestion `json:"questions"`
-	Provider  *ProviderPreferences                 `json:"provider,omitempty"`
+	Provider  *ProviderPreferences           `json:"provider,omitempty"`
 }
 
 // apiDecisionQuestion's criteria is a map for choice and noul, a list for

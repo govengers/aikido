@@ -46,11 +46,11 @@ type Policy struct {
 func DefaultPolicy() Policy {
 	return Policy{
 		MaximumAttempts: 3,
-		BaseDelay:   500 * time.Millisecond,
+		BaseDelay:       500 * time.Millisecond,
 		MaximumDelay:    30 * time.Second,
-		Multiplier:  2.0,
-		Jitter:      0.2,
-		ShouldRetry: func(err error) bool { return err != nil },
+		Multiplier:      2.0,
+		Jitter:          0.2,
+		ShouldRetry:     func(err error) bool { return err != nil },
 	}
 }
 

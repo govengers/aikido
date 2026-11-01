@@ -56,11 +56,11 @@ func IsContentFilter(err error) bool {
 func DefaultStreamingRetryPolicy() retry.Policy {
 	return retry.Policy{
 		MaximumAttempts: 5,
-		BaseDelay:   2 * time.Second,
+		BaseDelay:       2 * time.Second,
 		MaximumDelay:    30 * time.Second,
-		Multiplier:  2.0,
-		Jitter:      0.2,
-		ShouldRetry: IsTransientServerError,
+		Multiplier:      2.0,
+		Jitter:          0.2,
+		ShouldRetry:     IsTransientServerError,
 	}
 }
 

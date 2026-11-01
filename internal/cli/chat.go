@@ -60,8 +60,8 @@ func runChat(ctx context.Context, o chatOpts, out io.Writer, client llm.Client) 
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: o.prompt})
 
 	req := llm.Request{
-		Model:     o.model,
-		Messages:  msgs,
+		Model:         o.model,
+		Messages:      msgs,
 		MaximumTokens: o.maxTokens,
 	}
 	if o.temperature >= 0 {

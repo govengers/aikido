@@ -17,19 +17,23 @@ func TestDecideCommand_BuildsQuestionsAndPrintsAnswers(t *testing.T) {
 		Answers: map[string]llm.DecisionAnswer{
 			"is_bug": {Kind: llm.DecisionNoul, Noul: 0.95},
 			"team":   {Kind: llm.DecisionChoice, Choice: "payments", Confidence: 0.72, Probabilities: map[string]float64{"payments": 0.81, "frontend": 0.19}},
-			"urgency": {Kind: llm.DecisionScore, Score: 1.99, Confidence: 1,
-				Probabilities: map[string]float64{"0": 0, "1": 0.01, "2": 0.99}, Legend: map[string]string{"0": "can wait", "1": "this week", "2": "blocking"}},
+			"urgency": {
+				Kind: llm.DecisionScore, Score: 1.99, Confidence: 1,
+				Probabilities: map[string]float64{"0": 0, "1": 0.01, "2": 0.99}, Legend: map[string]string{"0": "can wait", "1": "this week", "2": "blocking"},
+			},
 		},
 		Usage: &llm.Usage{PromptTokens: 418, CostUSD: 0.000017556, Provider: "TypeSafe"},
 	}})
 	var out bytes.Buffer
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
 	app.Writer = &out
-	err := app.Run(context.Background(), []string{"aikido", "decide",
+	err := app.Run(context.Background(), []string{
+		"aikido", "decide",
 		"--noul", "is_bug=Is this a bug report?",
 		"--choice", "team=Which team, a=b style?=payments, frontend",
 		"--score", "urgency=How urgent?=can wait,this week,blocking",
-		"Checkout", "is", "blank."})
+		"Checkout", "is", "blank.",
+	})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

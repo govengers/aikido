@@ -29,8 +29,8 @@ func newTestHandler(t *testing.T, stt, chat llm.Client, maxBytes int64) (*Handle
 	}
 	session, hist := newSession(t, chat)
 	h, err := NewHandler(&HandlerOptions{
-		Pipeline:      p,
-		Session:       func(*http.Request) (Runner, error) { return session, nil },
+		Pipeline:          p,
+		Session:           func(*http.Request) (Runner, error) { return session, nil },
 		MaximumAudioBytes: maxBytes,
 	})
 	if err != nil {

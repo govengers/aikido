@@ -79,13 +79,13 @@ func runAgent(ctx context.Context, o agentOpts, out io.Writer, client llm.Client
 	}
 
 	opts := &agent.SessionOptions{
-		ID:           o.sessionID,
-		Client:       client,
-		Tools:        registry,
-		Model:        o.model,
-		SystemPrompt: o.system,
-		MaximumTokens:    o.maxTokens,
-		MaximumTurns:     o.maxTurns,
+		ID:            o.sessionID,
+		Client:        client,
+		Tools:         registry,
+		Model:         o.model,
+		SystemPrompt:  o.system,
+		MaximumTokens: o.maxTokens,
+		MaximumTurns:  o.maxTurns,
 	}
 	if o.temperature >= 0 {
 		opts.Temperature = new(float32(o.temperature))

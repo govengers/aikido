@@ -30,8 +30,10 @@ func TestVideoCommand_WritesClipAndThreadsFlags(t *testing.T) {
 	var out bytes.Buffer
 	app := NewApp(func() (llm.Client, error) { return stub, nil })
 	app.Writer = &out
-	err := app.Run(context.Background(), []string{"aikido", "video", "--out", dir, "-d", "4", "-r", "720p", "-a", "9:16",
-		"--audio=false", "--first-frame", frame, "a", "cat", "yawns"})
+	err := app.Run(context.Background(), []string{
+		"aikido", "video", "--out", dir, "-d", "4", "-r", "720p", "-a", "9:16",
+		"--audio=false", "--first-frame", frame, "a", "cat", "yawns",
+	})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

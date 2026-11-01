@@ -619,9 +619,9 @@ func TestStream_RequestBody(t *testing.T) {
 	}
 	temp := float32(0.7)
 	ch, err := c.Stream(context.Background(), llm.Request{
-		Model:       "anthropic/claude-sonnet-4.6", // pass through — caller chooses canonical form
-		MaximumTokens:   1024,
-		Temperature: &temp,
+		Model:         "anthropic/claude-sonnet-4.6", // pass through — caller chooses canonical form
+		MaximumTokens: 1024,
+		Temperature:   &temp,
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: "you are helpful"},
 			{Role: llm.RoleUser, Content: "hi"},

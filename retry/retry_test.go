@@ -28,10 +28,10 @@ func TestDo_RetriesUntilSuccess(t *testing.T) {
 	var calls int32
 	policy := Policy{
 		MaximumAttempts: 3,
-		BaseDelay:   1 * time.Millisecond,
+		BaseDelay:       1 * time.Millisecond,
 		MaximumDelay:    5 * time.Millisecond,
-		Multiplier:  2.0,
-		Jitter:      0,
+		Multiplier:      2.0,
+		Jitter:          0,
 		// Retry every error.
 		ShouldRetry: func(err error) bool { return true },
 	}
@@ -56,10 +56,10 @@ func TestDo_StopsOnNonRetryableError(t *testing.T) {
 	var calls int32
 	policy := Policy{
 		MaximumAttempts: 5,
-		BaseDelay:   1 * time.Millisecond,
+		BaseDelay:       1 * time.Millisecond,
 		MaximumDelay:    5 * time.Millisecond,
-		Multiplier:  2.0,
-		ShouldRetry: func(err error) bool { return false },
+		Multiplier:      2.0,
+		ShouldRetry:     func(err error) bool { return false },
 	}
 	err := Do(context.Background(), policy, func(attempt int) error {
 		atomic.AddInt32(&calls, 1)
@@ -79,10 +79,10 @@ func TestDo_StopsAfterMaxAttempts(t *testing.T) {
 	var calls int32
 	policy := Policy{
 		MaximumAttempts: 3,
-		BaseDelay:   1 * time.Millisecond,
+		BaseDelay:       1 * time.Millisecond,
 		MaximumDelay:    5 * time.Millisecond,
-		Multiplier:  2.0,
-		ShouldRetry: func(err error) bool { return true },
+		Multiplier:      2.0,
+		ShouldRetry:     func(err error) bool { return true },
 	}
 	err := Do(context.Background(), policy, func(attempt int) error {
 		atomic.AddInt32(&calls, 1)
@@ -101,10 +101,10 @@ func TestDo_HonorsRetryAfter(t *testing.T) {
 	var calls int32
 	policy := Policy{
 		MaximumAttempts: 3,
-		BaseDelay:   1 * time.Hour, // would block forever w/o RetryAfter override
+		BaseDelay:       1 * time.Hour, // would block forever w/o RetryAfter override
 		MaximumDelay:    1 * time.Hour,
-		Multiplier:  2.0,
-		ShouldRetry: func(err error) bool { return true },
+		Multiplier:      2.0,
+		ShouldRetry:     func(err error) bool { return true },
 	}
 	start := time.Now()
 	err := Do(context.Background(), policy, func(attempt int) error {
@@ -130,10 +130,10 @@ func TestDo_RespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 	policy := Policy{
 		MaximumAttempts: 5,
-		BaseDelay:   100 * time.Millisecond,
+		BaseDelay:       100 * time.Millisecond,
 		MaximumDelay:    1 * time.Second,
-		Multiplier:  2.0,
-		ShouldRetry: func(err error) bool { return true },
+		Multiplier:      2.0,
+		ShouldRetry:     func(err error) bool { return true },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

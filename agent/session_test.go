@@ -94,6 +94,7 @@ type errorHistory struct {
 func (h errorHistory) Append(_ context.Context, _ string, _ ...llm.Message) error {
 	return h.errOnAppend
 }
+
 func (h errorHistory) Read(_ context.Context, _ string) ([]llm.Message, error) {
 	return nil, h.errOnRead
 }

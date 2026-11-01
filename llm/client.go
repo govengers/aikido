@@ -9,7 +9,7 @@ type Request struct {
 	Model         string
 	Messages      []Message
 	Tools         []ToolDefinition
-	MaximumTokens     int
+	MaximumTokens int
 	Temperature   *float32
 	Thinking      *ThinkingConfiguration
 	StopSequences []string
