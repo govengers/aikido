@@ -125,7 +125,7 @@ func TestReadFile_HappyPath(t *testing.T) {
 		t.Fatalf("read_file: %v", err)
 	}
 	content, _ := result.Content.(map[string]any)
-	if content["content"] != "# hello" {
+	if content["content"] != "1\t# hello" {
 		t.Errorf("content = %v", content["content"])
 	}
 	if content["content_type"] != "text/markdown" {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -17,8 +18,9 @@ import (
 )
 
 const (
-	defaultReadLimit = 2000    // read_file lines per call
-	binarySniffBytes = 8 << 10 // bytes isBinary checks for a NUL byte
+	defaultReadLimit = 2000     // read_file lines per call
+	readMaximumBytes = 40 << 10 // read_file content bytes per call, below the default tool result cap
+	binarySniffBytes = 8 << 10  // bytes isBinary checks for a NUL byte
 	// unknownContentType is the content type of a written file whose
 	// extension vfs.ContentTypeFor does not know (planning question Q26).
 	unknownContentType = "text/markdown"
@@ -27,7 +29,7 @@ const (
 func readFileDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines starting at offset (1-based line, default 1), plus the content type, the byte size, total_lines and truncated (true when lines follow the returned range). Content is raw, without line numbers.", defaultReadLimit),
+		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines (%d KiB) from offset, each prefixed with its line number and a tab that are not part of the file, plus content_type, size, total_lines and truncated (true when lines follow; continue at the next line number).", defaultReadLimit, readMaximumBytes>>10),
 		Parameters: tools.Object(map[string]any{
 			"path":   tools.String("Relative file path within the workspace."),
 			"offset": tools.Integer("Optional 1-based line to start reading at."),
@@ -63,19 +65,6 @@ func deleteFileDefinition() llm.ToolDefinition {
 		Parameters: tools.Object(map[string]any{
 			"path": tools.String("Relative file path within the workspace."),
 		}, "path"),
-	}
-}
-
-func editFileDefinition() llm.ToolDefinition {
-	return llm.ToolDefinition{
-		Name:        "edit_file",
-		Description: "Replace old_string with new_string in an existing file. old_string must match exactly (whitespace included) and be unique in the file unless replace_all is true. Use write_file to create files.",
-		Parameters: tools.Object(map[string]any{
-			"path":        tools.String("Relative file path within the workspace."),
-			"old_string":  tools.String("Exact text to replace."),
-			"new_string":  tools.String("Replacement text; must differ from old_string."),
-			"replace_all": tools.Boolean("Replace every occurrence instead of requiring a unique match."),
-		}, "path", "old_string", "new_string"),
 	}
 }
 
@@ -115,11 +104,10 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 		if offset > 1 && offset > len(lines) {
 			return tools.Result{}, fmt.Errorf("aikido/agent: read_file: offset %d is past the end of %s (%d lines)", offset, arguments.Path, len(lines))
 		}
-		start := offset - 1
-		end := min(start+limit, len(lines))
+		numbered, end := numberLines(lines, offset-1, min(offset-1+limit, len(lines)))
 		return tools.Result{
 			Content: map[string]any{
-				"content":      strings.Join(lines[start:end], ""),
+				"content":      numbered,
 				"content_type": metadata.ContentType,
 				"size":         metadata.Size,
 				"offset":       offset,
@@ -128,6 +116,21 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 			},
 		}, nil
 	}
+}
+
+// numberLines renders lines[start:end] prefixed with their 1-based line
+// number and a tab, stopping early once the text reaches readMaximumBytes
+// (always after at least one line). It returns the text and the index after
+// the last rendered line.
+func numberLines(lines []string, start, end int) (numbered string, rendered int) {
+	width := len(strconv.Itoa(end))
+	var text strings.Builder
+	rendered = start
+	for rendered < end && (rendered == start || text.Len()+width+1+len(lines[rendered]) <= readMaximumBytes) {
+		fmt.Fprintf(&text, "%*d\t%s", width, rendered+1, lines[rendered])
+		rendered++
+	}
+	return text.String(), rendered
 }
 
 func writeFileHandler(options VFSToolOptions) tools.Handler {
@@ -200,76 +203,6 @@ func deleteFileHandler(options VFSToolOptions) tools.Handler {
 			Content: map[string]any{"path": arguments.Path},
 		}, nil
 	}
-}
-
-type editFileArguments struct {
-	Path       string `json:"path"`
-	OldString  string `json:"old_string"`
-	NewString  string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all"`
-}
-
-func editFileHandler(options VFSToolOptions) tools.Handler {
-	return func(ctx context.Context, rawArguments json.RawMessage, _ tools.Environment) (tools.Result, error) {
-		var arguments editFileArguments
-		if err := decodeArguments("edit_file", rawArguments, &arguments); err != nil {
-			return tools.Result{}, err
-		}
-		if err := validatePolicyPath(options, arguments.Path); err != nil {
-			return tools.Result{}, err
-		}
-		if err := validateEdit(arguments); err != nil {
-			return tools.Result{}, err
-		}
-		content, metadata, err := options.Storage.ReadFile(ctx, arguments.Path)
-		if err != nil {
-			return tools.Result{}, err
-		}
-		updated, replacements, err := applyEdit(content, arguments)
-		if err != nil {
-			return tools.Result{}, err
-		}
-		if err := checkFileSize(options, len(updated)); err != nil {
-			return tools.Result{}, err
-		}
-		contentType := metadata.ContentType
-		if contentType == "" {
-			contentType = inferContentType(arguments.Path)
-		}
-		if err := options.Storage.WriteFile(ctx, arguments.Path, []byte(updated), contentType); err != nil {
-			return tools.Result{}, err
-		}
-		return tools.Result{
-			Content: map[string]any{"path": arguments.Path, "replacements": replacements, "size": int64(len(updated))},
-		}, nil
-	}
-}
-
-func validateEdit(arguments editFileArguments) error {
-	if arguments.OldString == "" {
-		return errors.New("aikido/agent: edit_file: old_string is empty; use write_file to create a file")
-	}
-	if arguments.OldString == arguments.NewString {
-		return errors.New("aikido/agent: edit_file: old_string and new_string are identical")
-	}
-	return nil
-}
-
-// applyEdit replaces OldString in content. It refuses binary content, a
-// missing OldString, and an ambiguous one unless ReplaceAll is set.
-func applyEdit(content []byte, arguments editFileArguments) (updated string, replacements int, err error) {
-	if isBinary(content) {
-		return "", 0, fmt.Errorf("aikido/agent: edit_file: %s is not a UTF-8 text file", arguments.Path)
-	}
-	text := string(content)
-	replacements = strings.Count(text, arguments.OldString)
-	switch {
-	case replacements == 0:
-		return "", 0, fmt.Errorf("aikido/agent: edit_file: old_string not found in %s", arguments.Path)
-	case replacements > 1 && !arguments.ReplaceAll:
-		return "", 0, fmt.Errorf("aikido/agent: edit_file: old_string matches %d times in %s; add context to make it unique or set replace_all", replacements, arguments.Path)
-	}
-	return strings.ReplaceAll(text, arguments.OldString, arguments.NewString), replacements, nil
 }
 
 func searchHandler(options VFSToolOptions, searchable vfs.Searchable) tools.Handler {
