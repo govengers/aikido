@@ -42,6 +42,35 @@ func TestWithProvider_OverridesClientPreferences(t *testing.T) {
 	}
 }
 
+func TestProviderPreferences_ZDR(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		rawBody, _ := io.ReadAll(request.Body)
+		captured = nil
+		_ = json.Unmarshal(rawBody, &captured)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`))
+	})
+	client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{ZDR: true}), llm.Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider, _ := captured["provider"].(map[string]any); provider["zdr"] != true {
+		t.Errorf("provider block = %v; want zdr true", captured["provider"])
+	}
+	// Off by default: the key stays off the wire.
+	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{Sort: "price"}), llm.Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider, _ := captured["provider"].(map[string]any); provider == nil || provider["zdr"] != nil {
+		t.Errorf("provider block = %v; want no zdr key", captured["provider"])
+	}
+}
+
 // TestProviderPreferences_CopiedOnConstruction pins DES-001: neither the
 // Client nor a WithProvider context shares mutable state with the caller.
 func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
@@ -49,7 +78,7 @@ func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
 	populated := func() *ProviderPreferences {
 		return &ProviderPreferences{
 			Order: []string{"a"}, AllowFallbacks: new(true), Only: []string{"b"}, Ignore: []string{"c"},
-			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny",
+			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny", ZDR: true,
 			MaximumPrice: &MaximumPrice{Prompt: 1, Completion: 2},
 		}
 	}
