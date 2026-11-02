@@ -42,21 +42,28 @@ func TestWithProvider_OverridesClientPreferences(t *testing.T) {
 	}
 }
 
-func TestProviderPreferences_ZDR(t *testing.T) {
+func TestProviderPreferences_ZeroDataRetention(t *testing.T) {
 	t.Parallel()
 	var captured map[string]any
 	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
-		rawBody, _ := io.ReadAll(request.Body)
 		captured = nil
-		_ = json.Unmarshal(rawBody, &captured)
+		rawBody, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(rawBody, &captured); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`))
+		if _, err := writer.Write([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	})
 	client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{ZDR: true}), llm.Request{Model: "m"}); err != nil {
+	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{ZeroDataRetention: true}), llm.Request{Model: "m"}); err != nil {
 		t.Fatal(err)
 	}
 	if provider, _ := captured["provider"].(map[string]any); provider["zdr"] != true {
@@ -78,7 +85,7 @@ func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
 	populated := func() *ProviderPreferences {
 		return &ProviderPreferences{
 			Order: []string{"a"}, AllowFallbacks: new(true), Only: []string{"b"}, Ignore: []string{"c"},
-			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny", ZDR: true,
+			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny", ZeroDataRetention: true,
 			MaximumPrice: &MaximumPrice{Prompt: 1, Completion: 2},
 		}
 	}

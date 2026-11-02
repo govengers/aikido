@@ -723,7 +723,7 @@ client; no call reported its provider, latency or throughput.
 **Decision.**
 - `openrouter.ProviderPrefs` mirrors OpenRouter's `provider` block (order,
   allow_fallbacks, only, ignore, sort, quantizations, require_parameters,
-  data_collection, max_price) and is the wire type itself. `Options.Provider`
+  data_collection, max_price; zdr was added later) and is the wire type itself. `Options.Provider`
   sets the client default; `openrouter.WithProvider(ctx, p)` replaces it for
   the calls made with ctx, so agent runs, voice turns and Transcribe get
   per-call routing without new fields on `llm.Request` (which stays
