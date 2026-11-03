@@ -42,6 +42,42 @@ func TestWithProvider_OverridesClientPreferences(t *testing.T) {
 	}
 }
 
+func TestProviderPreferences_ZeroDataRetention(t *testing.T) {
+	t.Parallel()
+	var captured map[string]any
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		captured = nil
+		rawBody, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		if err := json.Unmarshal(rawBody, &captured); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if _, err := writer.Write([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	})
+	client, err := NewClient(&Options{APIKey: "k", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{ZeroDataRetention: true}), llm.Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider, _ := captured["provider"].(map[string]any); provider["zdr"] != true {
+		t.Errorf("provider block = %v; want zdr true", captured["provider"])
+	}
+	// Off by default: the key stays off the wire.
+	if _, err := client.Complete(WithProvider(context.Background(), &ProviderPreferences{Sort: "price"}), llm.Request{Model: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider, _ := captured["provider"].(map[string]any); provider == nil || provider["zdr"] != nil {
+		t.Errorf("provider block = %v; want no zdr key", captured["provider"])
+	}
+}
+
 // TestProviderPreferences_CopiedOnConstruction pins DES-001: neither the
 // Client nor a WithProvider context shares mutable state with the caller.
 func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
@@ -49,7 +85,7 @@ func TestProviderPreferences_CopiedOnConstruction(t *testing.T) {
 	populated := func() *ProviderPreferences {
 		return &ProviderPreferences{
 			Order: []string{"a"}, AllowFallbacks: new(true), Only: []string{"b"}, Ignore: []string{"c"},
-			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny",
+			Sort: "price", Quantizations: []string{"fp8"}, RequireParameters: true, DataCollection: "deny", ZeroDataRetention: true,
 			MaximumPrice: &MaximumPrice{Prompt: 1, Completion: 2},
 		}
 	}

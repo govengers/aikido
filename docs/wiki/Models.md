@@ -77,7 +77,7 @@ Size caps (fixed, not options): a non-streaming answer (`Complete`, images, spee
 
 ### Provider routing
 
-`openrouter.ProviderPreferences` is OpenRouter's `provider` block: `Order`, `AllowFallbacks` (`*bool`), `Only`, `Ignore`, `Sort` (`"price"`, `"throughput"`, `"latency"`), `Quantizations`, `RequireParameters`, `DataCollection` (`"deny"`), `MaximumPrice` (`*openrouter.MaximumPrice{Prompt, Completion}` in USD per million tokens). `openrouter.WithProvider(ctx, preferences)` replaces the client's preferences (no merge) for every call made with that context: agent runs, voice turns and `Transcribe` included. From `ExampleWithProvider`:
+`openrouter.ProviderPreferences` is OpenRouter's `provider` block: `Order`, `AllowFallbacks` (`*bool`), `Only`, `Ignore`, `Sort` (`"price"`, `"throughput"`, `"latency"`), `Quantizations`, `RequireParameters`, `DataCollection` (`"deny"`), `ZeroDataRetention` (`true`: only endpoints with zero data retention, sent as `zdr`; stricter than `DataCollection`), `MaximumPrice` (`*openrouter.MaximumPrice{Prompt, Completion}` in USD per million tokens). `openrouter.WithProvider(ctx, preferences)` replaces the client's preferences (no merge) for every call made with that context: agent runs, voice turns and `Transcribe` included. From `ExampleWithProvider`:
 
 ```go
 	client, err := openrouter.NewClient(&openrouter.Options{

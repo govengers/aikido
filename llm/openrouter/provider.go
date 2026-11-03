@@ -30,6 +30,10 @@ type ProviderPreferences struct {
 	// DataCollection "deny" excludes providers that may store or train on
 	// prompts.
 	DataCollection string `json:"data_collection,omitempty"`
+	// ZeroDataRetention routes only to endpoints with zero data retention:
+	// providers that keep neither prompts nor outputs. Stricter than
+	// DataCollection "deny".
+	ZeroDataRetention bool `json:"zdr,omitempty"`
 	// MaximumPrice caps the price in USD per million tokens.
 	MaximumPrice *MaximumPrice `json:"max_price,omitempty"`
 }
