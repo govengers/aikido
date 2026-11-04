@@ -3,6 +3,7 @@ package llm_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -233,5 +234,129 @@ func TestCompleteReportsItsError(t *testing.T) {
 
 	if !errors.Is(err, llm.ErrRateLimited) || !errors.Is(first.outcome(t).Err, llm.ErrRateLimited) {
 		t.Errorf("err = %v, outcome = %v", err, first.outcome(t).Err)
+	}
+}
+
+func TestErrorClass(t *testing.T) {
+	for want, err := range map[string]error{
+		"":                             nil,
+		llm.ErrorClassRateLimited:      fmt.Errorf("stream: %w", llm.ErrRateLimited),
+		llm.ErrorClassAuthentication:   llm.ErrAuthentication,
+		llm.ErrorClassServerError:      llm.ErrServerError,
+		llm.ErrorClassInvalidRequest:   llm.ErrInvalidRequest,
+		llm.ErrorClassInvalidResponse:  llm.ErrInvalidResponse,
+		llm.ErrorClassContentFiltered:  llm.ErrContentFiltered,
+		llm.ErrorClassCanceled:         context.Canceled,
+		llm.ErrorClassDeadlineExceeded: fmt.Errorf("call: %w", context.DeadlineExceeded),
+		llm.ErrorClassOther:            errors.New("the provider said: <raw body>"),
+	} {
+		if got := llm.ErrorClass(err); got != want {
+			t.Errorf("ErrorClass(%v) = %q, want %q", err, got, want)
+		}
+	}
+}
+
+// panickingObserver panics when a call finishes.
+type panickingObserver struct{}
+
+func (panickingObserver) CallStarted(ctx context.Context, _ *llm.Call) context.Context { return ctx }
+
+func (panickingObserver) CallFinished(context.Context, *llm.Call, *llm.CallOutcome) {
+	panic("observer bug")
+}
+
+func TestAPanickingObserverReachesTheCallerAsAnError(t *testing.T) {
+	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventEnd, FinishReason: "stop"}}})
+	observed, err := llm.NewObservedClient(&llm.ObservedClientOptions{Client: stub, Name: "openrouter", Observers: []llm.Observer{panickingObserver{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := observed.Stream(t.Context(), llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last llm.Event
+	for event := range events {
+		last = event
+	}
+
+	if last.Kind != llm.EventError || !errors.Is(last.Err, llm.ErrInvalidResponse) {
+		t.Errorf("last event = %+v, want the panic as EventError", last)
+	}
+}
+
+// endingClient sends EventEnd on an unbuffered channel and closes taken once the receiver
+// took it.
+type endingClient struct {
+	llm.Client
+	taken chan struct{}
+}
+
+func (c endingClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event)
+	go func() {
+		defer close(events)
+		events <- llm.Event{Kind: llm.EventEnd, FinishReason: "stop"}
+		close(c.taken)
+	}()
+	return events, nil
+}
+
+// The provider finished; the caller cancelling before it read the last event does not make
+// the call a failure.
+func TestACancelAfterTheEndIsNoFailure(t *testing.T) {
+	client := endingClient{taken: make(chan struct{})}
+	harness := newObserved(t, client)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	events, err := harness.client.Stream(ctx, llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-client.taken // the forwarder holds EventEnd, nobody reads
+	cancel()
+	for range events {
+	}
+
+	if outcome := harness.first.outcome(t); outcome.Err != nil || outcome.FinishReason != "stop" {
+		t.Errorf("outcome = %+v, want a success with finish reason stop", outcome)
+	}
+}
+
+// stubbornClient streams from a producer that never watches ctx and closes only when released.
+type stubbornClient struct {
+	llm.Client
+	release chan struct{}
+}
+
+func (c stubbornClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event)
+	go func() {
+		defer close(events)
+		events <- llm.Event{Kind: llm.EventTextDelta, Text: "a"}
+		<-c.release
+		events <- llm.Event{Kind: llm.EventEnd}
+	}()
+	return events, nil
+}
+
+func TestAProducerThatIgnoresTheCancelDoesNotHoldTheCaller(t *testing.T) {
+	client := stubbornClient{release: make(chan struct{})}
+	harness := newObserved(t, client)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	events, err := harness.client.Stream(ctx, llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-events
+	cancel()
+	for range events { // closes although the producer still holds its channel open
+	}
+	close(client.release) // the drain takes the producer's last event, so nothing leaks
+
+	if outcome := harness.first.outcome(t); !errors.Is(outcome.Err, context.Canceled) {
+		t.Errorf("outcome error = %v, want context.Canceled", outcome.Err)
 	}
 }

@@ -91,8 +91,14 @@ func TestAFailedCallIsAnError(t *testing.T) {
 	}
 
 	spans := recorder.Ended()
-	if len(spans) != 1 || spans[0].Status().Code.String() != "Error" || len(spans[0].Events()) != 1 || spans[0].Name() != "chat" {
-		t.Errorf("spans = %v", spans)
+	if len(spans) != 1 || spans[0].Status().Code.String() != "Error" || spans[0].Status().Description != llm.ErrorClassRateLimited || spans[0].Name() != "chat" {
+		t.Fatalf("spans = %v", spans)
+	}
+	if got := attributes(spans[0])["error.type"]; got != llm.ErrorClassRateLimited {
+		t.Errorf("error.type = %q", got)
+	}
+	if len(spans[0].Events()) != 0 {
+		t.Error("the error's text was recorded as an event")
 	}
 }
 

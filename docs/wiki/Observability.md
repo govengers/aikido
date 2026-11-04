@@ -28,6 +28,8 @@ session, err := agent.NewSession(&agent.SessionOptions{Client: chat, ...})
 
 `ObservedClient` implements only `llm.Client` (`Stream`, `Complete`). The optional capabilities of the wrapped client (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`) are not reachable through it; keep the original client for those calls.
 
+Read a stream until its channel closes or cancel its context, as with any `llm.Client`: a stream nobody reads and nobody cancels is never reported. After a cancel the rest of the wrapped stream is drained in the background. A panic of an observer reaches the caller as an `EventError` wrapping `llm.ErrInvalidResponse`.
+
 Observers start in order and finish in reverse order. `CallStarted` returns the context the call runs in, so the tracing observer's span is the parent of the provider's own HTTP spans (an `otelhttp` transport in `openrouter.Options.HTTPClient`). Put `oteladapter` first.
 
 ## Metrics (`llm/prometheusadapter`)
@@ -49,11 +51,15 @@ histogram_quantile(0.95, sum by (le, model) (rate(billing_llm_request_duration_s
 
 ## Traces (`llm/oteladapter`)
 
-One client span per call, named `chat <model>`, in the caller's trace, after the OpenTelemetry GenAI conventions: `gen_ai.operation.name` (`chat`), `gen_ai.provider.name` (the `Name`), `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons`, plus `aikido.llm.operation`. A failed call records the error and sets the status to error. Prompts, completions and tool arguments never reach a span.
+One client span per call, named `chat <model>`, in the caller's trace, after the OpenTelemetry GenAI conventions: `gen_ai.operation.name` (`chat`), `gen_ai.provider.name` (the `Name`), `gen_ai.request.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reasons`, plus `aikido.llm.operation`. A failed call sets the status to error with its `llm.ErrorClass` as description and `error.type`. Prompts, completions, tool arguments and error texts never reach a span.
+
+## Error classes
+
+`llm.ErrorClass(err)` names a call's error from a closed set: `authentication`, `rate_limited`, `server_error`, `invalid_request`, `invalid_response`, `content_filtered`, `canceled`, `deadline_exceeded`, `other`. Spans and wide events record the class, never the error's text: `openrouter.APIError` carries the provider's message and, without one, the raw response body.
 
 ## Wide events (`llm/wideeventadapter`)
 
-The calls of one unit of work are summed on its event (an agent run makes many): `llm.calls`, `llm.failures`, `llm.duration`, `llm.prompt_tokens`, `llm.completion_tokens`, `llm.cache_read_tokens`, `llm.cost_usd`, and the last call's `llm.client`, `llm.model`, `llm.finish_reason`, `llm.error`. A context without an event records nothing.
+The calls of one unit of work are summed on its event (an agent run makes many): `llm.calls`, `llm.failures`, `llm.duration`, `llm.prompt_tokens`, `llm.completion_tokens`, `llm.cache_read_tokens`, `llm.cache_write_tokens`, `llm.cost_usd`, and the last call's `llm.client`, `llm.model`, `llm.finish_reason`, `llm.error` (the `llm.ErrorClass`). A context without an event records nothing.
 
 ## Your own observer
 

@@ -30,8 +30,11 @@ const (
 	AttributeInputTokens   attribute.Key = "gen_ai.usage.input_tokens"  //nolint:gosec // G101: an attribute name, not a credential
 	AttributeOutputTokens  attribute.Key = "gen_ai.usage.output_tokens" //nolint:gosec // G101: an attribute name, not a credential
 	AttributeOperation     attribute.Key = "aikido.llm.operation"       // llm.OperationStream or llm.OperationComplete
-	OperationChat                        = "chat"
+	AttributeErrorType     attribute.Key = "error.type"                 // llm.ErrorClass of a failed call
 )
+
+// OperationChat is the gen_ai.operation.name of every call.
+const OperationChat = "chat"
 
 // Options configures Spans.
 type Options struct {
@@ -72,6 +75,8 @@ func (s *Spans) CallStarted(ctx context.Context, call *llm.Call) context.Context
 }
 
 // CallFinished records the usage, the finish reason and the error on the span and ends it.
+// The error is recorded as its llm.ErrorClass, never its text, which can carry the provider's
+// raw response.
 func (s *Spans) CallFinished(ctx context.Context, _ *llm.Call, outcome *llm.CallOutcome) {
 	span := trace.SpanFromContext(ctx)
 	if outcome.Usage != nil {
@@ -81,8 +86,9 @@ func (s *Spans) CallFinished(ctx context.Context, _ *llm.Call, outcome *llm.Call
 		span.SetAttributes(AttributeFinishReasons.StringSlice([]string{outcome.FinishReason}))
 	}
 	if outcome.Err != nil {
-		span.RecordError(outcome.Err)
-		span.SetStatus(codes.Error, outcome.Err.Error())
+		class := llm.ErrorClass(outcome.Err)
+		span.SetAttributes(AttributeErrorType.String(class))
+		span.SetStatus(codes.Error, class)
 	}
 	span.End()
 }

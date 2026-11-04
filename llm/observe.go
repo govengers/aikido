@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -86,30 +87,59 @@ func (c *ObservedClient) Stream(ctx context.Context, request Request) (<-chan Ev
 }
 
 // forward hands every event on and reports the call once the stream ended or the caller
-// gave up; the wrapped client closes its channel when ctx ends.
+// gave up. The caller reads until the channel closes or cancels ctx (the Client contract); on
+// cancellation the rest of the wrapped stream is drained in the background, so a producer
+// that does not watch ctx cannot block forever. A panic of an observer or of the stream
+// handling reaches the caller as an EventError instead of ending the process.
 func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Time, events <-chan Event, observed chan<- Event) {
 	defer close(observed)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			select {
+			case observed <- Event{Kind: EventError, Err: fmt.Errorf("%w: observing the stream panicked: %v", ErrInvalidResponse, recovered)}:
+			case <-ctx.Done():
+			}
+		}
+	}()
 	outcome := &CallOutcome{}
 	defer func() {
 		outcome.Duration = time.Since(start)
 		c.finish(ctx, call, outcome)
 	}()
 	ended := false
-	for event := range events {
-		record(outcome, event)
-		ended = ended || event.Kind == EventEnd
+	for {
 		select {
-		case observed <- event:
-		case <-ctx.Done():
-			if outcome.Err == nil {
-				outcome.Err = ctx.Err()
+		case event, open := <-events:
+			if !open {
+				if !ended && outcome.Err == nil && ctx.Err() != nil {
+					outcome.Err = ctx.Err() // closed early because the caller gave up
+				}
+				return
 			}
+			record(outcome, event)
+			ended = ended || event.Kind == EventEnd
+			select {
+			case observed <- event:
+			case <-ctx.Done():
+				abandon(ctx, outcome, ended, events)
+				return
+			}
+		case <-ctx.Done():
+			abandon(ctx, outcome, ended, events)
 			return
 		}
 	}
-	if !ended && outcome.Err == nil && ctx.Err() != nil {
-		outcome.Err = ctx.Err() // closed early because the caller gave up
+}
+
+// abandon records a caller that gave up before the stream ended and drains the rest of it.
+func abandon(ctx context.Context, outcome *CallOutcome, ended bool, events <-chan Event) {
+	if !ended && outcome.Err == nil {
+		outcome.Err = ctx.Err()
 	}
+	go func() {
+		for range events { // drain: the producer may still send before it sees ctx
+		}
+	}()
 }
 
 // record folds the event into the outcome.
@@ -148,4 +178,44 @@ func (c *ObservedClient) finish(ctx context.Context, call *Call, outcome *CallOu
 	for index := len(c.observers) - 1; index >= 0; index-- {
 		c.observers[index].CallFinished(ctx, call, outcome)
 	}
+}
+
+// The values of ErrorClass.
+const (
+	ErrorClassAuthentication   = "authentication"
+	ErrorClassRateLimited      = "rate_limited"
+	ErrorClassServerError      = "server_error"
+	ErrorClassInvalidRequest   = "invalid_request"
+	ErrorClassInvalidResponse  = "invalid_response"
+	ErrorClassContentFiltered  = "content_filtered"
+	ErrorClassCanceled         = "canceled"
+	ErrorClassDeadlineExceeded = "deadline_exceeded"
+	ErrorClassOther            = "other"
+)
+
+// ErrorClass names the kind of a model call's error from a closed set, for metrics, span
+// status and logs: the error's text can carry the provider's raw response, which does not
+// belong there. A nil err is "".
+func ErrorClass(err error) string {
+	for _, class := range []struct {
+		target error
+		name   string
+	}{
+		{context.Canceled, ErrorClassCanceled},
+		{context.DeadlineExceeded, ErrorClassDeadlineExceeded},
+		{ErrAuthentication, ErrorClassAuthentication},
+		{ErrRateLimited, ErrorClassRateLimited},
+		{ErrServerError, ErrorClassServerError},
+		{ErrInvalidRequest, ErrorClassInvalidRequest},
+		{ErrInvalidResponse, ErrorClassInvalidResponse},
+		{ErrContentFiltered, ErrorClassContentFiltered},
+	} {
+		if errors.Is(err, class.target) {
+			return class.name
+		}
+	}
+	if err == nil {
+		return ""
+	}
+	return ErrorClassOther
 }

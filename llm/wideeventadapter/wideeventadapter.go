@@ -19,14 +19,15 @@ import (
 )
 
 // The fields Fields records. The counters and the duration are sums over the event's calls;
-// client, model, finish reason and error are the last call's.
+// client, model, finish reason and error class (llm.ErrorClass) are the last call's.
 const (
 	KeyCalls            = "llm.calls"
 	KeyFailures         = "llm.failures"
 	KeyDuration         = "llm.duration"
-	KeyPromptTokens     = "llm.prompt_tokens"     //nolint:gosec // G101: a field name, not a credential
-	KeyCompletionTokens = "llm.completion_tokens" //nolint:gosec // G101: a field name, not a credential
-	KeyCacheReadTokens  = "llm.cache_read_tokens" //nolint:gosec // G101: a field name, not a credential
+	KeyPromptTokens     = "llm.prompt_tokens"      //nolint:gosec // G101: a field name, not a credential
+	KeyCompletionTokens = "llm.completion_tokens"  //nolint:gosec // G101: a field name, not a credential
+	KeyCacheReadTokens  = "llm.cache_read_tokens"  //nolint:gosec // G101: a field name, not a credential
+	KeyCacheWriteTokens = "llm.cache_write_tokens" //nolint:gosec // G101: a field name, not a credential
 	KeyCostUSD          = "llm.cost_usd"
 	KeyClient           = "llm.client"
 	KeyModel            = "llm.model"
@@ -66,7 +67,7 @@ func (f *Fields) CallFinished(ctx context.Context, call *llm.Call, outcome *llm.
 		String(KeyClient, call.Client).
 		String(KeyModel, call.Model)
 	if outcome.Err != nil {
-		we.Int(KeyFailures, intValue(current[KeyFailures])+1).Err(KeyError, outcome.Err)
+		we.Int(KeyFailures, intValue(current[KeyFailures])+1).String(KeyError, llm.ErrorClass(outcome.Err)) // never the text: it can carry the provider's raw response
 	}
 	if outcome.FinishReason != "" {
 		we.String(KeyFinishReason, outcome.FinishReason)
@@ -75,6 +76,7 @@ func (f *Fields) CallFinished(ctx context.Context, call *llm.Call, outcome *llm.
 		we.Int(KeyPromptTokens, intValue(current[KeyPromptTokens])+usage.PromptTokens).
 			Int(KeyCompletionTokens, intValue(current[KeyCompletionTokens])+usage.CompletionTokens).
 			Int(KeyCacheReadTokens, intValue(current[KeyCacheReadTokens])+usage.CacheReadTokens).
+			Int(KeyCacheWriteTokens, intValue(current[KeyCacheWriteTokens])+usage.CacheWriteTokens).
 			Float64(KeyCostUSD, floatValue(current[KeyCostUSD])+usage.CostUSD)
 	}
 }

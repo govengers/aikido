@@ -39,7 +39,7 @@ func TestCallsAreSummedOnTheEvent(t *testing.T) {
 		wideeventadapter.KeyCalls: 3, wideeventadapter.KeyFailures: 1, wideeventadapter.KeyDuration: 4 * time.Second,
 		wideeventadapter.KeyPromptTokens: 2200, wideeventadapter.KeyCompletionTokens: 150, wideeventadapter.KeyCacheReadTokens: 800,
 		wideeventadapter.KeyClient: "openrouter", wideeventadapter.KeyModel: "anthropic/claude-sonnet-4.6",
-		wideeventadapter.KeyFinishReason: "stop", wideeventadapter.KeyError: llm.ErrRateLimited.Error(),
+		wideeventadapter.KeyFinishReason: "stop", wideeventadapter.KeyError: llm.ErrorClassRateLimited,
 	}
 	for key, value := range want {
 		if got[key] != value {
