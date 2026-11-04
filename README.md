@@ -23,6 +23,7 @@ Coding agents: start at [llms.txt](llms.txt) and [docs/wiki/Home.md](docs/wiki/H
 - File stores: memory, a directory confined by `os.Root`, any `fs.FS`; a copy-on-write overlay with change list and unified diff, mounts by path prefix; conformance suites for your own backends.
 - Images (chat and images endpoint), video jobs, text-to-speech, transcription with a correcting vocabulary, decision models; a `voice` package with speech in and out around an agent turn and an NDJSON `net/http` handler.
 - `tools/shell`, an opt-in virtual bash over the same file stores: pipes, loops, redirects and GNU-compatible commands (grep, sed, find, xargs, jq, awk, ...) checked against GNU in CI, with no host access unless the caller allows a program (git, kubectl).
+- Observability without logging: `llm.NewObservedClient` reports every model call to observers; adapters export Prometheus metrics (requests, duration, tokens, cost), OpenTelemetry GenAI spans and summed `llm.*` wide-event fields.
 - No host shell, no network tools, no logging, no environment reads in the library.
 
 ## Install
@@ -107,6 +108,7 @@ One completion, from [examples/chat-oneshot/main.go](examples/chat-oneshot/main.
 | [`llm/openrouter`](docs/wiki/Models.md#openrouter) | OpenRouter: chat, images, speech, video, decisions, catalogue, routing |
 | [`llm/codex`](docs/wiki/Models.md#codex-chatgpt-subscription) | ChatGPT subscription through the Codex backend |
 | [`llm/llmtest`](docs/wiki/Testing.md) | scripted `StubClient` |
+| [`llm/prometheusadapter`, `llm/oteladapter`, `llm/wideeventadapter`](docs/wiki/Observability.md) | metrics, traces and wide-event fields of the model calls |
 | [`retry`](docs/wiki/Errors-and-Retry.md) | `Do`, `Policy`, `AfterError` |
 | [`tools`](docs/wiki/Tools.md) | `Registry`, handlers, schema helpers |
 | [`tools/shell`](docs/wiki/Shell.md) | virtual bash over a `vfs.Storage`, host programs only when allowed |
@@ -128,6 +130,7 @@ One completion, from [examples/chat-oneshot/main.go](examples/chat-oneshot/main.
 - [Models](docs/wiki/Models.md): requests, streaming, OpenRouter, Codex.
 - [Media](docs/wiki/Media.md): images, video, speech, transcription, decision models.
 - [Voice](docs/wiki/Voice.md): voice turns and the NDJSON handler.
+- [Observability](docs/wiki/Observability.md): `NewObservedClient`, the metrics, spans and wide-event fields.
 - [Errors-and-Retry](docs/wiki/Errors-and-Retry.md): sentinels, `APIError`, what is retried where.
 - [Testing](docs/wiki/Testing.md): `StubClient`, conformance suites, testing an agent offline.
 - [CLI](docs/wiki/CLI.md): every command and flag.
