@@ -22,6 +22,7 @@ Constructors with settings are `New(options *Options) (*X, error)` or `NewX(opti
 | `llm/openrouter` | OpenRouter: chat, images, speech, video, decisions, model catalogue, provider routing, `APIError` | [Models](Models.md#openrouter) |
 | `llm/codex` | the Codex backend of a ChatGPT subscription, device-code login, `TokenSource` | [Models](Models.md#codex-chatgpt-subscription) |
 | `llm/llmtest` | `StubClient`, a scripted client for tests | [Testing](Testing.md) |
+| `llm/prometheusadapter`, `llm/oteladapter`, `llm/wideeventadapter` | metrics, traces and wide-event fields of the model calls, through `llm.NewObservedClient` | [Observability](Observability.md) |
 | `retry` | `Do`, `Policy`, `AfterError` | [Errors-and-Retry](Errors-and-Retry.md) |
 | `tools` | `Registry`, `Handler`, `Environment`, schema helpers | [Tools](Tools.md) |
 | `tools/shell` | a virtual bash over a `vfs.Storage`: `New`, `Run`, `Register`, `Builtins`, `External` for allowed host programs | [Shell](Shell.md) |
@@ -69,6 +70,7 @@ Constructors with settings are `New(options *Options) (*X, error)` or `NewX(opti
 - [Models](Models.md): requests, responses, streaming, OpenRouter (routing, catalogue, `APIError`), Codex.
 - [Media](Media.md): images, video, speech, transcription and vocabulary, decision models.
 - [Voice](Voice.md): `voice.Pipeline`, events, usage, the NDJSON handler.
+- [Observability](Observability.md): `llm.NewObservedClient`, `llm.Observer`, Prometheus metrics, OpenTelemetry spans, wide-event fields.
 - [Errors-and-Retry](Errors-and-Retry.md): sentinels, `APIError`, retry semantics per call path, `retry.Do`.
 - [Testing](Testing.md): `StubClient`, conformance suites, testing an agent offline.
 - [CLI](CLI.md): every command and flag.

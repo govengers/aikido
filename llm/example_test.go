@@ -227,3 +227,31 @@ func ExampleVideoGenerator() {
 	// Output:
 	// video/mp4 job-1 0.12
 }
+
+// countingObserver is the smallest Observer: it counts the calls that finished.
+type countingObserver struct{ finished int }
+
+func (o *countingObserver) CallStarted(ctx context.Context, _ *llm.Call) context.Context { return ctx }
+
+func (o *countingObserver) CallFinished(context.Context, *llm.Call, *llm.CallOutcome) { o.finished++ }
+
+// Wrap the chat client once in main, with the adapters you need (llm/prometheusadapter,
+// llm/oteladapter, llm/wideeventadapter), and hand the wrapped client to agent.Session.
+func ExampleNewObservedClient() {
+	observer := &countingObserver{}
+	client, err := llm.NewObservedClient(&llm.ObservedClientOptions{
+		Client:    llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{{Kind: llm.EventTextDelta, Text: "hi"}, {Kind: llm.EventEnd}}}),
+		Name:      "openrouter",
+		Observers: []llm.Observer{observer},
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if _, err := llm.Collect(context.Background(), client, llm.Request{Model: "openai/gpt-5.4"}); err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println(observer.finished)
+	// Output: 1
+}
