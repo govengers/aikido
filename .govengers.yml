@@ -15,3 +15,8 @@ exceptions:
       llm.CollectWithRetry restarts a stream from scratch after a transient failure. Collect delivers nothing to
       its caller until the stream ends and discards the partial attempt, so no output is duplicated; the doc
       comment states that every attempt is billed. Streaming consumers (agent.Session) never retry mid-stream.
+  - rule: DES-004
+    reason: >-
+      budget.Budget.Wrap returns llm.Client, not a concrete type: the wrapped client must implement exactly the
+      optional capabilities (ImageGenerator, SpeechGenerator, VideoGenerator, Decider) of the client it wraps, so
+      callers' type assertions keep working, and Go can only express that with one type per combination (ADR-046).

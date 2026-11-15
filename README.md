@@ -216,7 +216,7 @@ Guarantees and known limits (no shell, path validation, `os.Root` confinement, o
 
 ## Standards
 
-Code follows the [govengers standards](https://github.com/govengers/standards) with the `library` profile. `.govengers.yml` lists the waived rules with their reasons: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`. `just check` runs lint, unit tests with `-race` and an 80 % coverage gate for the root module and for `postgresadapter` (on one embedded PostgreSQL 18 per test binary), the end-to-end suite in [test/e2e](test/e2e) (the CLI binary and the library against a fake OpenRouter) and `govulncheck`; `just smoke` runs the live tests (spends money). `docs/wiki` is the source of the GitHub wiki; CI mirrors it for every release (`just wiki` by hand). v1 follows semver: changes within v1 are additive. Releases: push a `vX.Y.Z` tag.
+Code follows the [govengers standards](https://github.com/govengers/standards) with the `library` profile. `.govengers.yml` lists the waived rules with their reasons: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`, DES-004 for `budget.Budget.Wrap`. `just check` runs lint, unit tests with `-race` and an 80 % coverage gate for the root module and for `postgresadapter` (on one embedded PostgreSQL 18 per test binary), the end-to-end suite in [test/e2e](test/e2e) (the CLI binary and the library against a fake OpenRouter) and `govulncheck`; `just smoke` runs the live tests (spends money). `docs/wiki` is the source of the GitHub wiki; CI mirrors it for every release (`just wiki` by hand). v1 follows semver: changes within v1 are additive. Releases: push a `vX.Y.Z` tag.
 
 ## License
 
