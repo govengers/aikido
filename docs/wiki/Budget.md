@@ -31,9 +31,10 @@ then `client, err := spending.Wrap(provider)` and use `client` wherever a model 
 | `Ledger` | required | where the spend is kept: `budget.NewMemoryLedger()` (one process) or `postgresadapter.NewLedger` ([Postgres](Postgres.md)) |
 | `Limits` | required | `func(ctx) ([]Limit, error)`: the limits of a call made with `ctx`, usually from the identity in it. None: the call is neither checked nor charged. An error refuses the call with it |
 | `ChargeFailed` | none | `func(ctx, err)`: told when charging a finished call failed; the result reached the caller, the cost is not recorded |
+| `CancelledCostUSD` | none | `func(ctx, model) float64`: charged for a call whose context ended before the provider reported its cost (a stopped stream, a timeout). The provider bills what it generated until then; without it such calls cost nothing, so a caller that always stops early is never charged |
 | `Now` | `time.Now` | the clock that picks the period |
 
-`Limit{Key, Period, CapMicroUSD}`: `Key` names the account ("user:42", "tenant:7", "global"), `Period` is `budget.PeriodDay` or `budget.PeriodMonth` (UTC), `CapMicroUSD` the spend in millionths of a US dollar at which calls are refused (`5_000_000` is 5 USD, `0` refuses every call). Two limits with the same key and period share one account and are charged once.
+`Limit{Key, Period, CapMicroUSD}`: `Key` names the account ("user:42", "tenant:7", "global"), `Period` is `budget.PeriodDay` or `budget.PeriodMonth` (UTC), `CapMicroUSD` the spend in millionths of a US dollar at which calls are refused (`5_000_000` is 5 USD, `0` refuses every call). Two limits with the same key and period share one account and are charged once; a day and a month limit of one key have separate accounts, also on the first of a month.
 
 `spending.Status(ctx)` returns the limits of a call made with `ctx` with `PeriodStart`, `SpentMicroUSD` and `Exceeded()`, for showing what is left.
 
@@ -42,7 +43,7 @@ then `client, err := spending.Wrap(provider)` and use `client` wherever a model 
 - `Stream`: the cost of the stream's `EventUsage`, charged before the channel closes, so the next call of the same caller sees it. `Complete`: the response's `Usage`.
 - `GenerateImage`, `GenerateVideo`, `Decide`: their response's `Usage`, also when the call returned an error with a usage.
 - `Speak` is checked but never charged: the speech endpoint reports no cost.
-- A call that reports no cost, or a stream abandoned before its usage event, is not charged.
+- A call that reports no cost is not charged. A call whose context ended before the provider reported its cost (a stream stopped before its usage event, a timeout) is charged `CancelledCostUSD`, or nothing without it.
 - The charge runs after the call with the caller's context values but not its cancellation (at most 10 s): a call the caller gave up on was billed anyway.
 
 The cap is checked before a call and charged after it, so calls admitted at the same time can end above the cap by what they cost.
@@ -55,4 +56,4 @@ With [Observability](Observability.md), wrap the observed client: `spending.Wrap
 
 ## Ledger
 
-`budget.Ledger` is `Spent(ctx, accounts) ([]int64, error)` and `Charge(ctx, accounts, microUSD) error`; an `Account` is a `Key` and the `PeriodStart` of its period. Implementations add concurrent charges without losing any. `MemoryLedger.Prune(cutoff)` and `postgresadapter.Ledger.Prune(ctx, cutoff)` drop periods that started before `cutoff`. Your own ledger runs `ledgertest.RunConformance` ([Testing](Testing.md#conformance-suites)).
+`budget.Ledger` is `Spent(ctx, accounts) ([]int64, error)` and `Charge(ctx, accounts, microUSD) error`; an `Account` is a `Key`, a `Period` and the `PeriodStart` of that period. Implementations add concurrent charges without losing any. `MemoryLedger.Prune(cutoff)` and `postgresadapter.Ledger.Prune(ctx, cutoff)` drop periods that started before `cutoff`. Your own ledger runs `ledgertest.RunConformance` ([Testing](Testing.md#conformance-suites)).

@@ -15,9 +15,9 @@ The rules agents and humans get wrong most often, one line each with the page th
 - Negative `RunTimeout` or `LLMCallTimeout` is an error; negative `ToolCallTimeout` or `MaximumToolResultBytes` disables the cap. [Agent](Agent.md#limits)
 - Prompt caching is on by default and adds `Cache` to the request, never to History; a message that already has a breakpoint switches the automatic ones off. [Agent](Agent.md#prompt-caching)
 - `llm/codex` cannot run tools: an agent session over a Codex client fails as soon as tools are offered. [Models](Models.md#codex-chatgpt-subscription)
-- `postgresadapter.Locker` holds one database connection per running or waiting session, outside your pool, and does not work behind a transaction-mode pooler. [Postgres](Postgres.md#locker)
+- `postgresadapter.Locker` holds up to `MaximumConnections` (default 20) database connections, one per running or waiting session, outside your pool, and does not work behind a transaction-mode pooler. [Postgres](Postgres.md#locker)
 - Delete a `postgresadapter.History` conversation under the session's lock, or a running session's next append starts it again without owner. [Postgres](Postgres.md#history)
-- The spend budget is soft: concurrent calls can overshoot a cap by their own cost, and speech and abandoned streams are not charged. [Budget](Budget.md#what-is-charged)
+- The spend budget is soft: concurrent calls can overshoot a cap by their own cost, speech is not charged, and stopped streams only with `CancelledCostUSD`. [Budget](Budget.md#what-is-charged)
 - Wrap the budget around the observed client, `spending.Wrap(observed)`: refused calls then never reach the provider's metrics, and the capabilities stay reachable. [Budget](Budget.md#capabilities-and-composition)
 
 ## Tools

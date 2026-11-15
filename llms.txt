@@ -18,8 +18,8 @@
 - [Models](docs/wiki/Models.md): `Request`, `Response`, `Collect`, streaming, `Usage`, OpenRouter options, provider routing, catalogue, `APIError`, Codex login and `TokenSource`.
 - [Media](docs/wiki/Media.md): images (both endpoints), video, speech, transcription and `Vocabulary`, decision models.
 - [Voice](docs/wiki/Voice.md): `voice.Pipeline`, events, usage, the NDJSON `net/http` handler.
-- [Budget](docs/wiki/Budget.md): `budget.New` options, `Limit`, `Status`, what is charged (stream before close, capabilities, speech never), soft cap, `Wrap(observed)` order, `Ledger` and `Prune`.
-- [Postgres](docs/wiki/Postgres.md): `postgresadapter` module: `MigrationV1`, `History` methods and errors, `Locker` (one connection per session, no transaction-mode pooler), `Ledger`, the test harness.
+- [Budget](docs/wiki/Budget.md): `budget.New` options, `Limit`, `Status`, what is charged (stream before close, capabilities, speech never, `CancelledCostUSD` for stopped calls), soft cap, `Wrap(observed)` order, `Ledger` and `Prune`.
+- [Postgres](docs/wiki/Postgres.md): `postgresadapter` module: `MigrationV1`, `History` methods and errors, `Locker` (one connection per session per replica, `MaximumConnections` cap, `LockLost`, no transaction-mode pooler), `Ledger`, the test harness.
 - [Observability](docs/wiki/Observability.md): `NewObservedClient`, `Observer`, the metrics, spans and wide-event fields, wiring order.
 - [Errors-and-Retry](docs/wiki/Errors-and-Retry.md): sentinels, retry per call path, `retry.Do` and `Policy`.
 - [Testing](docs/wiki/Testing.md): `llmtest.StubClient`, conformance suites (`historytest`, `lockertest`, `ledgertest`, `vfstest`), testing an agent offline, the e2e suite.

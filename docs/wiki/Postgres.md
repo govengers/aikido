@@ -35,15 +35,16 @@ For a conversation list:
 | `List(ctx, ConversationQuery{Owner, Limit, Cursor})` | a page of one owner's conversations, most recently updated first; `Limit` 1 to 500, default 50; pass the page's `Next` as `Cursor` | `ErrInvalidCursor` |
 | `Delete(ctx, id)` | removes the conversation and its messages | `ErrConversationNotFound` |
 
-Every method returns `ErrEmptyConversationID` for an empty ID. Hold the session's `Locker` lock around `Delete`: a running session's next `Append` would start the conversation again without owner. A conversation updated between two `List` pages moves to the front and can be missed until the first page is reloaded.
+Every method returns `ErrEmptyConversationID` for an empty ID and `ErrInvalidText` for an ID, owner or title with a NUL character or invalid UTF-8, which PostgreSQL cannot store; a cursor with one is `ErrInvalidCursor`. `UpdatedAt` never moves back, also when an append waited for another one. Database errors wrap the pgx error with `%w`, so `errors.As` finds a `*pgconn.PgError`. Hold the session's `Locker` lock around `Delete`: a running session's next `Append` would start the conversation again without owner. A conversation updated between two `List` pages moves to the front and can be missed until the first page is reloaded.
 
 ## Locker
 
 A lock is a session-level advisory lock (`pg_advisory_lock`) on a connection the `Locker` opens for it, outside your pool; unlock releases it and closes the connection (ADR-044).
 
 - Every replica must use the same database. A replica that dies or loses its connection releases its locks; nothing expires.
-- One connection per running and per waiting session: size `max_connections` for your concurrent runs.
-- A connection lost in the middle of a run releases the lock while the run goes on; another replica can then start a run of the same session.
+- Calls for one session take turns in the process, so a session costs one connection per replica however many calls wait for it. `LockerOptions.MaximumConnections` (default 20) caps the lock connections of a `Locker`; further calls wait in the process until one is free or their context ends. Size `max_connections` for replicas times that, plus your pools.
+- The lock connection clears `statement_timeout`, `lock_timeout`, `transaction_timeout` and the idle timeouts after connect, so the ones in your `ConnConfig` or role do not end a wait.
+- A connection lost in the middle of a run releases the lock while the run goes on; another replica can then start a run of the same session. `LockerOptions.LockLost(sessionID, err)` is told afterwards, when the unlock finds the lock gone: count or log it.
 - Use a direct connection or a session-mode pooler. A transaction-mode pooler (PgBouncer) breaks session-level locks.
 - A waiter whose context ends leaves the server's lock queue at once.
 
