@@ -15,6 +15,11 @@ import (
 // fails the test instead of hanging it.
 const waitBound = 10 * time.Second
 
+// probeBound is how long a probe waits for a lock that must stay held. It is a live deadline, not
+// an expired one: a backend that checks the context before it looks at the lock (one that
+// connects first) would fail an expired probe whatever the lock's state.
+const probeBound = 100 * time.Millisecond
+
 // RunConformance executes the standard suite against a Locker factory.
 //
 // factory must return a Locker with no lock held on every call; lockers of one factory may share
@@ -43,10 +48,8 @@ func RunConformance(t *testing.T, factory func() agent.Locker) {
 func testHeldIDWaitsUntilTheContextEnds(t *testing.T, locker agent.Locker) {
 	unlock := mustLock(t, locker, "held")
 	defer unlock()
-	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
-	defer cancel()
-	if _, err := locker.Lock(expired, "held"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Lock on a held ID with an expired context = %v; want context.DeadlineExceeded", err)
+	if err := probe(locker, "held"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Lock on a held ID = %v; want it to wait until context.DeadlineExceeded", err)
 	}
 }
 
@@ -95,9 +98,7 @@ func testRepeatedUnlockKeepsTheNextHoldersLock(t *testing.T, locker agent.Locker
 	relock := mustLock(t, locker, "repeat")
 	defer relock()
 	unlock() // a stale unlock must not release the new holder's lock
-	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
-	defer cancel()
-	if _, err := locker.Lock(expired, "repeat"); err == nil {
+	if err := probe(locker, "repeat"); err == nil {
 		t.Error("a repeated unlock released the next holder's lock")
 	}
 }
@@ -107,9 +108,7 @@ func testRepeatedUnlockKeepsTheNextHoldersLock(t *testing.T, locker agent.Locker
 // waiter queued would hand it the lock and block everyone after it.
 func testCancelledWaiterLeavesTheLockUsable(t *testing.T, locker agent.Locker) {
 	unlock := mustLock(t, locker, "cancel")
-	waiting, cancelWaiter := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancelWaiter()
-	if _, err := locker.Lock(waiting, "cancel"); !errors.Is(err, context.DeadlineExceeded) {
+	if err := probe(locker, "cancel"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("waiter whose context ended = %v; want context.DeadlineExceeded", err)
 	}
 	unlock()
@@ -118,7 +117,7 @@ func testCancelledWaiterLeavesTheLockUsable(t *testing.T, locker agent.Locker) {
 }
 
 func testMutualExclusionUnderContention(t *testing.T, locker agent.Locker) {
-	const contenders, rounds = 4, 5
+	const contenders, rounds = 4, 20
 	var (
 		mutex  sync.Mutex
 		inside int
@@ -151,6 +150,7 @@ func testMutualExclusionUnderContention(t *testing.T, locker agent.Locker) {
 					return
 				}
 				enter()
+				handOff() // a scheduling point inside, so a lock that excludes nothing gets caught
 				leave()
 				unlock()
 			}
@@ -160,6 +160,24 @@ func testMutualExclusionUnderContention(t *testing.T, locker agent.Locker) {
 	for _, err := range errs {
 		t.Error(err)
 	}
+}
+
+// handOff lets another goroutine run.
+func handOff() {
+	done := make(chan struct{})
+	go close(done)
+	<-done
+}
+
+// probe tries for probeBound to take a lock that should stay held and releases it if it got it.
+func probe(locker agent.Locker, sessionID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), probeBound)
+	defer cancel()
+	unlock, err := locker.Lock(ctx, sessionID)
+	if err == nil {
+		unlock()
+	}
+	return err
 }
 
 func mustLock(t *testing.T, locker agent.Locker, sessionID string) func() {
