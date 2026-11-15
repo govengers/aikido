@@ -178,16 +178,25 @@ func signal(processID string, sent os.Signal) error {
 }
 
 // unpackedBinaries unpacks the PostgreSQL binaries once per machine: unpacking inside a -race
-// test binary takes about 40 s, starting from unpacked binaries about 3 s. Test binaries of
-// several packages run in parallel, so each unpacks into its own directory and renames it into
-// place; the loser drops its copy.
+// test binary takes about 30 s, starting from unpacked binaries about 3 s. They go next to the
+// archive embedded-postgres downloads, ~/.embedded-postgres-go, which CI keeps in its cache, so a
+// CI run starts from unpacked binaries too. Test binaries of several packages run in parallel, so
+// each unpacks into its own directory and renames it into place; the loser drops its copy.
 func unpackedBinaries() (string, error) {
-	final := filepath.Join(os.TempDir(), "govengers-aikido-postgres-"+string(version))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	cache := filepath.Join(home, ".embedded-postgres-go")
+	final := filepath.Join(cache, "govengers-aikido-postgres-"+string(version))
 	if _, err := os.Stat(filepath.Join(final, "bin", "pg_ctl")); err == nil {
 		return final, nil
 	}
 	defer closeDownloadConnections()
-	scratch, err := os.MkdirTemp("", "govengers-aikido-postgres-unpack-")
+	if err := os.MkdirAll(cache, 0o750); err != nil {
+		return "", err
+	}
+	scratch, err := os.MkdirTemp(cache, "govengers-aikido-postgres-unpack-")
 	if err != nil {
 		return "", err
 	}

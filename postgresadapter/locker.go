@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 
 	"github.com/govengers/aikido/agent"
 )
@@ -50,12 +48,6 @@ func NewLocker(options *LockerOptions) (*Locker, error) {
 		return nil, errors.New("aikido/postgresadapter: LockerOptions.ConnConfig is required")
 	}
 	config := options.ConnConfig.Copy()
-	// A waiter whose context ends cancels its pg_advisory_lock with a cancel request instead of
-	// dropping the socket, so the server stops waiting at once instead of holding a lock for a
-	// client that is gone.
-	config.BuildContextWatcherHandler = func(connection *pgconn.PgConn) ctxwatch.Handler {
-		return &pgconn.CancelRequestContextWatcherHandler{Conn: connection, DeadlineDelay: unlockTimeout}
-	}
 	// The lock connection idles for the whole run; a server-wide idle timeout must not end it.
 	if config.RuntimeParams == nil {
 		config.RuntimeParams = map[string]string{} // Copy clones a non-nil map
@@ -88,7 +80,7 @@ func (l *Locker) Lock(ctx context.Context, sessionID string) (func(), error) {
 		defer cancel()
 		// Unlock first, so the next waiter gets the lock now and not once the server noticed the
 		// closed connection; the close releases it anyway when the statement fails.
-		_, _ = connection.Exec(unlockContext, "SELECT pg_advisory_unlock($1)", key) //nolint:errcheck // closing the connection releases the lock too
+		_, _ = connection.Exec(unlockContext, "SELECT pg_advisory_unlock($1)", key) // closing the connection releases the lock too
 		closeConnection(connection)
 	}), nil
 }

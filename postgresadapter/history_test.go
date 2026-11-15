@@ -82,46 +82,44 @@ func TestHistoryRejectsAnEmptyID(t *testing.T) {
 
 func TestConcurrentAppendsKeepEachBatchTogether(t *testing.T) {
 	pool := postgrestest.New(t)
-	for name, history := range map[string]*postgresadapter.History{
-		"read committed":  mustHistory(t, pool),
-		"repeatable read": mustHistory(t, repeatableReadPool(t, pool)),
-	} {
-		t.Run(name, func(t *testing.T) {
-			const writers, batches = 4, 5
-			var group sync.WaitGroup
-			errs := make(chan error, writers*batches)
-			for writer := range writers {
-				group.Go(func() {
-					for batch := range batches {
-						tag := fmt.Sprintf("%d-%d", writer, batch)
-						if err := history.Append(context.Background(), name, llm.Message{Content: tag}, llm.Message{Content: tag}); err != nil {
-							errs <- err
-						}
-					}
-				})
-			}
-			group.Wait()
-			close(errs)
-			for err := range errs {
-				t.Errorf("Append: %v", err)
-			}
-			messages, err := history.Read(t.Context(), name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(messages) != 2*writers*batches {
-				t.Fatalf("read %d messages; want %d", len(messages), 2*writers*batches)
-			}
-			for index := 0; index < len(messages); index += 2 {
-				if messages[index].Content != messages[index+1].Content {
-					t.Errorf("messages %d and %d are from different appends: %q, %q", index, index+1, messages[index].Content, messages[index+1].Content)
+	t.Run("read committed", func(t *testing.T) { testConcurrentAppends(t, mustHistory(t, pool)) })
+	t.Run("repeatable read", func(t *testing.T) { testConcurrentAppends(t, mustHistory(t, repeatableReadPool(t, pool))) })
+}
+
+func testConcurrentAppends(t *testing.T, history *postgresadapter.History) {
+	const writers, batches = 4, 5
+	id := t.Name()
+	var group sync.WaitGroup
+	errs := make(chan error, writers*batches)
+	for writer := range writers {
+		group.Go(func() {
+			for batch := range batches {
+				tag := fmt.Sprintf("%d-%d", writer, batch)
+				if err := history.Append(context.Background(), id, llm.Message{Content: tag}, llm.Message{Content: tag}); err != nil {
+					errs <- err
 				}
 			}
-			conversation, err := history.Get(t.Context(), name)
-			if err != nil || conversation.MessageCount != 2*writers*batches {
-				t.Errorf("Get = %+v, %v; want MessageCount %d", conversation, err, 2*writers*batches)
-			}
 		})
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("Append: %v", err)
+	}
+	messages, err := history.Read(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2*writers*batches {
+		t.Fatalf("read %d messages; want %d", len(messages), 2*writers*batches)
+	}
+	for index := 0; index < len(messages); index += 2 {
+		if messages[index].Content != messages[index+1].Content {
+			t.Errorf("messages %d and %d are from different appends: %q, %q", index, index+1, messages[index].Content, messages[index+1].Content)
+		}
+	}
+	if conversation, err := history.Get(t.Context(), id); err != nil || conversation.MessageCount != 2*writers*batches {
+		t.Errorf("Get = %+v, %v; want MessageCount %d", conversation, err, 2*writers*batches)
 	}
 }
 
