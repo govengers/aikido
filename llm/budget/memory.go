@@ -19,11 +19,12 @@ type MemoryLedger struct {
 // location and monotonic reading.
 type accountKey struct {
 	key         string
+	period      Period
 	periodStart int64
 }
 
 func keyOf(account Account) accountKey {
-	return accountKey{key: account.Key, periodStart: account.PeriodStart.UnixNano()}
+	return accountKey{key: account.Key, period: account.Period, periodStart: account.PeriodStart.UnixNano()}
 }
 
 var _ Ledger = (*MemoryLedger)(nil)

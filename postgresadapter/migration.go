@@ -38,10 +38,11 @@ CREATE TABLE govengers_aikido_messages (
 
 CREATE TABLE govengers_aikido_spend (
     key             text NOT NULL CHECK (key <> ''),
+    period          text NOT NULL,
     period_start    timestamptz NOT NULL,
     spent_micro_usd bigint NOT NULL CHECK (spent_micro_usd >= 0),
     updated_at      timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (key, period_start)
+    PRIMARY KEY (key, period, period_start)
 );
 
 CREATE INDEX govengers_aikido_spend_period ON govengers_aikido_spend (period_start);

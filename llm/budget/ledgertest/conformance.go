@@ -24,6 +24,7 @@ func RunConformance(t *testing.T, factory func() budget.Ledger) {
 		{"UnchargedAccountsSpentNothing", testUnchargedAccountsSpentNothing},
 		{"ChargeAddsToEveryAccount", testChargeAddsToEveryAccount},
 		{"KeyAndPeriodSeparateAccounts", testKeyAndPeriodSeparateAccounts},
+		{"PeriodsOfOneStartSeparateAccounts", testPeriodsOfOneStartSeparateAccounts},
 		{"PeriodStartIsAnInstant", testPeriodStartIsAnInstant},
 		{"NoAccountsIsANoop", testNoAccountsIsANoop},
 		{"ConcurrentChargesAddUp", testConcurrentChargesAddUp},
@@ -41,32 +42,41 @@ var (
 )
 
 func testUnchargedAccountsSpentNothing(t *testing.T, ledger budget.Ledger) {
-	expectSpent(t, ledger, []budget.Account{{Key: "user:1", PeriodStart: january}, {Key: "global", PeriodStart: january}}, 0, 0)
+	expectSpent(t, ledger, []budget.Account{monthOf("user:1", january), monthOf("global", january)}, 0, 0)
 }
 
 func testChargeAddsToEveryAccount(t *testing.T, ledger budget.Ledger) {
-	user, global := budget.Account{Key: "user:1", PeriodStart: january}, budget.Account{Key: "global", PeriodStart: january}
+	user, global := monthOf("user:1", january), monthOf("global", january)
 	mustCharge(t, ledger, []budget.Account{user, global}, 1500)
 	mustCharge(t, ledger, []budget.Account{global}, 250)
 	expectSpent(t, ledger, []budget.Account{global, user}, 1750, 1500)
 }
 
 func testKeyAndPeriodSeparateAccounts(t *testing.T, ledger budget.Ledger) {
-	mustCharge(t, ledger, []budget.Account{{Key: "user:1", PeriodStart: january}}, 10)
-	mustCharge(t, ledger, []budget.Account{{Key: "user:2", PeriodStart: january}}, 20)
-	mustCharge(t, ledger, []budget.Account{{Key: "user:1", PeriodStart: february}}, 30)
+	mustCharge(t, ledger, []budget.Account{monthOf("user:1", january)}, 10)
+	mustCharge(t, ledger, []budget.Account{monthOf("user:2", january)}, 20)
+	mustCharge(t, ledger, []budget.Account{monthOf("user:1", february)}, 30)
 	expectSpent(t, ledger, []budget.Account{
-		{Key: "user:1", PeriodStart: january},
-		{Key: "user:2", PeriodStart: january},
-		{Key: "user:1", PeriodStart: february},
-		{Key: "user:2", PeriodStart: february},
+		monthOf("user:1", january),
+		monthOf("user:2", january),
+		monthOf("user:1", february),
+		monthOf("user:2", february),
 	}, 10, 20, 30, 0)
+}
+
+// The day and the month that start on January 1 are two accounts.
+func testPeriodsOfOneStartSeparateAccounts(t *testing.T, ledger budget.Ledger) {
+	month := monthOf("user:1", january)
+	day := budget.Account{Key: "user:1", Period: budget.PeriodDay, PeriodStart: january}
+	mustCharge(t, ledger, []budget.Account{month}, 10)
+	mustCharge(t, ledger, []budget.Account{month, day}, 5)
+	expectSpent(t, ledger, []budget.Account{month, day}, 15, 5)
 }
 
 func testPeriodStartIsAnInstant(t *testing.T, ledger budget.Ledger) {
 	elsewhere := january.In(time.FixedZone("UTC+2", 2*60*60))
-	mustCharge(t, ledger, []budget.Account{{Key: "user:1", PeriodStart: elsewhere}}, 5)
-	expectSpent(t, ledger, []budget.Account{{Key: "user:1", PeriodStart: january}}, 5)
+	mustCharge(t, ledger, []budget.Account{monthOf("user:1", elsewhere)}, 5)
+	expectSpent(t, ledger, []budget.Account{monthOf("user:1", january)}, 5)
 }
 
 func testNoAccountsIsANoop(t *testing.T, ledger budget.Ledger) {
@@ -79,7 +89,7 @@ func testNoAccountsIsANoop(t *testing.T, ledger budget.Ledger) {
 
 func testConcurrentChargesAddUp(t *testing.T, ledger budget.Ledger) {
 	const writers, charges = 4, 10
-	accounts := []budget.Account{{Key: "user:1", PeriodStart: january}, {Key: "global", PeriodStart: january}}
+	accounts := []budget.Account{monthOf("user:1", january), monthOf("global", january)}
 	reversed := slices.Clone(accounts)
 	slices.Reverse(reversed)
 	var group sync.WaitGroup
@@ -103,6 +113,11 @@ func testConcurrentChargesAddUp(t *testing.T, ledger budget.Ledger) {
 		t.Errorf("Charge: %v", err)
 	}
 	expectSpent(t, ledger, accounts, writers*charges, writers*charges)
+}
+
+// monthOf is the account of key's month that starts at start.
+func monthOf(key string, start time.Time) budget.Account {
+	return budget.Account{Key: key, Period: budget.PeriodMonth, PeriodStart: start}
 }
 
 func mustCharge(t *testing.T, ledger budget.Ledger, accounts []budget.Account, microUSD int64) {

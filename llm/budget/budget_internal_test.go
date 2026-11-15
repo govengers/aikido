@@ -32,8 +32,8 @@ func TestMicroUSD(t *testing.T) {
 func TestMemoryLedgerPruneDropsOldPeriods(t *testing.T) {
 	ledger := NewMemoryLedger()
 	ctx := context.Background()
-	old := Account{Key: "k", PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	current := Account{Key: "k", PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
+	old := Account{Key: "k", Period: PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	current := Account{Key: "k", Period: PeriodMonth, PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
 	if err := ledger.Charge(ctx, []Account{old, current}, 7); err != nil {
 		t.Fatal(err)
 	}

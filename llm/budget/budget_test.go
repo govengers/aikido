@@ -78,8 +78,8 @@ func (h *harness) charge(t *testing.T, account budget.Account, microUSD int64) {
 }
 
 var (
-	userAccount   = budget.Account{Key: "user:1", PeriodStart: january}
-	globalAccount = budget.Account{Key: "global", PeriodStart: januaryDay}
+	userAccount   = budget.Account{Key: "user:1", Period: budget.PeriodMonth, PeriodStart: january}
+	globalAccount = budget.Account{Key: "global", Period: budget.PeriodDay, PeriodStart: januaryDay}
 )
 
 func costTurn(costUSD float64) llmtest.TurnScript {
@@ -157,6 +157,28 @@ func TestANewPeriodStartsFromZero(t *testing.T) {
 	client := spend.wrap(t, llmtest.NewStubClient(costTurn(0.1)))
 	if _, err := client.Complete(context.Background(), llm.Request{}); err != nil {
 		t.Fatalf("Complete in the next month = %v; want it admitted", err)
+	}
+}
+
+// On the first of a month the day and the month of a key start on the same instant; they are still
+// two accounts, so a call charged only to the month does not use up the day.
+func TestTheDayAndTheMonthOfOneKeyAreSeparateAccounts(t *testing.T) {
+	spend := newHarness(t)
+	spend.now = january.Add(time.Hour)
+	monthly := budget.Limit{Key: "user:1", Period: budget.PeriodMonth, CapMicroUSD: 5_000_000}
+	daily := budget.Limit{Key: "user:1", Period: budget.PeriodDay, CapMicroUSD: 1_000_000}
+	spend.limits = []budget.Limit{monthly}
+	client := spend.wrap(t, llmtest.NewStubClient(costTurn(2), costTurn(0.1)))
+	if _, err := client.Complete(context.Background(), llm.Request{}); err != nil {
+		t.Fatal(err)
+	}
+	spend.limits = []budget.Limit{daily}
+	if _, err := client.Complete(context.Background(), llm.Request{}); err != nil {
+		t.Fatalf("a call under the daily limit = %v; want it admitted", err)
+	}
+	day := budget.Account{Key: "user:1", Period: budget.PeriodDay, PeriodStart: january}
+	if spent := spend.spent(t, userAccount, day); !slices.Equal(spent, []int64{2_000_000, 100_000}) {
+		t.Errorf("spent = %v; want the month 2000000 and the day 100000", spent)
 	}
 }
 

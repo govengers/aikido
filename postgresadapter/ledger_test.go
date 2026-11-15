@@ -42,7 +42,7 @@ func TestNewLedgerNeedsAPool(t *testing.T) {
 
 func TestLedgerChargesARepeatedAccountOnceAndRefusesNothing(t *testing.T) {
 	ledger := newLedger(t, postgrestest.New(t))
-	account := budget.Account{Key: "user:1", PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	account := budget.Account{Key: "user:1", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	if err := ledger.Charge(t.Context(), []budget.Account{account, account}, 3); err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +56,8 @@ func TestLedgerChargesARepeatedAccountOnceAndRefusesNothing(t *testing.T) {
 
 func TestLedgerPruneDropsOldPeriods(t *testing.T) {
 	ledger := newLedger(t, postgrestest.New(t))
-	january := budget.Account{Key: "k", PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	february := budget.Account{Key: "k", PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
+	january := budget.Account{Key: "k", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
+	february := budget.Account{Key: "k", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
 	if err := ledger.Charge(t.Context(), []budget.Account{january, february}, 7); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestBudgetOnTheLedger(t *testing.T) {
 	if err != nil || len(statuses) != 1 || statuses[0].Exceeded() {
 		t.Fatalf("Status = %+v, %v", statuses, err)
 	}
-	if err := ledger.Charge(t.Context(), []budget.Account{{Key: "global", PeriodStart: statuses[0].PeriodStart}}, 1000); err != nil {
+	if err := ledger.Charge(t.Context(), []budget.Account{{Key: "global", Period: statuses[0].Limit.Period, PeriodStart: statuses[0].PeriodStart}}, 1000); err != nil {
 		t.Fatal(err)
 	}
 	if statuses, err = spending.Status(t.Context()); err != nil || !statuses[0].Exceeded() {

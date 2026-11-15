@@ -50,7 +50,8 @@ func (p Period) Start(instant time.Time) (time.Time, error) {
 // Limit caps the spend of one key in one period.
 type Limit struct {
 	// Key names what is limited ("user:42", "tenant:7", "global"); it is the Ledger's key. Two
-	// limits with the same Key and Period share one account.
+	// limits with the same Key and Period share one account; a day and a month limit of one key
+	// have separate accounts.
 	Key string
 	// Period is the window the spend accumulates in.
 	Period Period
@@ -59,9 +60,11 @@ type Limit struct {
 	CapMicroUSD int64
 }
 
-// Account is where the Ledger keeps one key's spend in one period.
+// Account is where the Ledger keeps one key's spend in one period. Key, Period and PeriodStart
+// together name it: the day and the month that start on the same instant are two accounts.
 type Account struct {
-	Key string
+	Key    string
+	Period Period
 	// PeriodStart is the start of the period in UTC, as Period.Start returns it.
 	PeriodStart time.Time
 }
@@ -122,6 +125,10 @@ type Status struct {
 	SpentMicroUSD int64
 }
 
+func (s Status) account() Account {
+	return Account{Key: s.Limit.Key, Period: s.Limit.Period, PeriodStart: s.PeriodStart}
+}
+
 // Exceeded reports whether the limit refuses calls.
 func (s Status) Exceeded() bool { return s.SpentMicroUSD >= s.Limit.CapMicroUSD }
 
@@ -168,7 +175,7 @@ func (b *Budget) status(ctx context.Context) ([]Status, []Account, error) {
 			return nil, nil, err
 		}
 		statuses[index] = Status{Limit: limit, PeriodStart: start}
-		if account := (Account{Key: limit.Key, PeriodStart: start}); !slices.Contains(accounts, account) {
+		if account := statuses[index].account(); !slices.Contains(accounts, account) {
 			accounts = append(accounts, account)
 		}
 	}
@@ -180,7 +187,7 @@ func (b *Budget) status(ctx context.Context) ([]Status, []Account, error) {
 		return nil, nil, fmt.Errorf("aikido/llm/budget: the ledger returned %d spends for %d accounts", len(spent), len(accounts))
 	}
 	for index := range statuses {
-		statuses[index].SpentMicroUSD = spent[slices.Index(accounts, Account{Key: statuses[index].Limit.Key, PeriodStart: statuses[index].PeriodStart})]
+		statuses[index].SpentMicroUSD = spent[slices.Index(accounts, statuses[index].account())]
 	}
 	return statuses, accounts, nil
 }
