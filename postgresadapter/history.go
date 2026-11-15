@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,9 @@ var (
 	ErrConversationNotFound = errors.New("aikido/postgresadapter: conversation not found")
 	// ErrInvalidCursor is returned by List for a Cursor that is not a Next of an earlier page.
 	ErrInvalidCursor = errors.New("aikido/postgresadapter: invalid cursor")
+	// ErrInvalidText is returned for an ID, owner or title PostgreSQL cannot store as text: one
+	// that is not valid UTF-8 or holds a NUL character.
+	ErrInvalidText = errors.New("aikido/postgresadapter: text is not valid UTF-8 or holds NUL")
 )
 
 // Conversation is the listing entry of one agent session: the History's session ID is its ID.
@@ -66,13 +70,16 @@ func NewHistory(options *HistoryOptions) (*History, error) {
 
 // appendMessages adds the messages after the conversation's earlier ones in one statement. The
 // conversation row's update locks it, so concurrent appends to one conversation take turns and
-// each gets a contiguous range of ordinals; the first append creates the row.
+// each gets a contiguous range of ordinals; the first append creates the row. updated_at is the
+// time the row lock was granted, not the transaction's start (now()), so an append that waited
+// for another one does not move it back.
 const appendMessages = `
 WITH conversation AS (
     INSERT INTO govengers_aikido_conversations AS existing (id, message_count)
     VALUES ($1, cardinality($2::text[]))
     ON CONFLICT (id) DO UPDATE
-        SET message_count = existing.message_count + EXCLUDED.message_count, updated_at = now()
+        SET message_count = existing.message_count + EXCLUDED.message_count,
+            updated_at = greatest(existing.updated_at, clock_timestamp())
     RETURNING message_count
 )
 INSERT INTO govengers_aikido_messages (conversation_id, ordinal, message)
@@ -85,8 +92,8 @@ FROM conversation, unnest($2::text[]) WITH ORDINALITY AS item (message, ordinali
 // Append to a conversation that Delete removes concurrently starts it again; delete under the
 // session's agent.Locker lock.
 func (h *History) Append(ctx context.Context, sessionID string, messages ...llm.Message) error {
-	if sessionID == "" {
-		return ErrEmptyConversationID
+	if err := checkID(sessionID); err != nil {
+		return err
 	}
 	if len(messages) == 0 {
 		return nil
@@ -116,8 +123,8 @@ SELECT message FROM govengers_aikido_messages WHERE conversation_id = $1 ORDER B
 
 // Read returns the conversation's messages in append order, none for an unknown conversation.
 func (h *History) Read(ctx context.Context, sessionID string) ([]llm.Message, error) {
-	if sessionID == "" {
-		return nil, ErrEmptyConversationID
+	if err := checkID(sessionID); err != nil {
+		return nil, err
 	}
 	rows, err := h.pool.Query(ctx, readMessages, sessionID)
 	if err != nil {
@@ -148,8 +155,8 @@ ON CONFLICT (id) DO NOTHING`
 // Append; the other fields are ignored. It returns ErrConversationExists when the ID is taken, also
 // by an Append that came first.
 func (h *History) Create(ctx context.Context, conversation Conversation) error {
-	if conversation.ID == "" {
-		return ErrEmptyConversationID
+	if err := checkID(conversation.ID, conversation.Owner, conversation.Title); err != nil {
+		return err
 	}
 	tag, err := h.pool.Exec(ctx, createConversation, conversation.ID, conversation.Owner, conversation.Title)
 	if err != nil {
@@ -167,8 +174,8 @@ const selectConversation = `SELECT ` + conversationColumns + ` FROM govengers_ai
 
 // Get returns the conversation id, or ErrConversationNotFound.
 func (h *History) Get(ctx context.Context, id string) (Conversation, error) {
-	if id == "" {
-		return Conversation{}, ErrEmptyConversationID
+	if err := checkID(id); err != nil {
+		return Conversation{}, err
 	}
 	rows, err := h.pool.Query(ctx, selectConversation, id)
 	if err != nil {
@@ -200,11 +207,15 @@ func (h *History) Delete(ctx context.Context, id string) error {
 	return h.changeOne(ctx, "delete", deleteConversation, id)
 }
 
-func (h *History) changeOne(ctx context.Context, action, statement, id string, arguments ...any) error {
-	if id == "" {
-		return ErrEmptyConversationID
+func (h *History) changeOne(ctx context.Context, action, statement, id string, texts ...string) error {
+	if err := checkID(id, texts...); err != nil {
+		return err
 	}
-	tag, err := h.pool.Exec(ctx, statement, append([]any{id}, arguments...)...)
+	arguments := []any{id}
+	for _, text := range texts {
+		arguments = append(arguments, text)
+	}
+	tag, err := h.pool.Exec(ctx, statement, arguments...)
 	if err != nil {
 		return fmt.Errorf("aikido/postgresadapter: %s conversation %s: %w", action, id, err)
 	}
@@ -253,6 +264,9 @@ func (h *History) List(ctx context.Context, query ConversationQuery) (Conversati
 	if limit < 1 || limit > MaximumListLimit {
 		return ConversationPage{}, fmt.Errorf("aikido/postgresadapter: list conversations: limit %d is outside 1 to %d", query.Limit, MaximumListLimit)
 	}
+	if err := checkText(query.Owner); err != nil {
+		return ConversationPage{}, err
+	}
 	statement, arguments := listFirstPage, []any{query.Owner, limit + 1}
 	if query.Cursor != "" {
 		updatedAt, id, err := decodeCursor(query.Cursor)
@@ -298,10 +312,30 @@ func decodeCursor(cursor string) (time.Time, string, error) {
 	}
 	micros, id, found := strings.Cut(string(decoded), ":")
 	updatedAt, err := strconv.ParseInt(micros, 10, 64)
-	if !found || err != nil || id == "" {
+	if !found || err != nil || checkID(id) != nil {
 		return time.Time{}, "", ErrInvalidCursor
 	}
 	return time.UnixMicro(updatedAt), id, nil
+}
+
+// checkID returns ErrEmptyConversationID for an empty id and ErrInvalidText when id or one of
+// texts cannot be stored.
+func checkID(id string, texts ...string) error {
+	if id == "" {
+		return ErrEmptyConversationID
+	}
+	return checkText(append(texts, id)...)
+}
+
+// checkText returns ErrInvalidText when one of texts is not valid UTF-8 or holds NUL: PostgreSQL
+// rejects both in text columns, and the values can come from a remote client.
+func checkText(texts ...string) error {
+	for _, text := range texts {
+		if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
+			return ErrInvalidText
+		}
+	}
+	return nil
 }
 
 // storedMessage is the JSON form of an llm.Message in the messages table. It has its own field

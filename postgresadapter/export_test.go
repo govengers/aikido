@@ -1,5 +1,8 @@
 package postgresadapter
 
+// AppendMessages exposes Append's statement, for a test that runs it in a transaction of its own.
+const AppendMessages = appendMessages
+
 // LockKey exposes the advisory lock key of a session ID to the tests.
 var LockKey = lockKey
 

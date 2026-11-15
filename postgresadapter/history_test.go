@@ -2,6 +2,7 @@ package postgresadapter_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"reflect"
@@ -60,6 +61,82 @@ func TestHistoryKeepsEveryFieldOfAMessage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(read, messages) {
 		t.Errorf("read = %#v\nwant %#v", read, messages)
+	}
+}
+
+// storedMessage copies llm.Message field by field; a new field would be dropped on every Append
+// without failing another test.
+func TestStoredMessagesCoverEveryFieldOfLLMMessage(t *testing.T) {
+	if fields := reflect.TypeFor[llm.Message]().NumField(); fields != 7 {
+		t.Errorf("llm.Message has %d fields; storedMessage copies 7: add the new ones to it and to TestHistoryKeepsEveryFieldOfAMessage", fields)
+	}
+}
+
+// Text PostgreSQL rejects (a NUL, invalid UTF-8) is a closed error, not a driver error: IDs,
+// owners and titles can come from a remote client.
+func TestHistoryRejectsTextPostgreSQLCannotStore(t *testing.T) {
+	history := newHistory(t)
+	ctx := t.Context()
+	if err := history.Create(ctx, postgresadapter.Conversation{ID: "kept"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"t\x00x", "t\xffx"} {
+		for name, err := range map[string]error{
+			"Append":       history.Append(ctx, bad, llm.Message{Content: "x"}),
+			"Read":         func() error { _, err := history.Read(ctx, bad); return err }(),
+			"Create ID":    history.Create(ctx, postgresadapter.Conversation{ID: bad}),
+			"Create owner": history.Create(ctx, postgresadapter.Conversation{ID: "new", Owner: bad}),
+			"Create title": history.Create(ctx, postgresadapter.Conversation{ID: "new", Title: bad}),
+			"Get":          func() error { _, err := history.Get(ctx, bad); return err }(),
+			"Rename ID":    history.Rename(ctx, bad, "t"),
+			"Rename title": history.Rename(ctx, "kept", bad),
+			"Delete":       history.Delete(ctx, bad),
+			"List owner":   func() error { _, err := history.List(ctx, postgresadapter.ConversationQuery{Owner: bad}); return err }(),
+		} {
+			if !errors.Is(err, postgresadapter.ErrInvalidText) {
+				t.Errorf("%s(%q) = %v; want ErrInvalidText", name, bad, err)
+			}
+		}
+		cursor := base64.RawURLEncoding.EncodeToString([]byte("1:" + bad))
+		if _, err := history.List(ctx, postgresadapter.ConversationQuery{Cursor: cursor}); !errors.Is(err, postgresadapter.ErrInvalidCursor) {
+			t.Errorf("List with a cursor holding %q = %v; want ErrInvalidCursor", bad, err)
+		}
+	}
+}
+
+// An append that waited for another one's row lock sets updated_at after it, not to its own
+// transaction's start.
+func TestAnAppendThatWaitedDoesNotMoveUpdatedAtBack(t *testing.T) {
+	pool := postgrestest.New(t)
+	history := mustHistory(t, pool)
+	ctx := t.Context()
+	if err := history.Append(ctx, "order", llm.Message{Content: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := pool.Begin(ctx) // its now() is this instant
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = earlier.Rollback(ctx) }() // a no-op after the commit
+	if err := history.Append(ctx, "order", llm.Message{Content: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	later, err := history.Get(ctx, "order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := earlier.Exec(ctx, postgresadapter.AppendMessages, "order", []string{`{"role":"user","content":"earlier"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := earlier.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	last, err := history.Get(ctx, "order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.UpdatedAt.Before(later.UpdatedAt) {
+		t.Errorf("UpdatedAt went back from %s to %s", later.UpdatedAt, last.UpdatedAt)
 	}
 }
 
