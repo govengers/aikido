@@ -197,16 +197,22 @@ type charger struct{ budget *Budget }
 
 func (charger) CallStarted(ctx context.Context, _ *llm.Call) context.Context { return ctx }
 
-func (c charger) CallFinished(ctx context.Context, _ *llm.Call, outcome *llm.CallOutcome) {
+func (c charger) CallFinished(ctx context.Context, call *llm.Call, outcome *llm.CallOutcome) {
 	accounts, _ := ctx.Value(accountsKey{}).([]Account) // set by budgeted for every call
-	c.budget.charge(ctx, accounts, costOf(outcome.Usage))
+	c.budget.charge(ctx, accounts, c.budget.costOf(ctx, call.Model, outcome.Usage, outcome.Err))
 }
 
-func costOf(usage *llm.Usage) float64 {
-	if usage == nil {
+// costOf is the cost to charge for a call: the billed cost the provider reported, else
+// CancelledCostUSD when the call ended because its context did.
+func (b *Budget) costOf(ctx context.Context, model string, usage *llm.Usage, err error) float64 {
+	switch {
+	case usage != nil:
+		return usage.CostUSD
+	case b.cancelledCost != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+		return b.cancelledCost(ctx, model)
+	default:
 		return 0
 	}
-	return usage.CostUSD
 }
 
 type imageGenerator struct {
@@ -220,7 +226,7 @@ func (g imageGenerator) GenerateImage(ctx context.Context, request llm.ImageRequ
 		return llm.ImageResponse{}, err
 	}
 	response, err := g.generator.GenerateImage(ctx, request)
-	g.client.budget.charge(ctx, accounts, costOf(response.Usage))
+	g.client.budget.charge(ctx, accounts, g.client.budget.costOf(ctx, request.Model, response.Usage, err))
 	return response, err
 }
 
@@ -247,7 +253,7 @@ func (g videoGenerator) GenerateVideo(ctx context.Context, request llm.VideoRequ
 		return llm.VideoResponse{}, err
 	}
 	response, err := g.generator.GenerateVideo(ctx, request)
-	g.client.budget.charge(ctx, accounts, costOf(response.Usage))
+	g.client.budget.charge(ctx, accounts, g.client.budget.costOf(ctx, request.Model, response.Usage, err))
 	return response, err
 }
 
@@ -262,6 +268,6 @@ func (d decisionMaker) Decide(ctx context.Context, request llm.DecisionRequest) 
 		return llm.DecisionResponse{}, err
 	}
 	response, err := d.decider.Decide(ctx, request)
-	d.client.budget.charge(ctx, accounts, costOf(response.Usage))
+	d.client.budget.charge(ctx, accounts, d.client.budget.costOf(ctx, request.Model, response.Usage, err))
 	return response, err
 }

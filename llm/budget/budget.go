@@ -7,7 +7,8 @@
 //
 // The cap is checked before a call and charged after it, since the cost is known only then: calls
 // running at the same time all pass the check, so the spend can end above the cap by what those
-// calls cost. Calls the provider reports no cost for are not charged.
+// calls cost. Calls the provider reports no cost for are not charged; a call whose caller gave up
+// before the provider reported its cost is charged Options.CancelledCostUSD.
 package budget
 
 import (
@@ -90,6 +91,11 @@ type Options struct {
 	// ChargeFailed is told when charging a finished call failed; the call's result has reached
 	// the caller and the cost is not recorded. Optional; nil drops the error.
 	ChargeFailed func(ctx context.Context, err error)
+	// CancelledCostUSD is charged for a call whose context ended before the provider reported its
+	// cost (a stopped stream, a timeout); the provider bills what it generated until then, so
+	// without it a caller that always stops early is never charged. model is the request's Model.
+	// Optional; nil charges such calls nothing.
+	CancelledCostUSD func(ctx context.Context, model string) float64
 	// Now is the clock that picks the period; nil is time.Now.
 	Now func() time.Time
 }
@@ -100,10 +106,11 @@ const chargeTimeout = 10 * time.Second
 
 // Budget checks and charges the spend of the clients it wraps. It is safe for concurrent use.
 type Budget struct {
-	ledger       Ledger
-	limits       func(ctx context.Context) ([]Limit, error)
-	chargeFailed func(ctx context.Context, err error)
-	now          func() time.Time
+	ledger        Ledger
+	limits        func(ctx context.Context) ([]Limit, error)
+	chargeFailed  func(ctx context.Context, err error)
+	cancelledCost func(ctx context.Context, model string) float64
+	now           func() time.Time
 }
 
 // New returns a Budget.
@@ -111,7 +118,10 @@ func New(options *Options) (*Budget, error) {
 	if options == nil || options.Ledger == nil || options.Limits == nil {
 		return nil, errors.New("aikido/llm/budget: Options needs a Ledger and a Limits function")
 	}
-	budget := &Budget{ledger: options.Ledger, limits: options.Limits, chargeFailed: options.ChargeFailed, now: options.Now}
+	budget := &Budget{
+		ledger: options.Ledger, limits: options.Limits, chargeFailed: options.ChargeFailed,
+		cancelledCost: options.CancelledCostUSD, now: options.Now,
+	}
 	if budget.now == nil {
 		budget.now = time.Now
 	}

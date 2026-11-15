@@ -315,6 +315,53 @@ func TestACallWhoseCallerGaveUpIsStillCharged(t *testing.T) {
 	}
 }
 
+// A caller that stops a stream before the provider reported its cost is charged CancelledCostUSD,
+// and nothing without it.
+func TestAStoppedStreamIsChargedTheCancelledCost(t *testing.T) {
+	for name, test := range map[string]struct {
+		cancelledCost func(context.Context, string) float64
+		want          int64
+	}{
+		"with CancelledCostUSD": {func(_ context.Context, model string) float64 {
+			if model != "m" {
+				return 1
+			}
+			return 0.3
+		}, 300_000},
+		"without": {nil, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spend := newHarness(t)
+			stopped, err := budget.New(&budget.Options{
+				Ledger:           spend.ledger,
+				Limits:           func(context.Context) ([]budget.Limit, error) { return spend.limits, nil },
+				CancelledCostUSD: test.cancelledCost,
+				Now:              func() time.Time { return spend.now },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			block := make(chan struct{})
+			defer close(block)
+			client, err := stopped.Wrap(llmtest.NewStubClient(llmtest.TurnScript{Block: block, Events: costTurn(5).Events}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			events, err := client.Stream(ctx, llm.Request{Model: "m"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancel() // the user pressed stop before the provider's usage arrived
+			for range events {
+			}
+			if spent := spend.spent(t, userAccount); spent[0] != test.want {
+				t.Errorf("spent = %d; want %d", spent[0], test.want)
+			}
+		})
+	}
+}
+
 func TestCapabilitiesAreCheckedAndCharged(t *testing.T) {
 	spend := newHarness(t)
 	stub := llmtest.NewStubClient()
