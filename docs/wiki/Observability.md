@@ -26,7 +26,9 @@ if err != nil {
 session, err := agent.NewSession(&agent.SessionOptions{Client: chat, ...})
 ```
 
-`ObservedClient` implements only `llm.Client` (`Stream`, `Complete`). The optional capabilities of the wrapped client (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`) are not reachable through it; keep the original client for those calls.
+`ObservedClient` implements only `llm.Client` (`Stream`, `Complete`). The optional capabilities of the wrapped client (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`) are not observed; `chat.Unwrap()` returns the wrapped client and `llm.Capability[llm.ImageGenerator](chat)` finds a capability behind it, or keep the original client for those calls.
+
+With a [spend budget](Budget.md), wrap the observed client: `spending.Wrap(chat)`. Refused calls then never reach the provider or the metrics, and the budget's client keeps the capabilities it finds behind `chat`.
 
 Read a stream until its channel closes or cancel its context, as with any `llm.Client`: a stream nobody reads and nobody cancels is never reported. After a cancel the rest of the wrapped stream is drained in the background. A panic of an observer reaches the caller as an `EventError` wrapping `llm.ErrInvalidResponse`.
 

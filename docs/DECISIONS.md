@@ -1028,3 +1028,55 @@ metrics.
 
 **Consequences.** `ObservedClient` implements only `Client`; the optional capabilities (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`) of the wrapped client are neither reachable through it nor observed, so callers keep the original for them. Agent runs and tool calls get no spans or metrics of their own yet: their model calls are observed through the session's client and nest under the caller's span; add an agent observer when a service needs tool latency. The adapters bring `client_golang`, the OpenTelemetry API and `wide-event-logger` into the module graph; module graph pruning keeps them out of consumers that do not import the adapter packages.
 
+
+---
+
+## ADR-043 - PostgreSQL backends in a nested module
+
+**Date:** 16.11.2026
+**Status:** Accepted (supplements ADR-014 and ADR-024: the library now ships a persistent History and a multi-replica Locker next to the in-process ones)
+
+**Context.** A service with more than one replica needs a durable `agent.History`, a `Locker` that works across processes, and a place to keep spend (ADR-045). Every such service would write the same tables and queries; the root module has no database dependency, and consumers of `llm` alone must not inherit pgx and embedded-postgres.
+
+**Decision.** `github.com/govengers/aikido/postgresadapter` is a module of its own in the repository (`postgresadapter/go.mod`, `replace github.com/govengers/aikido => ../` while developing) with one package: `History`, `Locker` and `Ledger`, each built with `NewX(&XOptions{...})`, and `MigrationV1`, the DDL as a constant for the application's goose migrations (tables `govengers_aikido_conversations`, `govengers_aikido_messages`, `govengers_aikido_spend`); nothing runs DDL at startup. One package rather than one per backend: the three share the pool handling and the test harness and are small. `History` stores one row per message as `json` (`jsonb` rejects the `\u0000` escape a model or a binary tool result produces, and the store never queries inside a message) in a private JSON shape with its own field names, so a change to `llm.Message` cannot make stored rows unreadable. A batch is appended in one statement: the upsert on the conversation row increments `message_count` and locks the row, so concurrent appends to one conversation take turns and each gets contiguous ordinals. Every write runs in a transaction pinned to READ COMMITTED, because under a REPEATABLE READ server or role default the waiting upsert fails with a serialization error. For a UI the History adds `Create` (owner and title, `ErrConversationExists` when taken), `Get`, `Rename`, `List` (one owner, newest update first, keyset pages with an opaque cursor) and `Delete`; `Append` to an unknown ID still starts a conversation without owner, as the `historytest` contract requires. The tests start one embedded PostgreSQL 18 per test binary and give each test its own schema (the jobs harness); the unpacked binaries live in `~/.embedded-postgres-go`, which CI caches, so a run does not pay the 30 s of unpacking under `-race`.
+
+**Consequences.** The nested module is versioned with its own tags (`postgresadapter/vX.Y.Z`); before tagging it, its `go.mod` must require the aikido release that contains the root packages it uses (`llm/budget`, `agent/lockertest`). The justfile lints, tests (with its own coverage gate) and scans both modules. `Delete` racing a running session's `Append` starts the conversation again without owner; callers delete under the session's lock. `List` pages over a sort key that changes on every append, so a conversation updated between two pages can be missed until the first page is reloaded.
+
+---
+
+## ADR-044 - The PostgreSQL Locker holds a session-level advisory lock on its own connection
+
+**Date:** 16.11.2026
+**Status:** Accepted
+
+**Context.** Runs of one session must not interleave across replicas. Two designs fit PostgreSQL: a session-level advisory lock held on a connection for the length of the run, or a lease row with an expiry, a heartbeat and a fencing token. `agent.Locker` returns only an unlock function: it cannot tell a run that it lost the lock, and `History.Append` takes no fencing token.
+
+**Decision.** Advisory lock. `Lock` opens a connection of its own from `LockerOptions.ConnConfig` (not from the application's pool), runs `pg_advisory_lock(key)` with the caller's context and returns an idempotent unlock that runs `pg_advisory_unlock` and closes the connection. The key is the first 8 bytes of SHA-256 over a namespace and the session ID. The waiter needs no polling or clock, the server queues waiters, a crashed replica releases its locks with its connection, and nothing expires while a long run is still working. A waiter whose context ends leaves the server's queue at once: pgx sends a cancel request when it drops a connection on a cancelled context, and a test pins it. The lock connection sets `idle_session_timeout = 0`, since it idles for the whole run.
+
+**Consequences.** One database connection per running and per waiting session, outside the application's pool; size `max_connections` for it. A connection lost in the middle of a run releases the lock while the run continues, so another replica can start a run of the same session; a lease would have the same gap without fencing in History. Locks need a direct connection or a session-mode pooler; a transaction-mode pooler (PgBouncer) breaks them. Two session IDs with the same key wait for each other, which costs time, not correctness. `agent/lockertest` is the Locker conformance suite, extracted from the agent package's tests; `LocalLocker` and this Locker both run it.
+
+---
+
+## ADR-045 - A spend budget as a client decorator with a Ledger interface
+
+**Date:** 16.11.2026
+**Status:** Accepted (removes the "no spending cap" limit of the Security page)
+
+**Context.** A service that lets users trigger model calls needs a cap per user, per tenant and overall, in real money: providers report the billed cost of each call (`llm.Usage.CostUSD`, ADR-030). The cost is known only after the call, calls run concurrently, and several replicas share the cap.
+
+**Decision.** Package `llm/budget`. `budget.New(&Options{Ledger, Limits, ChargeFailed, Now})` returns a `Budget`; `Budget.Wrap(client)` returns an `llm.Client` that, before each call, asks `Limits(ctx)` for the limits of the call (`Limit{Key, Period, CapMicroUSD}`, the application derives them from the identity in the context), reads their spend for the current period (`PeriodDay` or `PeriodMonth`, UTC) from the `Ledger` and refuses the call with `ErrBudgetExceeded` when one is at or above its cap; after the call it charges the cost to every limit's account in one `Ledger.Charge`. Amounts are int64 micro-USD, rounded to the nearest, so sums are exact. Stream and Complete go through an internal `ObservedClient` whose observer charges the call before the stream's channel closes, reusing its handling of abandoned streams and panics; the next call of the same caller sees the charge. The charge runs with the caller's context values but without its cancellation, bounded by 10 s, because a call the caller gave up on was billed anyway. A failed charge goes to the optional `ChargeFailed` callback (the library does not log). `Ledger` is `Spent(ctx, accounts)` and `Charge(ctx, accounts, microUSD)`; `NewMemoryLedger` and `postgresadapter.Ledger` implement it, `llm/budget/ledgertest` is the conformance suite. The Postgres ledger upserts all accounts in one statement ordered by key and period, so two charges of overlapping accounts wait for each other instead of deadlocking, and pins READ COMMITTED. `Budget.Status` returns the limits with their spend for a UI.
+
+**Consequences.** The cap is soft: calls admitted at the same time can push the spend above the cap by what they cost, and a stream abandoned before its usage event is not charged although the provider bills it. Calls without a reported cost are not charged; speech is checked but never charged, since the speech endpoint reports no cost. Wrap `budget(observed(provider))`: refused calls then never reach the provider or its metrics. The returned client implements exactly the capabilities `llm.Capability` finds on the wrapped client (ADR-046), each checked and charged, so a caller's type assertion and fallback keep working. Ledger rows grow with keys times periods; `Prune` deletes old periods.
+
+---
+
+## ADR-046 - Decorators expose the wrapped client with Unwrap; llm.Capability finds a capability behind them
+
+**Date:** 16.11.2026
+**Status:** Accepted (supplements ADR-042)
+
+**Context.** Optional capabilities (`ImageGenerator`, `SpeechGenerator`, `VideoGenerator`, `Decider`) are interfaces callers type-assert on (ADR-029). A decorator such as `ObservedClient` implements only `Client`, so the capabilities of the client behind it were unreachable through it, and the spend budget (ADR-045) has to wrap both the chat calls and the capabilities.
+
+**Decision.** `ObservedClient.Unwrap() Client` returns the wrapped client, and `llm.Capability[T](client)` walks `client`, `client.Unwrap()`, ... and returns the first that implements `T`, the way `errors.As` walks an error chain. The budget wrapper implements `Unwrap` too and, since Go cannot add methods at run time, returns one of sixteen types: one per combination of the four capabilities the wrapped chain has.
+
+**Consequences.** A call through a capability found behind a decorator skips that decorator: images found behind an `ObservedClient` are not observed, as before. A new capability interface needs a new dimension in the budget wrapper's combinations.

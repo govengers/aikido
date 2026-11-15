@@ -19,17 +19,20 @@ Coding agents: start at [llms.txt](llms.txt) and [docs/wiki/Home.md](docs/wiki/H
 - OpenRouter: provider routing per client or per call, model catalogue with per-provider latency and uptime, typed `APIError`, retries at request start honouring `Retry-After`.
 - Codex backend of a ChatGPT subscription: device-code login and a rotating `TokenSource`.
 - Agent loop: `Session` over `History` and `Locker` interfaces, bounded by turns, run, model-call and tool-call timeouts and a tool-result cap, prompt caching on by default, panics contained.
+- PostgreSQL backends in the `postgresadapter` module: a `History` with conversation listing for a UI, a `Locker` that serializes the runs of a session across replicas with an advisory lock, a spend `Ledger`; DDL as a constant for goose.
+- Spend budget: `llm/budget` refuses model calls once a user's, tenant's or global limit per day or month is spent and charges the provider-billed cost, with the image, video, speech and decision capabilities still reachable.
 - Built-in file tools over any `vfs.Storage`: `read_file` (numbered lines), `write_file`, `edit_file`, `multi_edit`, `move_file`, `delete_file`, `list_files`, `grep`, `glob`, `search`, plus an optional `todo_write` plan tool.
 - File stores: memory, a directory confined by `os.Root`, any `fs.FS`; a copy-on-write overlay with change list and unified diff, mounts by path prefix; conformance suites for your own backends.
 - Images (chat and images endpoint), video jobs, text-to-speech, transcription with a correcting vocabulary, decision models; a `voice` package with speech in and out around an agent turn and an NDJSON `net/http` handler.
 - `tools/shell`, an opt-in virtual bash over the same file stores: pipes, loops, redirects and GNU-compatible commands (grep, sed, find, xargs, jq, awk, ...) checked against GNU in CI, with no host access unless the caller allows a program (git, kubectl).
-- Observability without logging: `llm.NewObservedClient` reports every model call to observers; adapters export Prometheus metrics (requests, duration, tokens, cost), OpenTelemetry GenAI spans and summed `llm.*` wide-event fields.
+- Observability without logging: `llm.NewObservedClient` reports every model call to observers; adapters export Prometheus metrics (requests, duration, tokens, cost), OpenTelemetry GenAI spans and summed `llm.*` wide-event fields. `llm.Capability` finds an optional capability behind such decorators.
 - No host shell, no network tools, no logging, no environment reads in the library.
 
 ## Install
 
 ```bash
 go get github.com/govengers/aikido@v1
+go get github.com/govengers/aikido/postgresadapter   # PostgreSQL History, Locker and Ledger
 go install github.com/govengers/aikido/cmd/aikido@latest   # the CLI
 ```
 
@@ -109,11 +112,13 @@ One completion, from [examples/chat-oneshot/main.go](examples/chat-oneshot/main.
 | [`llm/codex`](docs/wiki/Models.md#codex-chatgpt-subscription) | ChatGPT subscription through the Codex backend |
 | [`llm/llmtest`](docs/wiki/Testing.md) | scripted `StubClient` |
 | [`llm/prometheusadapter`, `llm/oteladapter`, `llm/wideeventadapter`](docs/wiki/Observability.md) | metrics, traces and wide-event fields of the model calls |
+| [`llm/budget`](docs/wiki/Budget.md), [`llm/budget/ledgertest`](docs/wiki/Testing.md#conformance-suites) | spend caps per user, tenant or overall; conformance suite for a `Ledger` |
 | [`retry`](docs/wiki/Errors-and-Retry.md) | `Do`, `Policy`, `AfterError` |
 | [`tools`](docs/wiki/Tools.md) | `Registry`, handlers, schema helpers |
 | [`tools/shell`](docs/wiki/Shell.md) | virtual bash over a `vfs.Storage`, host programs only when allowed |
 | [`agent`](docs/wiki/Agent.md) | `Session`, events, limits, `History`, `Locker`, built-in tools |
-| [`agent/history/memory`](docs/wiki/Agent.md#history-and-locker), [`agent/history/historytest`](docs/wiki/Testing.md#conformance-suites) | in-process `History`, conformance suite |
+| [`agent/history/memory`](docs/wiki/Agent.md#history-and-locker), [`agent/history/historytest`](docs/wiki/Testing.md#conformance-suites), [`agent/lockertest`](docs/wiki/Testing.md#conformance-suites) | in-process `History`, conformance suites for `History` and `Locker` |
+| [`postgresadapter`](docs/wiki/Postgres.md) (own module) | PostgreSQL `History` with conversation listing, multi-replica `Locker`, spend `Ledger`, `MigrationV1` |
 | [`vfs`](docs/wiki/Files.md) | `Storage`, `Searchable`, `ScopedStorage`, path rules |
 | [`vfs/memory`, `vfs/osfs`, `vfs/embedfs`](docs/wiki/Files.md#backends) | backends |
 | [`vfs/overlay`](docs/wiki/Files.md#overlay), [`vfs/mount`](docs/wiki/Files.md#mount) | copy-on-write with diff, mounts by prefix |
@@ -131,6 +136,8 @@ One completion, from [examples/chat-oneshot/main.go](examples/chat-oneshot/main.
 - [Media](docs/wiki/Media.md): images, video, speech, transcription, decision models.
 - [Voice](docs/wiki/Voice.md): voice turns and the NDJSON handler.
 - [Observability](docs/wiki/Observability.md): `NewObservedClient`, the metrics, spans and wide-event fields.
+- [Budget](docs/wiki/Budget.md): spend caps on model calls, the `Ledger`, composition with the observed client.
+- [Postgres](docs/wiki/Postgres.md): the `postgresadapter` module: History, Locker, Ledger, migration.
 - [Errors-and-Retry](docs/wiki/Errors-and-Retry.md): sentinels, `APIError`, what is retried where.
 - [Testing](docs/wiki/Testing.md): `StubClient`, conformance suites, testing an agent offline.
 - [CLI](docs/wiki/CLI.md): every command and flag.
@@ -201,7 +208,7 @@ aikido image --ref logo.png --quality high "The same logo on a matte black mug."
 
 ## Security
 
-Guarantees and known limits (no shell, path validation, `os.Root` confinement, overlay dry runs, no spending cap, among others): [docs/wiki/Security.md](docs/wiki/Security.md).
+Guarantees and known limits (no shell, path validation, `os.Root` confinement, overlay dry runs, a soft opt-in spending cap, among others): [docs/wiki/Security.md](docs/wiki/Security.md).
 
 ## Benchmark
 
@@ -209,7 +216,7 @@ Guarantees and known limits (no shell, path validation, `os.Root` confinement, o
 
 ## Standards
 
-Code follows the [govengers standards](https://github.com/govengers/standards) with the `library` profile. `.govengers.yml` lists the waived rules with their reasons: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`. `just check` runs lint, unit tests with `-race` and an 80 % coverage gate, the end-to-end suite in [test/e2e](test/e2e) (the CLI binary and the library against a fake OpenRouter) and `govulncheck`; `just smoke` runs the live tests (spends money). `docs/wiki` is the source of the GitHub wiki; CI mirrors it for every release (`just wiki` by hand). v1 follows semver: changes within v1 are additive. Releases: push a `vX.Y.Z` tag.
+Code follows the [govengers standards](https://github.com/govengers/standards) with the `library` profile. `.govengers.yml` lists the waived rules with their reasons: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`. `just check` runs lint, unit tests with `-race` and an 80 % coverage gate for the root module and for `postgresadapter` (on one embedded PostgreSQL 18 per test binary), the end-to-end suite in [test/e2e](test/e2e) (the CLI binary and the library against a fake OpenRouter) and `govulncheck`; `just smoke` runs the live tests (spends money). `docs/wiki` is the source of the GitHub wiki; CI mirrors it for every release (`just wiki` by hand). v1 follows semver: changes within v1 are additive. Releases: push a `vX.Y.Z` tag.
 
 ## License
 

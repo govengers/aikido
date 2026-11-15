@@ -6,7 +6,7 @@ AI KIt DOing things: one Go library for model calls, tool calling, file-backed a
 
 Three interfaces carry everything.
 
-- **`llm.Client`** is a model provider: `Stream` (events on a channel) and `Complete` (one `llm.Response`). `llm/openrouter` and `llm/codex` implement it, `llm/llmtest.StubClient` fakes it. Further abilities are optional interfaces a caller type-asserts on: `llm.ImageGenerator`, `llm.SpeechGenerator`, `llm.VideoGenerator`, `llm.Decider`. Helpers that work on any client: `llm.Collect`, `llm.CollectWithRetry`, `llm.CompleteWithRetry`, `llm.Transcribe`.
+- **`llm.Client`** is a model provider: `Stream` (events on a channel) and `Complete` (one `llm.Response`). `llm/openrouter` and `llm/codex` implement it, `llm/llmtest.StubClient` fakes it. Further abilities are optional interfaces a caller type-asserts on: `llm.ImageGenerator`, `llm.SpeechGenerator`, `llm.VideoGenerator`, `llm.Decider`; `llm.Capability[T]` finds one behind decorators that offer `Unwrap`. Helpers that work on any client: `llm.Collect`, `llm.CollectWithRetry`, `llm.CompleteWithRetry`, `llm.Transcribe`.
 - **`agent.Session`** runs the model in a loop: it streams one reply, dispatches the tool calls through a `tools.Registry`, feeds the results back and repeats until the model answers without tool calls. The conversation lives in an `agent.History`, runs of one session ID are serialized by an `agent.Locker`. Both are interfaces; `NewLocalSession` fills in the in-process ones.
 - **`vfs.Storage`** is the file store the built-in tools work on: four methods (`ListFiles`, `ReadFile`, `WriteFile`, `DeleteFile`). Optional capabilities: `vfs.Searchable` (adds the `search` tool) and `vfs.ScopedStorage` (bind a tenant before handing the store over). Backends: memory, a directory on disk (`osfs`), any `fs.FS` (`embedfs`); composition: copy-on-write `overlay`, `mount` by path prefix.
 
@@ -23,12 +23,14 @@ Constructors with settings are `New(options *Options) (*X, error)` or `NewX(opti
 | `llm/codex` | the Codex backend of a ChatGPT subscription, device-code login, `TokenSource` | [Models](Models.md#codex-chatgpt-subscription) |
 | `llm/llmtest` | `StubClient`, a scripted client for tests | [Testing](Testing.md) |
 | `llm/prometheusadapter`, `llm/oteladapter`, `llm/wideeventadapter` | metrics, traces and wide-event fields of the model calls, through `llm.NewObservedClient` | [Observability](Observability.md) |
+| `llm/budget`, `llm/budget/ledgertest` | spend caps per user, tenant or overall: `Budget.Wrap`, `Limit`, `Ledger`, `MemoryLedger`, `ErrBudgetExceeded`; conformance suite for your own `Ledger` | [Budget](Budget.md) |
 | `retry` | `Do`, `Policy`, `AfterError` | [Errors-and-Retry](Errors-and-Retry.md) |
 | `tools` | `Registry`, `Handler`, `Environment`, schema helpers | [Tools](Tools.md) |
 | `tools/shell` | a virtual bash over a `vfs.Storage`: `New`, `Run`, `Register`, `Builtins`, `External` for allowed host programs | [Shell](Shell.md) |
 | `agent` | `Session`, events, end reasons, limits, `History`, `Locker`, `Drain`, `RegisterVFSTools`, `RegisterPlanTool` | [Agent](Agent.md), [Tools](Tools.md#built-in-file-tools) |
 | `agent/history/memory` | in-process `History` | [Agent](Agent.md#history-and-locker) |
-| `agent/history/historytest` | conformance suite for your own `History` | [Testing](Testing.md#conformance-suites) |
+| `agent/history/historytest`, `agent/lockertest` | conformance suites for your own `History` and `Locker` | [Testing](Testing.md#conformance-suites) |
+| `postgresadapter` (module of its own) | PostgreSQL `History` with conversation listing, multi-replica `Locker`, spend `Ledger`, `MigrationV1` | [Postgres](Postgres.md) |
 | `vfs` | `Storage`, `Searchable`, `ScopedStorage`, `ValidatePath`, errors | [Files](Files.md) |
 | `vfs/memory`, `vfs/osfs`, `vfs/embedfs` | backends: in-process, a directory, an `fs.FS` | [Files](Files.md#backends) |
 | `vfs/overlay` | copy-on-write over any `Storage`: `Changes`, `Commit`, `Discard`, `UnifiedDiff` | [Files](Files.md#overlay) |
@@ -48,13 +50,14 @@ Constructors with settings are `New(options *Options) (*X, error)` or `NewX(opti
 - An agent that works with shell commands (grep, sed, find, xargs, loops) on its files, or runs a few allowed host programs: `tools/shell` ([Shell](Shell.md)).
 - Voice in and out of an agent turn over HTTP: `voice`. Example: [examples/voicebot](../../examples/voicebot/main.go).
 - A ChatGPT subscription instead of an API key: `llm/codex` (no tools).
-- More than one replica: your own `agent.History` (database) and `agent.Locker` (Redis or advisory locks), checked with `historytest`.
+- More than one replica: `postgresadapter.History` and `postgresadapter.Locker` ([Postgres](Postgres.md)), or your own, checked with `historytest` and `lockertest`.
+- A spending cap per user, tenant or overall: `llm/budget` ([Budget](Budget.md)).
 - Tests without network: `llm/llmtest.StubClient` ([Testing](Testing.md)).
 - From the shell: the [CLI](CLI.md).
 
 ## Wiring order (agent)
 
-1. Client: `openrouter.NewClient(&openrouter.Options{APIKey: ...})`.
+1. Client: `openrouter.NewClient(&openrouter.Options{APIKey: ...})`, then optionally `llm.NewObservedClient` and `budget.Wrap` around it, in that order.
 2. Storage: a backend, wrapped in `overlay.New` if the run must not write directly; `Scope(tenant)` first on a multi-tenant store.
 3. Tools: `tools.NewRegistry()`, `agent.RegisterVFSTools(registry, &agent.VFSToolOptions{Storage: ...})`, optionally `agent.RegisterPlanTool(registry)`, `shell.Register(registry, &shell.Options{Storage: ...})` and your own `registry.Register`.
 4. Session: `agent.NewSession` with `History` and `Locker` shared by the whole process (or `agent.NewLocalSession` for one replica), one `Session` per conversation ID.
@@ -71,6 +74,8 @@ Constructors with settings are `New(options *Options) (*X, error)` or `NewX(opti
 - [Media](Media.md): images, video, speech, transcription and vocabulary, decision models.
 - [Voice](Voice.md): `voice.Pipeline`, events, usage, the NDJSON handler.
 - [Observability](Observability.md): `llm.NewObservedClient`, `llm.Observer`, Prometheus metrics, OpenTelemetry spans, wide-event fields.
+- [Budget](Budget.md): spend caps on model calls, `Ledger`, composition with the observed client.
+- [Postgres](Postgres.md): the `postgresadapter` module: History with conversation listing, advisory-lock Locker, Ledger, migration.
 - [Errors-and-Retry](Errors-and-Retry.md): sentinels, `APIError`, retry semantics per call path, `retry.Do`.
 - [Testing](Testing.md): `StubClient`, conformance suites, testing an agent offline.
 - [CLI](CLI.md): every command and flag.

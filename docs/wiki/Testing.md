@@ -57,7 +57,12 @@ Your own backends run the shared suites in their tests:
 	historytest.RunConformance(t, func() agent.History { return memory.New() })
 ```
 
-The factory must return a new, empty instance per call. There is no suite for `agent.Locker`: test that two runs of the same session ID on different `Session` values serialize when they share your Locker, and that different IDs run in parallel.
+The factory must return a new, empty instance per call.
+
+- `lockertest.RunConformance(t, func() agent.Locker { ... })` for an `agent.Locker`: waiting until the context ends, independent IDs, hand-over to a waiter, idempotent unlock, a cancelled waiter, mutual exclusion under contention. Lockers of one factory may share state (a database); the suite uses its own session IDs per sub-test.
+- `ledgertest.RunConformance(t, func() budget.Ledger { ... })` for a `budget.Ledger`: charges add up per key and period, concurrent charges in opposite account orders lose nothing.
+
+The [postgresadapter](Postgres.md#tests) module runs all three on one embedded PostgreSQL per test binary.
 
 ## OpenRouter without network
 
