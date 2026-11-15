@@ -48,8 +48,8 @@ type ObservedClientOptions struct {
 
 // ObservedClient is a Client that reports every Stream and Complete call of the client it
 // wraps to its Observers. It implements only Client: the optional capabilities of the
-// wrapped client (ImageGenerator, SpeechGenerator, ...) are not observed and not reachable
-// through it, so keep the original for those.
+// wrapped client (ImageGenerator, SpeechGenerator, ...) are not observed; reach them with
+// Capability, which follows Unwrap, or keep the original for those.
 type ObservedClient struct {
 	client    Client
 	name      string
@@ -70,6 +70,9 @@ func NewObservedClient(options *ObservedClientOptions) (*ObservedClient, error) 
 	}
 	return &ObservedClient{client: options.Client, name: options.Name, observers: append([]Observer(nil), options.Observers...)}, nil
 }
+
+// Unwrap returns the wrapped client, for Capability.
+func (c *ObservedClient) Unwrap() Client { return c.client }
 
 // Stream calls the wrapped client's Stream and reports the call when its channel closes,
 // with the usage, finish reason and error the events carried. The events pass through
