@@ -362,6 +362,46 @@ func TestAStoppedStreamIsChargedTheCancelledCost(t *testing.T) {
 	}
 }
 
+// queuedClient streams from a producer that queued the whole stream, up to its usage, and closed
+// it before the caller read anything, like OpenRouter's buffered channel at the end of a stream.
+type queuedClient struct {
+	llm.Client
+	costUSD float64
+}
+
+func (c queuedClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event, 18)
+	for range 16 {
+		events <- llm.Event{Kind: llm.EventTextDelta, Text: "a"}
+	}
+	events <- llm.Event{Kind: llm.EventUsage, Usage: &llm.Usage{CostUSD: c.costUSD}}
+	events <- llm.Event{Kind: llm.EventEnd, FinishReason: "stop"}
+	close(events)
+	return events, nil
+}
+
+// A caller that stops a stream whose usage is already queued is charged the billed cost, also
+// through an ObservedClient in between (the recommended order).
+func TestAStoppedStreamWithItsUsageQueuedIsChargedTheBilledCost(t *testing.T) {
+	spend := newHarness(t)
+	observed, err := llm.NewObservedClient(&llm.ObservedClientOptions{Client: queuedClient{costUSD: 2}, Name: "stub", Observers: []llm.Observer{nopObserver{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := spend.wrap(t, observed)
+	ctx, cancel := context.WithCancel(context.Background())
+	events, err := client.Stream(ctx, llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	for range events {
+	}
+	if spent := spend.spent(t, userAccount); spent[0] != 2_000_000 {
+		t.Errorf("spent = %d; want 2000000", spent[0])
+	}
+}
+
 func TestCapabilitiesAreCheckedAndCharged(t *testing.T) {
 	spend := newHarness(t)
 	stub := llmtest.NewStubClient()

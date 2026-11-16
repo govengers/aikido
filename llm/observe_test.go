@@ -176,13 +176,25 @@ func TestStreamReportsACallerThatGaveUp(t *testing.T) {
 	}
 }
 
+// pausingClient sends one event, then nothing until ctx ends.
+type pausingClient struct{ llm.Client }
+
+func (pausingClient) Stream(ctx context.Context, _ llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event)
+	go func() {
+		defer close(events)
+		select {
+		case events <- llm.Event{Kind: llm.EventTextDelta, Text: "a"}:
+		case <-ctx.Done():
+			return
+		}
+		<-ctx.Done()
+	}()
+	return events, nil
+}
+
 func TestStreamStopsForwardingWhenTheCallerStopsReading(t *testing.T) {
-	stub := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
-		{Kind: llm.EventTextDelta, Text: "a"},
-		{Kind: llm.EventTextDelta, Text: "b"},
-		{Kind: llm.EventEnd},
-	}})
-	harness := newObserved(t, stub)
+	harness := newObserved(t, pausingClient{})
 	observed, first := harness.client, harness.first
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -357,6 +369,70 @@ func TestAProducerThatIgnoresTheCancelDoesNotHoldTheCaller(t *testing.T) {
 	close(client.release) // the drain takes the producer's last event, so nothing leaks
 
 	if outcome := harness.first.outcome(t); !errors.Is(outcome.Err, context.Canceled) {
+		t.Errorf("outcome error = %v, want context.Canceled", outcome.Err)
+	}
+}
+
+// queuedClient streams from a producer that queued its whole stream, up to the usage and the
+// end, and closed it before the caller read anything.
+type queuedClient struct {
+	llm.Client
+	usage *llm.Usage
+}
+
+func (c queuedClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event, 18)
+	for range 16 {
+		events <- llm.Event{Kind: llm.EventTextDelta, Text: "a"}
+	}
+	events <- llm.Event{Kind: llm.EventUsage, Usage: c.usage}
+	events <- llm.Event{Kind: llm.EventEnd, FinishReason: "stop"}
+	close(events)
+	return events, nil
+}
+
+// A caller that gives up while the usage is still queued behind events it did not read: every
+// ObservedClient on the way still reports the usage.
+func TestAnAbandonedStreamReportsTheUsageAlreadyQueued(t *testing.T) {
+	usage := &llm.Usage{CostUSD: 2}
+	inner := newObserved(t, queuedClient{usage: usage})
+	outer := newObserved(t, inner.client)
+	for name, harness := range map[string]observedHarness{"one ObservedClient": inner, "nested ObservedClients": outer} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			events, err := harness.client.Stream(ctx, llm.Request{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			for range events {
+			}
+			if outcome := inner.first.outcomes[len(inner.first.outcomes)-1]; outcome.Usage != usage {
+				t.Errorf("inner outcome = %+v, want the queued usage", outcome)
+			}
+			if outcome := harness.first.outcomes[len(harness.first.outcomes)-1]; outcome.Usage != usage {
+				t.Errorf("outcome = %+v, want the queued usage", outcome)
+			}
+		})
+	}
+}
+
+func TestANestedObservedClientDoesNotHoldTheCallerOnAProducerThatIgnoresTheCancel(t *testing.T) {
+	client := stubbornClient{release: make(chan struct{})}
+	outer := newObserved(t, newObserved(t, client).client)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	events, err := outer.client.Stream(ctx, llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-events
+	cancel()
+	for range events { // closes although the producer still holds its channel open
+	}
+	close(client.release)
+
+	if outcome := outer.first.outcome(t); !errors.Is(outcome.Err, context.Canceled) {
 		t.Errorf("outcome error = %v, want context.Canceled", outcome.Err)
 	}
 }

@@ -30,7 +30,7 @@ session, err := agent.NewSession(&agent.SessionOptions{Client: chat, ...})
 
 With a [spend budget](Budget.md), wrap the observed client: `spending.Wrap(chat)`. Refused calls then never reach the provider or the metrics, and the budget's client keeps the capabilities it finds behind `chat`.
 
-Read a stream until its channel closes or cancel its context, as with any `llm.Client`: a stream nobody reads and nobody cancels is never reported. After a cancel the rest of the wrapped stream is drained in the background. A panic of an observer reaches the caller as an `EventError` wrapping `llm.ErrInvalidResponse`.
+Read a stream until its channel closes or cancel its context, as with any `llm.Client`: a stream nobody reads and nobody cancels is never reported. After a cancel the events the provider already queued (its usage, its end) still count, and the rest of the wrapped stream is drained in the background. A panic of an observer reaches the caller as an `EventError` wrapping `llm.ErrInvalidResponse`.
 
 Observers start in order and finish in reverse order. `CallStarted` returns the context the call runs in, so the tracing observer's span is the parent of the provider's own HTTP spans (an `otelhttp` transport in `openrouter.Options.HTTPClient`). Put `oteladapter` first.
 

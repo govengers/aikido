@@ -41,7 +41,7 @@
 
 - [README.md](README.md): overview, features, quick start, package table, CLI.
 - [docs/migration.md](docs/migration.md): from `github.com/mxcd/aikido` v0.12 (and v0.3) to v1: renames, constructors, removed API, behaviour changes.
-- [docs/DECISIONS.md](docs/DECISIONS.md): architecture decisions ADR-001 to ADR-046.
+- [docs/DECISIONS.md](docs/DECISIONS.md): architecture decisions ADR-001 to ADR-047.
 - [GitHub Releases](https://github.com/govengers/aikido/releases): changelog and release notes.
 - [pkg.go.dev](https://pkg.go.dev/github.com/govengers/aikido): API reference.
 
