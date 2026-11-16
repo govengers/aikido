@@ -7,13 +7,14 @@ go 1.26.0
 replace github.com/govengers/aikido => ../
 
 require (
-	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/govengers/aikido v1.2.0
+	github.com/govengers/postgrestest v0.0.0-20261116042556-e8a91e54648c
 	github.com/jackc/pgx/v5 v5.12.0
 	go.uber.org/goleak v1.3.0
 )
 
 require (
+	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

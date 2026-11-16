@@ -54,4 +54,4 @@ A lock is a session-level advisory lock (`pg_advisory_lock`) on a connection the
 
 ## Tests
 
-The module's tests start one embedded PostgreSQL 18 per test binary and give each test its own schema. The binaries are unpacked once into `~/.embedded-postgres-go`, which the CI caches. The concurrency tests also run on a pool whose transactions default to REPEATABLE READ.
+The module's tests use [govengers/postgrestest](https://github.com/govengers/postgrestest): one embedded PostgreSQL 18 per test binary on a Unix socket, and for each test its own database, copied from a template that `MigrationV1` built once and dropped when the test ends. The binaries are unpacked once into `~/.embedded-postgres-go/postgrestest`, which the CI caches. With `POSTGRESTEST_URL` set the tests run on that server instead. Polls of `pg_locks` and `pg_stat_activity` filter on `current_database()`, since every test database shares the server. The concurrency tests also run on a pool whose transactions default to REPEATABLE READ.

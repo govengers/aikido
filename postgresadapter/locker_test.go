@@ -14,7 +14,6 @@ import (
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/llm/llmtest"
 	"github.com/govengers/aikido/postgresadapter"
-	"github.com/govengers/aikido/postgresadapter/internal/postgrestest"
 )
 
 // waitBound bounds a wait that must end, so a broken Locker fails the test instead of hanging it.
@@ -35,7 +34,7 @@ func newLockerWith(t *testing.T, options *postgresadapter.LockerOptions) *postgr
 }
 
 func TestLockerConformance(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	lockertest.RunConformance(t, func() agent.Locker { return newLocker(t, pool) })
 }
 
@@ -56,7 +55,7 @@ func TestNewLockerNeedsAConnConfig(t *testing.T) {
 }
 
 func TestLockersOfTwoReplicasExcludeEachOther(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	first, second := newLocker(t, pool), newLocker(t, pool)
 	unlock, err := first.Lock(t.Context(), "replicated")
 	if err != nil {
@@ -84,7 +83,7 @@ func TestLockersOfTwoReplicasExcludeEachOther(t *testing.T) {
 // until the holder unlocks and then hold the lock for a client that is gone. pgx sends a cancel
 // request when it drops a connection on a cancelled context; this pins that.
 func TestACancelledWaiterLeavesTheServersLockQueue(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	locker := newLocker(t, pool)
 	unlock, err := newLocker(t, pool).Lock(t.Context(), "queue") // another replica holds it
 	if err != nil {
@@ -123,7 +122,7 @@ func TestLockReportsAnUnreachableDatabase(t *testing.T) {
 // The lock connection inherits the timeouts of the application's ConnConfig; none of them may end
 // a wait for a lock while its context lives.
 func TestServerTimeoutsDoNotEndTheWait(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	config := pool.Config().ConnConfig.Copy()
 	for _, name := range []string{"statement_timeout", "lock_timeout", "transaction_timeout", "idle_session_timeout"} {
 		config.RuntimeParams[name] = "20ms"
@@ -149,7 +148,7 @@ func TestServerTimeoutsDoNotEndTheWait(t *testing.T) {
 // Calls for one session wait in the process, so they cost one connection; calls for other
 // sessions beyond MaximumConnections wait for a free connection.
 func TestLockConnectionsAreBounded(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	config := pool.Config().ConnConfig.Copy()
 	config.RuntimeParams["application_name"] = "bounded-locker"
 	locker := newLockerWith(t, &postgresadapter.LockerOptions{ConnConfig: config, MaximumConnections: 2})
@@ -204,17 +203,18 @@ func TestLockConnectionsAreBounded(t *testing.T) {
 	}
 }
 
-// lockConnections counts the open lock connections of the bounded-locker application.
+// lockConnections counts the open lock connections of the bounded-locker application in the
+// test's database (every test database shares the server).
 func lockConnections(t *testing.T, pool *pgxpool.Pool) (open int) {
 	t.Helper()
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE application_name = 'bounded-locker'`).Scan(&open); err != nil {
+	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND application_name = 'bounded-locker'`).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
 	return open
 }
 
 func TestLockLostReportsALockWhoseConnectionBroke(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	var lost []error
 	locker := newLockerWith(t, &postgresadapter.LockerOptions{
 		ConnConfig: pool.Config().ConnConfig,
@@ -242,7 +242,7 @@ func TestLockLostReportsALockWhoseConnectionBroke(t *testing.T) {
 
 // A LockLost that panics still leaves the session's turn and the connection free.
 func TestAPanickingLockLostKeepsTheSessionAndTheConnectionFree(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	locker := newLockerWith(t, &postgresadapter.LockerOptions{
 		ConnConfig:         pool.Config().ConnConfig,
 		MaximumConnections: 1,
@@ -266,13 +266,15 @@ func TestAPanickingLockLostKeepsTheSessionAndTheConnectionFree(t *testing.T) {
 	again()
 }
 
-// terminateLockBackend ends the backend that holds the session's advisory lock.
+// terminateLockBackend ends the backend that holds the session's advisory lock in the test's
+// database.
 func terminateLockBackend(t *testing.T, pool *pgxpool.Pool, sessionID string) {
 	t.Helper()
 	key := uint64(postgresadapter.LockKey(sessionID)) //nolint:gosec // G115: the key's bits, split the way pg_locks shows them
 	var terminated bool
 	if err := pool.QueryRow(t.Context(), `SELECT pg_terminate_backend(pid) FROM pg_locks
-		WHERE locktype = 'advisory' AND granted AND classid::bigint = $1 AND objid::bigint = $2`,
+		WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND classid::bigint = $1 AND objid::bigint = $2`,
 		int64(key>>32), int64(key&0xFFFFFFFF)).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate the lock's backend = %v, %v", terminated, err)
 	}
@@ -281,7 +283,7 @@ func terminateLockBackend(t *testing.T, pool *pgxpool.Pool, sessionID string) {
 // Two replicas run the same session: the second run reads the history only after the first one
 // appended, because the advisory lock serializes them.
 func TestSessionsOnTwoReplicasTakeTurns(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	history := mustHistory(t, pool)
 	release := make(chan struct{})
 	first := newReplicaSession(t, history, newLocker(t, pool), llmtest.NewStubClient(textReply("one", release)))

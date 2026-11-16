@@ -15,12 +15,11 @@ import (
 	"github.com/govengers/aikido/agent/history/historytest"
 	"github.com/govengers/aikido/llm"
 	"github.com/govengers/aikido/postgresadapter"
-	"github.com/govengers/aikido/postgresadapter/internal/postgrestest"
 )
 
 func newHistory(t *testing.T) *postgresadapter.History {
 	t.Helper()
-	history, err := postgresadapter.NewHistory(&postgresadapter.HistoryOptions{Pool: postgrestest.New(t)})
+	history, err := postgresadapter.NewHistory(&postgresadapter.HistoryOptions{Pool: postgres.Pool(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +106,7 @@ func TestHistoryRejectsTextPostgreSQLCannotStore(t *testing.T) {
 // An append that waited for another one's row lock sets updated_at after it, not to its own
 // transaction's start.
 func TestAnAppendThatWaitedDoesNotMoveUpdatedAtBack(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	history := mustHistory(t, pool)
 	ctx := t.Context()
 	if err := history.Append(ctx, "order", llm.Message{Content: "first"}); err != nil {
@@ -158,7 +157,7 @@ func TestHistoryRejectsAnEmptyID(t *testing.T) {
 }
 
 func TestConcurrentAppendsKeepEachBatchTogether(t *testing.T) {
-	pool := postgrestest.New(t)
+	pool := postgres.Pool(t)
 	t.Run("read committed", func(t *testing.T) { testConcurrentAppends(t, mustHistory(t, pool)) })
 	t.Run("repeatable read", func(t *testing.T) { testConcurrentAppends(t, mustHistory(t, repeatableReadPool(t, pool))) })
 }

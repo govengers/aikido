@@ -1034,7 +1034,7 @@ metrics.
 ## ADR-043 - PostgreSQL backends in a nested module
 
 **Date:** 16.11.2026
-**Status:** Accepted (supplements ADR-014 and ADR-024: the library now ships a persistent History and a multi-replica Locker next to the in-process ones)
+**Status:** Accepted (supplements ADR-014 and ADR-024: the library now ships a persistent History and a multi-replica Locker next to the in-process ones; the test harness part is superseded by ADR-048)
 
 **Context.** A service with more than one replica needs a durable `agent.History`, a `Locker` that works across processes, and a place to keep spend (ADR-045). Every such service would write the same tables and queries; the root module has no database dependency, and consumers of `llm` alone must not inherit pgx and embedded-postgres.
 
@@ -1091,3 +1091,16 @@ metrics.
 **Decision.** On a cancel, `ObservedClient` first takes the events already queued in the wrapped stream without waiting (at most its buffer size plus one, since a producer that ignores ctx could send forever) and records them, then reports the call and drains the rest in the background as before. When the wrapped client is itself an `ObservedClient`, it reads that stream to its close, since an `ObservedClient` closes at once after a cancel; the inner one, told through the context that its consumer reads to the close, hands the queued events on before it closes, and the event it was offering when the cancel came first.
 
 **Consequences.** Every `ObservedClient` of a chain of directly nested `ObservedClient`s reports the same usage (the budget wraps one, ADR-045); a decorator of another type in between reads like an ordinary caller, so the clients above it can miss the queued usage. A cancelled stream whose end was already queued counts as a success, as one whose last event the caller did not read did already. The report still comes before the caller's channel closes. A usage event the provider produces after the cancel stays unseen.
+
+---
+
+## ADR-048 - The postgresadapter tests run on govengers/postgrestest with a database per test
+
+**Date:** 16.11.2026
+**Status:** Accepted (supersedes the test harness part of ADR-043)
+
+**Context.** `postgresadapter/internal/postgrestest` was a copy of the jobs harness: one embedded-postgres instance per test binary on a TCP port, a schema per test with `MigrationV1` applied per test, its own orphan sweep in the OS temp directory. Every govengers library carried such a copy, and a fix in one reached none of the others. `github.com/govengers/postgrestest` is the shared version.
+
+**Decision.** The module's tests use postgrestest directly: a package variable `postgres = postgrestest.New(&Options{Migrate: Statements(MigrationV1), Fingerprint: MigrationV1})`, `TestMain` is `goleak.VerifyTestMain(postgres.Main(m))`, and each test takes `postgres.Pool(t)`, a database copied from the template that `MigrationV1` built once. The copied harness is deleted, not kept as a wrapper: it had one entry point and one caller package. The lock tests that read `pg_locks` or `pg_stat_activity` filter on `current_database()`, since every test database shares the server. The justfile does not run the tests through postgrestest's launcher: the module has one PostgreSQL package, so one server per test binary already is one server per run, and the launcher would only add a `go run` build. The module requires the pseudo-version of postgrestest's main until it is tagged.
+
+**Consequences.** Tables are in `public` of the test's own database instead of a schema of a shared one; the tests themselves did not change. The test binaries reach the server over a Unix socket. The Go test cache keeps hitting: the harness's inputs it sees are `POSTGRESTEST_URL`, `HOME`, `PATH` and pgx's `PG*` variables, none of which change between runs. The unpacked binaries move to `~/.embedded-postgres-go/postgrestest`; the old `~/.embedded-postgres-go/govengers-aikido-postgres-18.3.0` can be deleted on developer machines. The module gains a test dependency on postgrestest; consumers of `postgresadapter` do not build it, since only test files import it.
