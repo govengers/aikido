@@ -11,7 +11,6 @@ import (
 	"github.com/govengers/aikido/llm/budget"
 	"github.com/govengers/aikido/llm/budget/ledgertest"
 	"github.com/govengers/aikido/postgresadapter"
-	"github.com/govengers/aikido/postgresadapter/internal/postgrestest"
 )
 
 func newLedger(t *testing.T, pool *pgxpool.Pool) *postgresadapter.Ledger {
@@ -25,10 +24,10 @@ func newLedger(t *testing.T, pool *pgxpool.Pool) *postgresadapter.Ledger {
 
 func TestLedgerConformance(t *testing.T) {
 	t.Run("read committed", func(t *testing.T) {
-		ledgertest.RunConformance(t, func() budget.Ledger { return newLedger(t, postgrestest.New(t)) })
+		ledgertest.RunConformance(t, func() budget.Ledger { return newLedger(t, postgres.Pool(t)) })
 	})
 	t.Run("repeatable read", func(t *testing.T) {
-		ledgertest.RunConformance(t, func() budget.Ledger { return newLedger(t, repeatableReadPool(t, postgrestest.New(t))) })
+		ledgertest.RunConformance(t, func() budget.Ledger { return newLedger(t, repeatableReadPool(t, postgres.Pool(t))) })
 	})
 }
 
@@ -42,7 +41,7 @@ func TestNewLedgerNeedsAPool(t *testing.T) {
 }
 
 func TestLedgerChargesARepeatedAccountOnceAndRefusesNothing(t *testing.T) {
-	ledger := newLedger(t, postgrestest.New(t))
+	ledger := newLedger(t, postgres.Pool(t))
 	account := budget.Account{Key: "user:1", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	if err := ledger.Charge(t.Context(), []budget.Account{account, account}, 3); err != nil {
 		t.Fatal(err)
@@ -58,7 +57,7 @@ func TestLedgerChargesARepeatedAccountOnceAndRefusesNothing(t *testing.T) {
 // Prune with a week's retention on 16.11. drops October and the days before 9.11., and keeps the
 // running month although it started before the cutoff.
 func TestLedgerPruneDropsOldPeriods(t *testing.T) {
-	ledger := newLedger(t, postgrestest.New(t))
+	ledger := newLedger(t, postgres.Pool(t))
 	day := func(month time.Month, day int) time.Time { return time.Date(2026, month, day, 0, 0, 0, 0, time.UTC) }
 	accounts := []budget.Account{
 		{Key: "k", Period: budget.PeriodMonth, PeriodStart: day(time.October, 1)},
@@ -80,7 +79,7 @@ func TestLedgerPruneDropsOldPeriods(t *testing.T) {
 
 // A Budget on the Postgres ledger refuses the call after the one that reached the cap.
 func TestBudgetOnTheLedger(t *testing.T) {
-	ledger := newLedger(t, postgrestest.New(t))
+	ledger := newLedger(t, postgres.Pool(t))
 	spending, err := budget.New(&budget.Options{
 		Ledger: ledger,
 		Limits: func(context.Context) ([]budget.Limit, error) {

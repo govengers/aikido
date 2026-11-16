@@ -20,3 +20,8 @@ exceptions:
       budget.Budget.Wrap returns llm.Client, not a concrete type: the wrapped client must implement exactly the
       optional capabilities (ImageGenerator, SpeechGenerator, VideoGenerator, Decider) of the client it wraps, so
       callers' type assertions keep working, and Go can only express that with one type per combination (ADR-046).
+  - rule: DES-003
+    reason: >-
+      The postgresadapter tests keep their one postgrestest.Server in a package variable (postgrestest's documented
+      usage, ADR-048): TestMain has no other channel to the tests, and a server per test is the slow path TST-002
+      steers away from. Test code only; no library package has state that is written.

@@ -6,7 +6,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 gotestsum := "go run gotest.tools/gotestsum@v1.13.0"
 govulncheck := "go run golang.org/x/vuln/cmd/govulncheck@v1.9.0"
 coverage_threshold := "80"
-coverage_excluded := "/examples/|/test/|/cmd/|/internal/postgrestest/"
+coverage_excluded := "/examples/|/test/|/cmd/"
 coverage_gate := "awk -v threshold=" + coverage_threshold + " " + """'/^total:/ { found = 1; sub("%", "", $3); print "coverage " $3 "%"; if ($3 + 0 < threshold) { print "coverage is below " threshold "%"; exit 1 } } END { if (!found) { print "no coverage total"; exit 1 } }'"""
 e2e_inputs := "test/e2e"
 # The nested module with the PostgreSQL backends; a module of its own so the root does not depend on pgx

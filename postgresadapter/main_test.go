@@ -3,15 +3,25 @@ package postgresadapter_test
 import (
 	"testing"
 
+	"github.com/govengers/postgrestest"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/goleak"
 
-	"github.com/govengers/aikido/postgresadapter/internal/postgrestest"
+	"github.com/govengers/aikido/postgresadapter"
 )
 
-func TestMain(m *testing.M) { postgrestest.Main(m) }
+// postgres is the test PostgreSQL of this package: postgres.Pool(t) gives a test its own database,
+// a copy of a template with MigrationV1 applied, dropped when the test ends.
+var postgres = postgrestest.New(&postgrestest.Options{
+	Migrate:     postgrestest.Statements(postgresadapter.MigrationV1),
+	Fingerprint: postgresadapter.MigrationV1,
+})
 
-// repeatableReadPool is a second pool on pool's schema whose transactions default to REPEATABLE
-// READ, the server or role default an application may have set.
+// TestMain stops the PostgreSQL after the tests and fails on leaked goroutines (TST-009).
+func TestMain(m *testing.M) { goleak.VerifyTestMain(postgres.Main(m)) }
+
+// repeatableReadPool is a second pool on pool's database whose transactions default to
+// REPEATABLE READ, the server or role default an application may have set.
 func repeatableReadPool(t *testing.T, pool *pgxpool.Pool) *pgxpool.Pool {
 	t.Helper()
 	config := pool.Config().Copy()

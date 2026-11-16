@@ -62,7 +62,7 @@ The factory must return a new, empty instance per call.
 - `lockertest.RunConformance(t, func() agent.Locker { ... })` for an `agent.Locker`: waiting until the context ends, independent IDs, hand-over to a waiter, idempotent unlock, a cancelled waiter, mutual exclusion under contention. Lockers of one factory may share state (a database); the suite uses its own session IDs per sub-test.
 - `ledgertest.RunConformance(t, func() budget.Ledger { ... })` for a `budget.Ledger`: charges add up per key and period, concurrent charges in opposite account orders lose nothing.
 
-The [postgresadapter](Postgres.md#tests) module runs all three on one embedded PostgreSQL per test binary.
+The [postgresadapter](Postgres.md#tests) module runs all three on one embedded PostgreSQL per test binary, with a database per test ([govengers/postgrestest](https://github.com/govengers/postgrestest)).
 
 ## OpenRouter without network
 
