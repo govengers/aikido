@@ -233,16 +233,48 @@ func TestLockLostReportsALockWhoseConnectionBroke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := uint64(postgresadapter.LockKey("lost")) //nolint:gosec // G115: the key's bits, split the way pg_locks shows them
+	terminateLockBackend(t, pool, "lost")
+	unlock()
+	if len(lost) != 1 {
+		t.Errorf("LockLost calls = %v; want one for the broken lock and none for the kept one", lost)
+	}
+}
+
+// A LockLost that panics still leaves the session's turn and the connection free.
+func TestAPanickingLockLostKeepsTheSessionAndTheConnectionFree(t *testing.T) {
+	pool := postgrestest.New(t)
+	locker := newLockerWith(t, &postgresadapter.LockerOptions{
+		ConnConfig:         pool.Config().ConnConfig,
+		MaximumConnections: 1,
+		LockLost:           func(string, error) { panic("the application's callback broke") },
+	})
+	unlock, err := locker.Lock(t.Context(), "lost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminateLockBackend(t, pool, "lost")
+	func() {
+		defer func() { _ = recover() }() // the agent drops a panic of unlock the same way
+		unlock()
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	again, err := locker.Lock(ctx, "lost")
+	if err != nil {
+		t.Fatalf("Lock after the panic = %v", err)
+	}
+	again()
+}
+
+// terminateLockBackend ends the backend that holds the session's advisory lock.
+func terminateLockBackend(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+	key := uint64(postgresadapter.LockKey(sessionID)) //nolint:gosec // G115: the key's bits, split the way pg_locks shows them
 	var terminated bool
 	if err := pool.QueryRow(t.Context(), `SELECT pg_terminate_backend(pid) FROM pg_locks
 		WHERE locktype = 'advisory' AND granted AND classid::bigint = $1 AND objid::bigint = $2`,
 		int64(key>>32), int64(key&0xFFFFFFFF)).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate the lock's backend = %v, %v", terminated, err)
-	}
-	unlock()
-	if len(lost) != 1 {
-		t.Errorf("LockLost calls = %v; want one for the broken lock and none for the kept one", lost)
 	}
 }
 

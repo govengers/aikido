@@ -43,7 +43,7 @@ then `client, err := spending.Wrap(provider)` and use `client` wherever a model 
 - `Stream`: the cost of the stream's `EventUsage`, charged before the channel closes, so the next call of the same caller sees it. `Complete`: the response's `Usage`.
 - `GenerateImage`, `GenerateVideo`, `Decide`: their response's `Usage`, also when the call returned an error with a usage.
 - `Speak` is checked but never charged: the speech endpoint reports no cost.
-- A call that reports no cost is not charged. A call whose context ended before the provider reported its cost (a stream stopped before its usage event, a timeout) is charged `CancelledCostUSD`, or nothing without it.
+- A call that reports no cost is not charged. A call whose context ended before the provider reported its cost (a stream stopped before its usage event, a timeout) is charged `CancelledCostUSD`, or nothing without it. A usage event the provider had already queued when the stream was stopped is charged as reported.
 - The charge runs after the call with the caller's context values but not its cancellation (at most 10 s): a call the caller gave up on was billed anyway.
 
 The cap is checked before a call and charged after it, so calls admitted at the same time can end above the cap by what they cost.
@@ -56,4 +56,4 @@ With [Observability](Observability.md), wrap the observed client: `spending.Wrap
 
 ## Ledger
 
-`budget.Ledger` is `Spent(ctx, accounts) ([]int64, error)` and `Charge(ctx, accounts, microUSD) error`; an `Account` is a `Key`, a `Period` and the `PeriodStart` of that period. Implementations add concurrent charges without losing any. `MemoryLedger.Prune(cutoff)` and `postgresadapter.Ledger.Prune(ctx, cutoff)` drop periods that started before `cutoff`. Your own ledger runs `ledgertest.RunConformance` ([Testing](Testing.md#conformance-suites)).
+`budget.Ledger` is `Spent(ctx, accounts) ([]int64, error)` and `Charge(ctx, accounts, microUSD) error`; an `Account` is a `Key`, a `Period` and the `PeriodStart` of that period. Implementations add concurrent charges without losing any. `MemoryLedger.Prune(cutoff)` and `postgresadapter.Ledger.Prune(ctx, cutoff)` drop the periods that ended before the one holding `cutoff`; the running day and month always stay, so `Prune(now - retention)` never resets a limit. Your own ledger runs `ledgertest.RunConformance` ([Testing](Testing.md#conformance-suites)).

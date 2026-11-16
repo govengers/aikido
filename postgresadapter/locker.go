@@ -123,9 +123,9 @@ func (l *Locker) Lock(ctx context.Context, sessionID string) (func(), error) {
 		return nil, err
 	}
 	return sync.OnceFunc(func() {
+		defer l.leave(sessionID, turn, true)
+		defer func() { <-l.connections }() // deferred: a panic of LockLost must not keep them taken
 		l.unlock(connection, sessionID)
-		<-l.connections
-		l.leave(sessionID, turn, true)
 	}), nil
 }
 
