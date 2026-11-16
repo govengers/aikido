@@ -8,7 +8,7 @@ replace github.com/govengers/aikido => ../
 
 require (
 	github.com/govengers/aikido v1.2.0
-	github.com/govengers/postgrestest v0.0.0-20261116042556-e8a91e54648c
+	github.com/govengers/postgrestest v0.1.0
 	github.com/jackc/pgx/v5 v5.12.0
 	go.uber.org/goleak v1.3.0
 )
