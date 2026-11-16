@@ -143,11 +143,11 @@ func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Tim
 			select {
 			case observed <- event:
 			case <-ctx.Done():
-				c.abandon(ctx, outcome, ended, stream)
+				c.abandon(ctx, outcome, ended, stream, &event)
 				return
 			}
 		case <-ctx.Done():
-			c.abandon(ctx, outcome, ended, stream)
+			c.abandon(ctx, outcome, ended, stream, nil)
 			return
 		}
 	}
@@ -155,11 +155,16 @@ func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Tim
 
 // abandon records a caller that gave up before the stream ended. The events the producer
 // already queued still count, so a usage event waiting in its buffer is not lost, and an
-// enclosing ObservedClient (handOn) gets them too. A wrapped ObservedClient closes right
-// after ctx ends, so it is read to its close; any other producer is drained in the
-// background, so one that ignores ctx cannot hold the caller.
-func (c *ObservedClient) abandon(ctx context.Context, outcome *CallOutcome, ended bool, stream stream) {
+// enclosing ObservedClient (handOn) gets them too, after held, the event forward was offering
+// when the cancel came (nil when none). Only a directly enclosing ObservedClient does: any other
+// decorator in between reads like an ordinary caller. A wrapped ObservedClient closes right after
+// ctx ends, so it is read to its close; any other producer is drained in the background, so one
+// that ignores ctx cannot hold the caller.
+func (c *ObservedClient) abandon(ctx context.Context, outcome *CallOutcome, ended bool, stream stream, held *Event) {
 	events := stream.events
+	if stream.handOn && held != nil {
+		stream.observed <- *held // already recorded; the enclosing ObservedClient reads until the close
+	}
 	_, nested := c.client.(*ObservedClient)
 	open := true
 	for taken := 0; nested || taken <= cap(events); taken++ { // bounded: a producer may send forever

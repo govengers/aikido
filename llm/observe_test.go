@@ -417,6 +417,74 @@ func TestAnAbandonedStreamReportsTheUsageAlreadyQueued(t *testing.T) {
 	}
 }
 
+// cancellingObserver gives its call a context of its own the test can cancel first.
+type cancellingObserver struct{ cancel context.CancelFunc }
+
+func (o *cancellingObserver) CallStarted(ctx context.Context, _ *llm.Call) context.Context {
+	ctx, o.cancel = context.WithCancel(ctx)
+	return ctx
+}
+
+func (*cancellingObserver) CallFinished(context.Context, *llm.Call, *llm.CallOutcome) {}
+
+// tailClient sends a text delta and the usage on an unbuffered channel and closes taken once
+// the receiver took the usage.
+type tailClient struct {
+	llm.Client
+	usage *llm.Usage
+	taken chan struct{}
+}
+
+func (c tailClient) Stream(context.Context, llm.Request) (<-chan llm.Event, error) {
+	events := make(chan llm.Event)
+	go func() {
+		defer close(events)
+		events <- llm.Event{Kind: llm.EventTextDelta, Text: "a"}
+		events <- llm.Event{Kind: llm.EventUsage, Usage: c.usage}
+		close(c.taken)
+	}()
+	return events, nil
+}
+
+// The inner ObservedClient holds the usage while the outer one still offers the text to a caller
+// that does not read; the cancel reaches the inner one first. The usage it holds goes on.
+func TestANestedObservedClientHandsOnTheEventItHoldsAtTheCancel(t *testing.T) {
+	// The caller's read races the inner client's view of the cancel; without the hand-on about
+	// half the rounds lose the usage, so 100 rounds fail for sure and take milliseconds.
+	for range 100 {
+		handOnTheHeldUsage(t)
+	}
+}
+
+func handOnTheHeldUsage(t *testing.T) {
+	t.Helper()
+	usage := &llm.Usage{CostUSD: 2}
+	client := tailClient{usage: usage, taken: make(chan struct{})}
+	canceller := &cancellingObserver{}
+	innerObserver := &recordingObserver{order: &[]string{}}
+	inner, err := llm.NewObservedClient(&llm.ObservedClientOptions{Client: client, Name: "stub", Observers: []llm.Observer{canceller, innerObserver}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer := newObserved(t, inner)
+
+	events, err := outer.client.Stream(t.Context(), llm.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-client.taken // the inner client holds the usage, the outer one the text
+	canceller.cancel()
+	for range events {
+	}
+
+	if outcome := innerObserver.outcome(t); outcome.Usage != usage {
+		t.Errorf("inner outcome = %+v, want the usage", outcome)
+	}
+	if outcome := outer.first.outcome(t); outcome.Usage != usage {
+		t.Errorf("outer outcome = %+v, want the usage the inner client held", outcome)
+	}
+}
+
 func TestANestedObservedClientDoesNotHoldTheCallerOnAProducerThatIgnoresTheCancel(t *testing.T) {
 	client := stubbornClient{release: make(chan struct{})}
 	outer := newObserved(t, newObserved(t, client).client)
