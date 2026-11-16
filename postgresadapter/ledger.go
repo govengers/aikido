@@ -101,12 +101,17 @@ func (l *Ledger) Charge(ctx context.Context, accounts []budget.Account, microUSD
 	return nil
 }
 
-const pruneSpend = `DELETE FROM govengers_aikido_spend WHERE period_start < $1`
+const pruneSpend = `DELETE FROM govengers_aikido_spend
+WHERE (period = 'day' AND period_start < $1) OR (period = 'month' AND period_start < $2)`
 
-// Prune deletes the accounts of periods that started before cutoff and returns how many; schedule it
-// (a daily job) so the table holds only the periods the limits still look at.
+// Prune deletes the accounts of periods that ended before the period holding cutoff (days before
+// cutoff's day, months before its month) and returns how many; schedule it (a daily job with a
+// cutoff of now minus the retention) so the table holds only the periods the limits still look at.
+// The running day and month always stay, so no cutoff resets a limit.
 func (l *Ledger) Prune(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, err := l.pool.Exec(ctx, pruneSpend, cutoff)
+	day, _ := budget.PeriodDay.Start(cutoff)     // known period: no error
+	month, _ := budget.PeriodMonth.Start(cutoff) // known period: no error
+	tag, err := l.pool.Exec(ctx, pruneSpend, day, month)
 	if err != nil {
 		return 0, fmt.Errorf("aikido/postgresadapter: prune the spend before %s: %w", cutoff.Format(time.RFC3339), err)
 	}

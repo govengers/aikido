@@ -2,6 +2,7 @@ package postgresadapter_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -54,18 +55,26 @@ func TestLedgerChargesARepeatedAccountOnceAndRefusesNothing(t *testing.T) {
 	}
 }
 
+// Prune with a week's retention on 16.11. drops October and the days before 9.11., and keeps the
+// running month although it started before the cutoff.
 func TestLedgerPruneDropsOldPeriods(t *testing.T) {
 	ledger := newLedger(t, postgrestest.New(t))
-	january := budget.Account{Key: "k", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	february := budget.Account{Key: "k", Period: budget.PeriodMonth, PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
-	if err := ledger.Charge(t.Context(), []budget.Account{january, february}, 7); err != nil {
+	day := func(month time.Month, day int) time.Time { return time.Date(2026, month, day, 0, 0, 0, 0, time.UTC) }
+	accounts := []budget.Account{
+		{Key: "k", Period: budget.PeriodMonth, PeriodStart: day(time.October, 1)},
+		{Key: "k", Period: budget.PeriodDay, PeriodStart: day(time.November, 8)},
+		{Key: "k", Period: budget.PeriodMonth, PeriodStart: day(time.November, 1)},
+		{Key: "k", Period: budget.PeriodDay, PeriodStart: day(time.November, 9)},
+		{Key: "k", Period: budget.PeriodDay, PeriodStart: day(time.November, 16)},
+	}
+	if err := ledger.Charge(t.Context(), accounts, 7); err != nil {
 		t.Fatal(err)
 	}
-	if pruned, err := ledger.Prune(t.Context(), february.PeriodStart); err != nil || pruned != 1 {
-		t.Errorf("Prune = %d, %v; want 1", pruned, err)
+	if pruned, err := ledger.Prune(t.Context(), time.Date(2026, time.November, 9, 12, 0, 0, 0, time.UTC)); err != nil || pruned != 2 {
+		t.Errorf("Prune = %d, %v; want 2", pruned, err)
 	}
-	if spent, err := ledger.Spent(t.Context(), []budget.Account{january, february}); err != nil || spent[0] != 0 || spent[1] != 7 {
-		t.Errorf("Spent = %v, %v; want [0 7]", spent, err)
+	if spent, err := ledger.Spent(t.Context(), accounts); err != nil || !slices.Equal(spent, []int64{0, 0, 7, 7, 7}) {
+		t.Errorf("Spent = %v, %v; want [0 0 7 7 7]", spent, err)
 	}
 }
 

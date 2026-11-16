@@ -44,13 +44,13 @@ A lock is a session-level advisory lock (`pg_advisory_lock`) on a connection the
 - Every replica must use the same database. A replica that dies or loses its connection releases its locks; nothing expires.
 - Calls for one session take turns in the process, so a session costs one connection per replica however many calls wait for it. `LockerOptions.MaximumConnections` (default 20) caps the lock connections of a `Locker`; further calls wait in the process until one is free or their context ends. Size `max_connections` for replicas times that, plus your pools.
 - The lock connection clears `statement_timeout`, `lock_timeout`, `transaction_timeout` and the idle timeouts after connect, so the ones in your `ConnConfig` or role do not end a wait.
-- A connection lost in the middle of a run releases the lock while the run goes on; another replica can then start a run of the same session. `LockerOptions.LockLost(sessionID, err)` is told afterwards, when the unlock finds the lock gone: count or log it.
+- A connection lost in the middle of a run releases the lock while the run goes on; another replica can then start a run of the same session. `LockerOptions.LockLost(sessionID, err)` is told afterwards, when the unlock finds the lock gone: count or log it. The session's turn and the connection slot are freed even when it panics.
 - Use a direct connection or a session-mode pooler. A transaction-mode pooler (PgBouncer) breaks session-level locks.
 - A waiter whose context ends leaves the server's lock queue at once.
 
 ## Ledger
 
-`Spent` reads all accounts in one query, `Charge` upserts them in one statement (ordered, so overlapping charges never deadlock) under READ COMMITTED. `Prune(ctx, cutoff)` deletes periods that started before `cutoff`; schedule it daily.
+`Spent` reads all accounts in one query, `Charge` upserts them in one statement (ordered, so overlapping charges never deadlock) under READ COMMITTED. `Prune(ctx, cutoff)` deletes the periods that ended before the one holding `cutoff` (days before its day, months before its month), so the running month stays whatever the cutoff; schedule it daily with `now` minus the retention.
 
 ## Tests
 

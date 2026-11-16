@@ -3,6 +3,7 @@ package budget
 import (
 	"context"
 	"math"
+	"slices"
 	"testing"
 	"time"
 )
@@ -29,19 +30,28 @@ func TestMicroUSD(t *testing.T) {
 	}
 }
 
+// Prune with a week's retention on 16.11. drops October and the days before 9.11., and keeps the
+// running month although it started before the cutoff.
 func TestMemoryLedgerPruneDropsOldPeriods(t *testing.T) {
 	ledger := NewMemoryLedger()
 	ctx := context.Background()
-	old := Account{Key: "k", Period: PeriodMonth, PeriodStart: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	current := Account{Key: "k", Period: PeriodMonth, PeriodStart: time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)}
-	if err := ledger.Charge(ctx, []Account{old, current}, 7); err != nil {
+	day := func(month time.Month, day int) time.Time { return time.Date(2026, month, day, 0, 0, 0, 0, time.UTC) }
+	accounts := []Account{
+		{Key: "k", Period: PeriodMonth, PeriodStart: day(time.October, 1)},
+		{Key: "k", Period: PeriodDay, PeriodStart: day(time.November, 8)},
+		{Key: "k", Period: PeriodMonth, PeriodStart: day(time.November, 1)},
+		{Key: "k", Period: PeriodDay, PeriodStart: day(time.November, 9)},
+		{Key: "k", Period: PeriodDay, PeriodStart: day(time.November, 16)},
+	}
+	if err := ledger.Charge(ctx, accounts, 7); err != nil {
 		t.Fatal(err)
 	}
-	ledger.Prune(current.PeriodStart)
-	spent, err := ledger.Spent(ctx, []Account{old, current})
-	if err != nil || spent[0] != 0 || spent[1] != 7 {
-		t.Errorf("Spent after Prune = %v, %v; want [0 7]", spent, err)
+	ledger.Prune(time.Date(2026, time.November, 9, 12, 0, 0, 0, time.UTC))
+	spent, err := ledger.Spent(ctx, accounts)
+	if err != nil || !slices.Equal(spent, []int64{0, 0, 7, 7, 7}) {
+		t.Errorf("Spent after Prune = %v, %v; want [0 0 7 7 7]", spent, err)
 	}
+	current := accounts[2]
 	if err := ledger.Charge(ctx, []Account{current}, 0); err == nil {
 		t.Error("a charge of 0 should fail")
 	}

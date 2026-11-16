@@ -64,13 +64,14 @@ func (l *MemoryLedger) Charge(ctx context.Context, accounts []Account, microUSD 
 	return nil
 }
 
-// Prune drops the accounts of periods that started before cutoff, so the ledger does not grow
-// without bound in a long-running process.
+// Prune drops the accounts of periods that ended before the period holding cutoff (days before
+// cutoff's day, months before its month), so the ledger does not grow without bound in a
+// long-running process. The running day and month always stay, so no cutoff resets a limit.
 func (l *MemoryLedger) Prune(cutoff time.Time) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	for key := range l.spent {
-		if key.periodStart < cutoff.UnixNano() {
+		if start, err := key.period.Start(cutoff); err == nil && key.periodStart < start.UnixNano() {
 			delete(l.spent, key)
 		}
 	}
