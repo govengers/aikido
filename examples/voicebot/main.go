@@ -45,11 +45,11 @@ const systemPrompt = `Du bist ein Badplaner. In deinem Arbeitsbereich liegen Mar
 // series and article numbers from the corpus, plus trade words.
 func newVocabulary() *llm.Vocabulary {
 	return &llm.Vocabulary{
-		Terms: []string{"Rea", "MUSTER & MANN", "REA60G", "REA80W", "REA80U", "Duschtasse", "Waschtisch", "Unterschrank", "Vorwandinstallation", "Walk-in-Dusche"},
+		Terms: []string{"Vok", "VARNOTH & ZELBIG", "VOK60G", "VOK80W", "VOK80U", "Duschtasse", "Waschtisch", "Unterschrank", "Vorwandinstallation", "Walk-in-Dusche"},
 		Replacements: map[string]string{
-			"muster und mann": "MUSTER & MANN",
-			"muster und man":  "MUSTER & MANN",
-			"musta und mann":  "MUSTER & MANN",
+			"varnoth und zelbig": "VARNOTH & ZELBIG",
+			"warnot und selbig":  "VARNOTH & ZELBIG",
+			"warnoth und zelbig": "VARNOTH & ZELBIG",
 		},
 		Fuzzy: true,
 	}

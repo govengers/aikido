@@ -80,13 +80,13 @@ func ExampleTranscribe() {
 
 func ExampleVocabulary_Correct() {
 	vocabulary := &llm.Vocabulary{
-		Terms:        []string{"REA60G", "Duschtasse"},
-		Replacements: map[string]string{"muster und man": "MUSTER & MANN"},
+		Terms:        []string{"VOK60G", "Duschtasse"},
+		Replacements: map[string]string{"warnot und selbig": "VARNOTH & ZELBIG"},
 		Fuzzy:        true,
 	}
-	fmt.Println(vocabulary.Correct("Die Duschtase REA 60 g von Muster und Man."))
+	fmt.Println(vocabulary.Correct("Die Duschtase VOK 60 g von Warnot und Selbig."))
 	// Output:
-	// Die Duschtasse REA60G von MUSTER & MANN.
+	// Die Duschtasse VOK60G von VARNOTH & ZELBIG.
 }
 
 func ExampleDecider() {
