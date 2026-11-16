@@ -6,8 +6,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 gotestsum := "go run gotest.tools/gotestsum@v1.13.0"
 govulncheck := "go run golang.org/x/vuln/cmd/govulncheck@v1.9.0"
 coverage_threshold := "80"
-coverage_excluded := "/examples/|/test/|/cmd/"
+coverage_excluded := "/examples/|/test/|/cmd/|/internal/postgrestest/"
+coverage_gate := "awk -v threshold=" + coverage_threshold + " " + """'/^total:/ { found = 1; sub("%", "", $3); print "coverage " $3 "%"; if ($3 + 0 < threshold) { print "coverage is below " threshold "%"; exit 1 } } END { if (!found) { print "no coverage total"; exit 1 } }'"""
 e2e_inputs := "test/e2e"
+# The nested module with the PostgreSQL backends; a module of its own so the root does not depend on pgx
+postgres_module := "postgresadapter"
 
 default:
     @just --list
@@ -17,14 +20,20 @@ lint:
     go vet ./...
     go vet -tags e2e ./test/e2e/...
     golangci-lint run ./...
+    cd {{postgres_module}} && go vet ./... && golangci-lint run ./...
 
-# Unit tests of changed and affected packages; the Go test cache replays the rest (TST-014). Fails below the coverage threshold (TST-010)
+# Unit tests of changed and affected packages, root and postgresadapter module; the Go test cache replays the rest (TST-014). Each module fails below the coverage threshold (TST-010)
 test *flags:
     mkdir -p sandbox
     {{gotestsum}} --format testname --jsonfile sandbox/unit.json -- -race -coverprofile=sandbox/unit.raw.cover {{flags}} ./...
     grep -v -E '{{coverage_excluded}}' sandbox/unit.raw.cover > sandbox/unit.cover
     go tool cover -func=sandbox/unit.cover > sandbox/unit.func
-    awk -v threshold={{coverage_threshold}} '/^total:/ { found = 1; sub("%", "", $3); print "coverage " $3 "%"; if ($3 + 0 < threshold) { print "coverage is below " threshold "%"; exit 1 } } END { if (!found) { print "no coverage total"; exit 1 } }' sandbox/unit.func
+    {{coverage_gate}} sandbox/unit.func
+    cd {{postgres_module}} && {{gotestsum}} --format testname --jsonfile ../sandbox/postgres.json -- -race -coverprofile=../sandbox/postgres.raw.cover {{flags}} ./...
+    grep -v -E '{{coverage_excluded}}' sandbox/postgres.raw.cover > sandbox/postgres.cover
+    cd {{postgres_module}} && go tool cover -func=../sandbox/postgres.cover > ../sandbox/postgres.func
+    {{coverage_gate}} sandbox/postgres.func
+    cat sandbox/postgres.json >> sandbox/unit.json # the badge counts the tests of both modules
 
 # Every unit test, uncached and shuffled: the nightly run and before a release (TST-014, TST-005)
 test-all: (test "-count=1" "-shuffle=on")
@@ -58,6 +67,7 @@ test-e2e: e2e-build
 # Scan for known vulnerabilities in reachable code (TCH-008)
 vulncheck:
     {{govulncheck}} ./...
+    cd {{postgres_module}} && {{govulncheck}} ./...
 
 # Mirror docs/wiki of a release tag (default: the newest) or of main to the GitHub wiki; CI does it for every release
 wiki ref="":
@@ -69,6 +79,7 @@ check: lint test test-e2e vulncheck
 # Build every package and the aikido CLI
 build:
     go build ./...
+    cd {{postgres_module}} && go build ./...
 
 # Install the aikido CLI into GOBIN
 install:

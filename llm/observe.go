@@ -48,8 +48,8 @@ type ObservedClientOptions struct {
 
 // ObservedClient is a Client that reports every Stream and Complete call of the client it
 // wraps to its Observers. It implements only Client: the optional capabilities of the
-// wrapped client (ImageGenerator, SpeechGenerator, ...) are not observed and not reachable
-// through it, so keep the original for those.
+// wrapped client (ImageGenerator, SpeechGenerator, ...) are not observed; reach them with
+// Capability, which follows Unwrap, or keep the original for those.
 type ObservedClient struct {
 	client    Client
 	name      string
@@ -71,27 +71,49 @@ func NewObservedClient(options *ObservedClientOptions) (*ObservedClient, error) 
 	return &ObservedClient{client: options.Client, name: options.Name, observers: append([]Observer(nil), options.Observers...)}, nil
 }
 
+// Unwrap returns the wrapped client, for Capability.
+func (c *ObservedClient) Unwrap() Client { return c.client }
+
 // Stream calls the wrapped client's Stream and reports the call when its channel closes,
 // with the usage, finish reason and error the events carried. The events pass through
 // unchanged.
 func (c *ObservedClient) Stream(ctx context.Context, request Request) (<-chan Event, error) {
+	consumer, _ := ctx.Value(readsToTheCloseKey{}).(*ObservedClient)
 	call, callContext, start := c.start(ctx, OperationStream, request.Model)
-	events, err := c.client.Stream(callContext, request)
+	sourceContext := callContext
+	if inner, nested := c.client.(*ObservedClient); nested {
+		sourceContext = context.WithValue(callContext, readsToTheCloseKey{}, inner)
+	}
+	events, err := c.client.Stream(sourceContext, request)
 	if err != nil {
 		c.finish(callContext, call, &CallOutcome{Err: err, Duration: time.Since(start)})
 		return nil, err
 	}
 	observed := make(chan Event)
-	go c.forward(callContext, call, start, events, observed)
+	go c.forward(callContext, call, start, stream{events: events, observed: observed, handOn: consumer == c})
 	return observed, nil
 }
+
+// stream is the wrapped stream of a call and the channel it is handed on to; handOn is set
+// when the consumer is an enclosing ObservedClient.
+type stream struct {
+	events   <-chan Event
+	observed chan<- Event
+	handOn   bool
+}
+
+// readsToTheCloseKey marks the context of a stream whose consumer is an ObservedClient: it
+// reads the stream until it closes, also after a cancel. The value is the ObservedClient whose
+// stream it is.
+type readsToTheCloseKey struct{}
 
 // forward hands every event on and reports the call once the stream ended or the caller
 // gave up. The caller reads until the channel closes or cancels ctx (the Client contract); on
 // cancellation the rest of the wrapped stream is drained in the background, so a producer
 // that does not watch ctx cannot block forever. A panic of an observer or of the stream
 // handling reaches the caller as an EventError instead of ending the process.
-func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Time, events <-chan Event, observed chan<- Event) {
+func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Time, stream stream) {
+	events, observed := stream.events, stream.observed
 	defer close(observed)
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -121,25 +143,66 @@ func (c *ObservedClient) forward(ctx context.Context, call *Call, start time.Tim
 			select {
 			case observed <- event:
 			case <-ctx.Done():
-				abandon(ctx, outcome, ended, events)
+				c.abandon(ctx, outcome, ended, stream, &event)
 				return
 			}
 		case <-ctx.Done():
-			abandon(ctx, outcome, ended, events)
+			c.abandon(ctx, outcome, ended, stream, nil)
 			return
 		}
 	}
 }
 
-// abandon records a caller that gave up before the stream ended and drains the rest of it.
-func abandon(ctx context.Context, outcome *CallOutcome, ended bool, events <-chan Event) {
+// abandon records a caller that gave up before the stream ended. The events the producer
+// already queued still count, so a usage event waiting in its buffer is not lost, and an
+// enclosing ObservedClient (handOn) gets them too, after held, the event forward was offering
+// when the cancel came (nil when none). Only a directly enclosing ObservedClient does: any other
+// decorator in between reads like an ordinary caller. A wrapped ObservedClient closes right after
+// ctx ends, so it is read to its close; any other producer is drained in the background, so one
+// that ignores ctx cannot hold the caller.
+func (c *ObservedClient) abandon(ctx context.Context, outcome *CallOutcome, ended bool, stream stream, held *Event) {
+	events := stream.events
+	if stream.handOn && held != nil {
+		stream.observed <- *held // already recorded; the enclosing ObservedClient reads until the close
+	}
+	_, nested := c.client.(*ObservedClient)
+	open := true
+	for taken := 0; nested || taken <= cap(events); taken++ { // bounded: a producer may send forever
+		event, queued := Event{}, true
+		if nested {
+			event, open = <-events
+		} else {
+			event, open, queued = receiveQueued(events)
+		}
+		if !open || !queued {
+			break
+		}
+		record(outcome, event)
+		ended = ended || event.Kind == EventEnd
+		if stream.handOn {
+			stream.observed <- event // the enclosing ObservedClient reads until the close
+		}
+	}
 	if !ended && outcome.Err == nil {
 		outcome.Err = ctx.Err()
 	}
-	go func() {
-		for range events { // drain: the producer may still send before it sees ctx
-		}
-	}()
+	if open {
+		go func() {
+			for range events { // drain: the producer may still send before it sees ctx
+			}
+		}()
+	}
+}
+
+// receiveQueued takes the next event of events without waiting; queued is false when none is
+// ready, open false when events is closed.
+func receiveQueued(events <-chan Event) (event Event, open, queued bool) {
+	select {
+	case event, open = <-events:
+		return event, open, true
+	default:
+		return Event{}, true, false
+	}
 }
 
 // record folds the event into the outcome.

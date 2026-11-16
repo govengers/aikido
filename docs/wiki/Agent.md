@@ -9,8 +9,8 @@
 A production session, from [agent/example_test.go](../../agent/example_test.go) (`ExampleNewSession`):
 
 ```go
-	history := historymemory.New()   // a Postgres-backed agent.History in production
-	locker := agent.NewLocalLocker() // a Redis-backed agent.Locker with several replicas
+	history := historymemory.New()   // postgresadapter.History in production
+	locker := agent.NewLocalLocker() // postgresadapter.Locker with several replicas
 
 	client := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventTextDelta, Text: "Done."},
@@ -124,9 +124,9 @@ By default every model request marks the system prompt and its last message (whe
 
 ## History and Locker
 
-`agent.History` is `Append(ctx, sessionID, messages...)` and `Read(ctx, sessionID)`. The session reads at the start of a run and appends the run's user, assistant and tool messages in one call at the end. `Read` of an unknown session returns none; implementations must be safe for concurrent use. `agent/history/memory.New()` is the in-process backend; check your own with [historytest](Testing.md#conformance-suites).
+`agent.History` is `Append(ctx, sessionID, messages...)` and `Read(ctx, sessionID)`. The session reads at the start of a run and appends the run's user, assistant and tool messages in one call at the end. `Read` of an unknown session returns none; implementations must be safe for concurrent use. `agent/history/memory.New()` is the in-process backend, `postgresadapter.History` the PostgreSQL one with conversation listing ([Postgres](Postgres.md)); check your own with [historytest](Testing.md#conformance-suites).
 
-`agent.Locker` is `Lock(ctx, sessionID) (unlock func(), error)`. The session locks before `History.Read` and unlocks after `EventEnd`; a lock that cannot be acquired before `ctx` ends fails the run. A panic in `unlock` is recovered and dropped (it runs after `EventEnd`, so the run cannot report it); log unlock failures inside your `Locker`. `agent.LocalLocker` serializes within one process; its memory grows with the session IDs it has seen, `Forget(id)` drops one after its last run. With several replicas, implement `Locker` on Redis, etcd or Postgres advisory locks: without it, two replicas can interleave a transcript.
+`agent.Locker` is `Lock(ctx, sessionID) (unlock func(), error)`. The session locks before `History.Read` and unlocks after `EventEnd`; a lock that cannot be acquired before `ctx` ends fails the run. A panic in `unlock` is recovered and dropped (it runs after `EventEnd`, so the run cannot report it); log unlock failures inside your `Locker`. `agent.LocalLocker` serializes within one process; its memory grows with the session IDs it has seen, `Forget(id)` drops one after its last run. With several replicas, use `postgresadapter.Locker` (a PostgreSQL advisory lock per running session, [Postgres](Postgres.md)) or your own `Locker` checked with [lockertest](Testing.md#conformance-suites): without one, two replicas can interleave a transcript.
 
 ## Files are the authority, History is not rewindable
 

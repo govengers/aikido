@@ -1,0 +1,25 @@
+module github.com/govengers/aikido/postgresadapter
+
+go 1.26.0
+
+// Built and tested against the aikido of this checkout. Before tagging postgresadapter/vX.Y.Z,
+// require the aikido release that contains the same root packages.
+replace github.com/govengers/aikido => ../
+
+require (
+	github.com/fergusstrange/embedded-postgres v1.34.0
+	github.com/govengers/aikido v1.2.0
+	github.com/jackc/pgx/v5 v5.12.0
+	go.uber.org/goleak v1.3.0
+)
+
+require (
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
+	github.com/lib/pq v1.10.9 // indirect
+	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
+)

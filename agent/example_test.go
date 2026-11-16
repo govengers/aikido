@@ -50,7 +50,7 @@ func ExampleSession_Run() {
 // explicit and prompt caching stays on.
 func ExampleNewSession() {
 	history := historymemory.New()   // a Postgres-backed agent.History in production
-	locker := agent.NewLocalLocker() // a Redis-backed agent.Locker with several replicas
+	locker := agent.NewLocalLocker() // postgresadapter.Locker with several replicas
 
 	client := llmtest.NewStubClient(llmtest.TurnScript{Events: []llm.Event{
 		{Kind: llm.EventTextDelta, Text: "Done."},

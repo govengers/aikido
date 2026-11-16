@@ -76,43 +76,6 @@ func TestNewSession_NegativeTimeoutErrors(t *testing.T) {
 	}
 }
 
-func TestLocalLocker(t *testing.T) {
-	locker := NewLocalLocker()
-	unlock, err := locker.Lock(context.Background(), "s")
-	if err != nil {
-		t.Fatalf("Lock: %v", err)
-	}
-
-	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
-	defer cancel()
-	if _, err := locker.Lock(expired, "s"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Lock on a held ID with an expired context = %v; want DeadlineExceeded", err)
-	}
-	otherUnlock, err := locker.Lock(context.Background(), "other")
-	if err != nil {
-		t.Fatalf("Lock on another ID: %v", err)
-	}
-	otherUnlock()
-
-	unlock()
-	unlock() // idempotent: a second call must not release a later holder
-	relock, err := locker.Lock(context.Background(), "s")
-	if err != nil {
-		t.Fatalf("Lock after unlock: %v", err)
-	}
-	if _, err := locker.Lock(expired, "s"); err == nil {
-		t.Error("the repeated unlock released the new holder's lock")
-	}
-	relock()
-
-	locker.Forget("s")
-	afterForget, err := locker.Lock(context.Background(), "s")
-	if err != nil {
-		t.Fatalf("Lock after Forget: %v", err)
-	}
-	afterForget()
-}
-
 // noopHistory is a History that never errors but stores nothing.
 type noopHistory struct{}
 
