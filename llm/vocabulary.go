@@ -18,7 +18,7 @@ const (
 
 // Limits of the matching Vocabulary.Correct documents.
 const (
-	// maximumTermWindow bounds how many heard words one term may span ("L I V 6 0 G").
+	// maximumTermWindow bounds how many heard words one term may span ("R E A 6 0 G").
 	maximumTermWindow = 6
 	// maximumFuzzyWindow bounds how many heard words a fuzzy match may span.
 	maximumFuzzyWindow       = 3
@@ -35,10 +35,10 @@ const (
 // is kept outside a match and dropped inside it), case-insensitive and whole
 // word. At each position it tries, longest first:
 //
-//  1. Replacements: a heard variant ("pfeifer und mai") becomes its canonical
-//     term ("PFEIFFER & MAY").
+//  1. Replacements: a heard variant ("muster und man") becomes its canonical
+//     term ("MUSTER & MANN").
 //  2. Terms matched exactly once spaces, punctuation and case are ignored:
-//     "Liv 60 g" becomes "LIV60G", "wasch tisch" becomes "Waschtisch".
+//     "Rea 60 g" becomes "REA60G", "wasch tisch" becomes "Waschtisch".
 //  3. With Fuzzy, terms of at least 6 letters matched with an edit distance of
 //     1 (2 from 9 letters on), same first letter, and every heard word at
 //     least 4 letters long: "Duschtase" becomes "Duschtasse". Short common

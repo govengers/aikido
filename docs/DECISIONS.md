@@ -2,7 +2,7 @@
 
 Numbered, dated ADRs. Each one paragraph context, one paragraph decision, one paragraph consequences. New decisions append; superseded decisions are marked but not deleted.
 
-Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `PATTERNS.md`, `ROADMAP.md`) and the `github.com/mxcd/aikido` module path. Those documents were removed before v1.0.0; the repository history keeps them. Current behaviour is in [docs/wiki](wiki/Home.md).
+Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `PATTERNS.md`, `ROADMAP.md`) and the `github.com/mxcd/aikido` module path. Those documents were removed before v1.0.0; the repository history keeps them. Where an ADR names "an earlier application" or "the first consumer", it once named the project the decision came from; the reasoning is unchanged. Current behaviour is in [docs/wiki](wiki/Home.md).
 
 ---
 
@@ -37,11 +37,11 @@ Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** The Claude Agent SDK is a Node-based loop with battle-tested streaming and reliability. Adopting it would mean shipping a Node sidecar in MaPa's single-binary Go deployment model. A custom Go loop is roughly 200–300 LOC (per `Custom-Go-Agent-Loop-Over-SDK-Pattern.md`) and gives full control over caching, metering, and concurrency - but loses the SDK's tested edge cases.
+**Context.** The Claude Agent SDK is a Node-based loop with battle-tested streaming and reliability. Adopting it would mean shipping a Node sidecar next to a single-binary Go deployment. A custom Go loop is roughly 200–300 LOC and gives full control over caching, metering, and concurrency - but loses the SDK's tested edge cases.
 
 **Decision.** Custom Go agent loop in `agent/`. Rationale: single-binary deploy with no Node sidecar, specialized tool set (VFS-aware), full control over prompt caching and metering, and per-project transaction semantics that the SDK does not model.
 
-**Consequences.** aikido owns its loop's correctness. Tests must cover error paths the SDK normally covers: provider mid-stream errors, tool dispatch errors, max-turn exhaustion, concurrent turn rejection. Reference loop already runs in production at `asolabs/hub/sandbox/agent-test/agent/loop.go` - aikido generalizes that, it does not invent.
+**Consequences.** aikido owns its loop's correctness. Tests must cover error paths the SDK normally covers: provider mid-stream errors, tool dispatch errors, max-turn exhaustion, concurrent turn rejection. A reference loop already runs in production in an earlier application - aikido generalizes that, it does not invent.
 
 ---
 
@@ -63,7 +63,7 @@ Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `
 **Date:** 29.04.2026
 **Status:** Superseded in part by ADR-018 - v1 ships explicit-only; reflective `SchemaFromType[T]()` is removed and the `invopop/jsonschema` dependency is dropped. Reflection may return additively in v1.x.
 
-**Context.** Tool registration needs a parameter schema. Two options: explicit JSON Schema literals (verbose, type-loose, full control) or reflection from Go struct tags (terse, type-safe-ish, brittle for unions/optional/enum). MaPa's existing tool registrations in `asolabs/hub` use explicit literals.
+**Context.** Tool registration needs a parameter schema. Two options: explicit JSON Schema literals (verbose, type-loose, full control) or reflection from Go struct tags (terse, type-safe-ish, brittle for unions/optional/enum). The existing tool registrations of the first consumer use explicit literals.
 
 **Decision.** Both. Explicit helpers (`tools.Object`, `tools.String`, `tools.Enum`, ...) are the primary path and match existing code. A generic `tools.SchemaFromType[T]() json.RawMessage` helper, backed by `invopop/jsonschema`, is shipped as an opt-in alternative for users who prefer struct-driven schemas for simple tools.
 
@@ -87,7 +87,7 @@ Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `
 ## ADR-007 - Notes as a first-class library construct
 
 **Date:** 29.04.2026
-**Status:** Superseded for v1 by ADR-015 - notes package is deferred to v1.x. The pattern is documented as a recipe in `PATTERNS.md` until N≥2 production validations exist outside the PRD generator.
+**Status:** Superseded for v1 by ADR-015 - notes package is deferred to v1.x. The pattern is documented as a recipe in `PATTERNS.md` until N≥2 production validations exist outside the first application that used it.
 
 **Context.** The user identified a load-bearing pattern: agents work better when they write atomic short notes during interactions and consolidate them into a target document on demand, rather than rewriting the full document every turn. This pattern can live in user code (with documentation) or in the library (with a dedicated package).
 
@@ -154,7 +154,7 @@ Older ADRs name planning documents (`docs/v1/`, `docs/v2/`, `ARCHITECTURE.md`, `
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** The locked surface keyed on `projectID uuid.UUID` everywhere - `agent.Run(ctx, projectID, userText)`, `Storage.WriteFile(ctx, projectID, ...)`, the per-project mutex, the snapshot key, the notes scope key. A single typed parameter was doing four jobs at once with no single coherent meaning, and the term "project" leaked from `asolabs/hub`'s domain model. In aikido, callers' domain identifiers vary: ASO Nexus Hub uses business UIDs, the PRD generator uses PRD session IDs, a chatbot over a shared knowledge base has no boundary at all.
+**Context.** The locked surface keyed on `projectID uuid.UUID` everywhere - `agent.Run(ctx, projectID, userText)`, `Storage.WriteFile(ctx, projectID, ...)`, the per-project mutex, the snapshot key, the notes scope key. A single typed parameter was doing four jobs at once with no single coherent meaning, and the term "project" leaked from the first consumer's domain model. In aikido, callers' domain identifiers vary: a multi-tenant app uses business UIDs, a document generator uses its session IDs, a chatbot over a shared knowledge base has no boundary at all.
 
 **Decision.** Two orthogonal concepts replace `projectID`:
 
@@ -172,7 +172,7 @@ The `projectID uuid.UUID` parameter is removed from every public surface. Each o
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** Two real shapes coexist: (a) shared knowledge bases with no tenant boundary (chatbot reading company mission docs), and (b) multi-tenant backends scoped by external identifiers (Hub writing per-business files). Forcing (a) to invent a fake "global" scope on every method is ergonomic theatre; forcing (b) to embed scope inside path strings loses the boundary.
+**Context.** Two real shapes coexist: (a) shared knowledge bases with no tenant boundary (chatbot reading company mission docs), and (b) multi-tenant backends scoped by external identifiers (an app writing per-business files). Forcing (a) to invent a fake "global" scope on every method is ergonomic theatre; forcing (b) to embed scope inside path strings loses the boundary.
 
 **Decision.** The `vfs.Storage` interface is scope-agnostic. Backends that multiplex tenants implement an additional capability interface, `vfs.ScopedStorage`, with a single method `Scope(scope string) Storage` returning a scope-bound view of the backend. Callers wire scope at registration time, then hand the resulting plain `Storage` to `agent.RegisterVFSTools`. The library never sees a scope parameter on any storage method.
 
@@ -216,7 +216,7 @@ type History interface {
 **Date:** 29.04.2026
 **Status:** Accepted
 
-**Context.** ADR-007 promoted note-then-consolidate to a first-class library construct. The pattern is real and the efficiency win is real, but it is N=1 - proven only in the PRD generator. Generalizing N=1 patterns into a library tends to bake in incidental decisions of the original use case (default consolidation prompt, `_notes/{turn-uuid}.md` path layout, atomic-note-per-turn assumption).
+**Context.** ADR-007 promoted note-then-consolidate to a first-class library construct. The pattern is real and the efficiency win is real, but it is N=1 - proven only in one document-generation application. Generalizing N=1 patterns into a library tends to bake in incidental decisions of the original use case (default consolidation prompt, `_notes/{turn-uuid}.md` path layout, atomic-note-per-turn assumption).
 
 **Decision.** Cut the `notes` package from v1. v1 ships waves W0–W7 (no W8). Notes lands as additive in v1.x once aikido has 2+ production validations that justify a generalized shape. The pattern is documented as a recipe in `docs/PATTERNS.md` so callers can hand-roll it on top of `tools.Registry` + `vfs.Storage` + `llm.Client`.
 
@@ -430,7 +430,7 @@ In practice OpenRouter's catalog is **not** uniformly hyphenated. Newer image-ca
 
 **Decision.** Drop `normalizeModelID` entirely (v0.2.1). The OpenRouter client now sends `req.Model` verbatim. `llm/openrouter/modelid.go` and its test are deleted. The PATTERNS.md entry is removed. Callers pass the canonical OpenRouter model ID - exactly the string from OpenRouter's catalog page - and we don't second-guess it.
 
-**Consequences.** Callers that relied on the dot form being silently converted will get a 400 from OpenRouter on first request - clear, immediate, fixable in the caller. The downstream hub project (asolabs/hub) had to update its `AISettings.PostImage.Model` default to the catalog-canonical `google/gemini-2.5-flash-image-preview`. No other callers exist; this is a non-breaking-in-practice change for the only known consumer. Future provider quirks should be solved per-model in a documented helper rather than a blanket transformation.
+**Consequences.** Callers that relied on the dot form being silently converted will get a 400 from OpenRouter on first request - clear, immediate, fixable in the caller. The one downstream application had to update its image model default to the catalog-canonical `google/gemini-2.5-flash-image-preview`. No other callers exist; this is a non-breaking-in-practice change for the only known consumer. Future provider quirks should be solved per-model in a documented helper rather than a blanket transformation.
 
 ---
 
@@ -441,7 +441,7 @@ In practice OpenRouter's catalog is **not** uniformly hyphenated. Newer image-ca
 
 **Context.** ADR-022 made `retry` deliberately internal - the retry surface was an implementation detail of `llm/openrouter` for stream-start failures. Mid-stream failures (e.g. SSE RST during image generation against preview models) are not retried at the library level: once `Stream` returns a channel and SSE bytes start flowing, a transport drop surfaces as `EventError{Err: ErrServerError}` and the channel closes. Callers that want to recover have to call `Stream` (or `Collect`) again themselves - but they had no shared retry policy to lean on, since `retry` was internal.
 
-Real-world traces from `asolabs/hub` show ~20% per-attempt failure rate on `google/gemini-3.1-flash-image-preview` due to upstream Google flake. End-user-facing image generation requires a retry policy.
+Real-world traces from a production application show ~20% per-attempt failure rate on `google/gemini-3.1-flash-image-preview` due to upstream Google flake. End-user-facing image generation requires a retry policy.
 
 **Decision.** Promote `internal/retry` → `retry`. The package surface (`Policy`, `Do`, `RetryAfterError`, `DefaultPolicy`) is unchanged. Add `llm.CollectWithRetry(ctx, client, req, retry.Policy)` and `llm.IsTransientServerError(err)` to give callers a one-line retry wrapper around `llm.Collect`. Add `llm.DefaultStreamingRetryPolicy()` returning a 5-attempt 2s-base 30s-cap policy tuned for image-gen preview models. The OpenRouter client's existing internal use of `retry.Do` continues unchanged - same package, just at the public path.
 
@@ -470,7 +470,7 @@ There's a third shape - **silent mid-stream RST** - where the provider just kill
 - Add `Event.FinishReason string` (always populated on the closing `EventEnd` when the provider reported one) so callers can inspect the reason post-hoc without parsing strings.
 - Existing `IsTransientServerError` continues to match only `ErrServerError` - content-filter errors are correctly excluded from retry by default.
 
-**Consequences.** Hub-side and other callers can branch cleanly: skip retry on `IsContentFilter(err)`, render user-actionable "try different wording" copy, save the typically-multiple-cents per request that retrying a flagged prompt would otherwise burn. The `EventEnd.FinishReason` field is additive and safe under the v1 stability promise. Silent-RST content aborts remain unsolved at the protocol level - the caller-side "all-retries-identical" heuristic is the only signal there.
+**Consequences.** Callers can branch cleanly: skip retry on `IsContentFilter(err)`, render user-actionable "try different wording" copy, save the typically-multiple-cents per request that retrying a flagged prompt would otherwise burn. The `EventEnd.FinishReason` field is additive and safe under the v1 stability promise. Silent-RST content aborts remain unsolved at the protocol level - the caller-side "all-retries-identical" heuristic is the only signal there.
 
 ---
 
@@ -480,8 +480,8 @@ There's a third shape - **silent mid-stream RST** - where the provider just kill
 **Status:** Accepted
 
 **Context.** OpenRouter serves some image models only through `POST /api/v1/images`:
-`openai/gpt-image-2.5-flare` (the model-arena human-ranked winner for product
-shots, and now aikido's default image model), `openai/gpt-image-2.5-sunburst`,
+`openai/gpt-image-2.5-flare` (the human-ranked winner for product shots in an
+earlier image-model comparison, and now aikido's default image model), `openai/gpt-image-2.5-sunburst`,
 `openai/gpt-image-2`, `meta/muse-image`. They never answer on chat completions
 and are missing from a plain `GET /models` listing, so the 404 a caller gets
 reads like a typo rather than an endpoint mismatch. The endpoint's request
@@ -507,8 +507,8 @@ path that carries a conversation.
   the SSE default) and one error classification. JSON parsing stays outside
   the retry loop: a 200 carrying a top-level `error` envelope is a decode-time
   failure, and retrying it would bill the caller for a deterministic error.
-- **Keep `Complete`'s 200-only rule on the new endpoint.** model-arena, where
-  the wire contract was verified, accepts any 2xx. aikido does not: anything
+- **Keep `Complete`'s 200-only rule on the new endpoint.** The earlier
+  application where the wire contract was verified accepts any 2xx. aikido does not: anything
   other than 200 goes through `classifyHTTPError`, so a hypothetical 201 shows
   up as a retried `ErrServerError` rather than being parsed as success. One
   status code is the contract we can test; a 2xx range invites a body shape
@@ -608,8 +608,8 @@ it; both are one field away if a model needs them.
 **Date:** 11.10.2026
 **Status:** Accepted
 
-**Context.** Every voice app built on aikido (bkv-demo, hub-sandbox, the
-Bathroom Planner) repeats the same glue: transcribe an upload, run the agent,
+**Context.** Every voice app built on aikido (three earlier projects so far)
+repeats the same glue: transcribe an upload, run the agent,
 turn the reply into speech, stream it to a browser, add the costs. Speaking
 the whole reply after the model finishes adds the full generation time to the
 first audible word.
@@ -696,7 +696,7 @@ also no backend for a real directory on disk.
 
 **Consequences.** Callers that bump to v0.7.0 get three more tools in their
 tool list (more prompt tokens) and a 2000-line default on `read_file`.
-Consumers that pin the tool name list (Hub `internal/nexi` drift guard) must
+Consumers that pin the tool name list (a drift guard in a consumer's tests) must
 add `grep`, `glob`, `edit_file` or set `DisableExtended`. `go.mod` requires Go
 1.25.
 
@@ -768,8 +768,8 @@ Wan 3, Grok Imagine, Hailuo, ...) on a job API: `POST /api/v1/videos` answers
 `completed` or `failed` with `usage.cost`, and `GET /videos/{id}/content?index=0`
 serves the mp4 under the same bearer token. `GET /videos/models` (not part of
 `/models`) lists per model the closed sets of durations, resolutions, ratios,
-sizes and frame types, and whether `generate_audio` exists. hub-sandbox ran a
-client in this shape since 15.09.2026, written to be lifted into aikido.
+sizes and frame types, and whether `generate_audio` exists. An earlier project
+ran a client in this shape since 15.09.2026, written to be lifted into aikido.
 Verified live on 22.10.2026: `google/veo-3.1-lite`, 4 s 720p 16:9 without
 audio, 0.12 USD, 38 s wall clock.
 
@@ -802,7 +802,8 @@ audio, 0.12 USD, 38 s wall clock.
 `Options.VideoPollInterval`, `StubClient.ScriptVideos` and `VideoRequests`.
 Not covered: `callback_url` webhooks, provider passthrough options, multiple
 outputs per job (only index 0 is downloaded), video input (FLUX Video Edit),
-and a download size cap. hub-sandbox can drop `internal/ai/video` for this.
+and a download size cap. That earlier project can drop its own video client
+for this.
 
 ## ADR-036 - Decision models as an optional `Decider` capability
 
@@ -1008,7 +1009,7 @@ metrics.
 
 **Decision.** v1.0.0 ships no shell or exec tool. Reasons:
 - A shell bypasses `vfs.Storage`: it acts on the real filesystem, so overlays, dry runs, mounts, path policy, hidden paths and per-tenant scoping stop meaning anything. The in-memory harness model and a shell are at odds.
-- Embedded hosts (the ASO Nexus Hub: multi-tenant, anonymous WhatsApp guests) must never get one by accident; library-not-framework (ADR-021) keeps such capabilities with the caller, who can register any tool through `tools.Registry` today.
+- Embedded hosts (a multi-tenant app with anonymous chat guests) must never get one by accident; library-not-framework (ADR-021) keeps such capabilities with the caller, who can register any tool through `tools.Registry` today.
 - The measured gain is speed and turn count on shell-shaped tasks, not correctness.
 
 **Proposed for v1.x (additive, needs the maintainer's decision).** An opt-in package (for example `tools/shell`) with an explicit runner interface (`Run(ctx, command) (output, exitCode, error)`), a local runner with working directory, per-call timeout, output cap, scrubbed environment and process-group kill (the benchmark prototype in `benchmark/cmd/bench` is that shape), and a CLI flag that is only allowed with `--dir` and that runs on the real directory instead of the overlay (documented: no dry run then). Containers or VMs as runners belong to the caller.

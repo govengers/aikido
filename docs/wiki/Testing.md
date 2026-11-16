@@ -9,11 +9,11 @@ Everything in aikido can be tested without network or API key: a scripted model 
 ```go
 	stub := llmtest.NewStubClient(
 		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "weather", Arguments: `{"city":"Stuttgart"}`}},
+			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "weather", Arguments: `{"city":"Lisbon"}`}},
 			{Kind: llm.EventEnd, FinishReason: "tool_calls"},
 		}},
 		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventTextDelta, Text: "It is sunny in Stuttgart."},
+			{Kind: llm.EventTextDelta, Text: "It is sunny in Lisbon."},
 			{Kind: llm.EventEnd, FinishReason: "stop"},
 		}},
 	)
