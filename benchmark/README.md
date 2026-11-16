@@ -1,6 +1,6 @@
 # Harness benchmark: aikido vs opencode
 
-Two suites, chosen with `-suite`: `coding` (default, this section down to "Fairness") and `worker` (agentic ops on an ICM devops-worker repo, see [Worker suite](#worker-suite)).
+Two suites, chosen with `-suite`: `coding` (default, this section down to "Fairness") and `worker` (agentic ops on an ICM-structured ops worker repo, see [Worker suite](#worker-suite)).
 
 The coding suite compares three agent harnesses on the same coding tasks with the same model through OpenRouter:
 
@@ -76,7 +76,7 @@ Adding a task: create the directory with the files above and run `just validate`
 
 ## Worker suite
 
-Question: can aikido (its virtual bash plus allowed host programs) replace starting Claude Code on the devops worker? The suite has an agent operate an ICM-structured worker repo unattended, with git, kubectl and a Loki logcli as host tools, and checks what it left behind: commits on the remotes, files, and the log of every kubectl/logcli call.
+Question: can aikido (its virtual bash plus allowed host programs) replace starting Claude Code on an ops worker repo? The suite has an agent operate an ICM-structured worker repo unattended, with git, kubectl and a Loki logcli as host tools, and checks what it left behind: commits on the remotes, files, and the log of every kubectl/logcli call.
 
 ```sh
 just validate                                  # both suites; worker: every check.sh fails on the fresh setup and passes after solve.sh
@@ -107,7 +107,7 @@ Extra needs: `git`, `perl`, `claude` (logged in). Results land in `results/<run-
 - `state/cluster.json` (the task's canned cluster), `state/tools.log`, `state/<name>.base` (each remote's `main` after setup): outside the workspace, reached only through `FAKE_CLUSTER_STATE` and `FAKE_LOG`.
 - `bin/kubectl`, `bin/logcli`: the fakes, first on `PATH`. `GIT_CONFIG_GLOBAL` is a per-run config (identity, no user hooks or signing), `KUBECONFIG=/dev/null`.
 
-The synthetic org is `acme` (components `acme/shop` and `acme/billing` on cluster `eu1`), modelled on the WIT devops worker's structure: L0 routing table and rules in `CLAUDE.md`, workbooks `incident`, `change`, `sync-component` with L1 `CONTEXT.md` load/do-not-load tables and L2 stage files, the shared `learn` stage, `journal/YYYY-MM.md`, `journal/runs/` with the report template, `infra/README.md`, component READMEs and inventories, `TODO.md`. No customer facts, hosts or names were copied.
+The synthetic org is `acme` (components `acme/shop` and `acme/billing` on cluster `eu1`), modelled on the structure of a real ops worker repo: L0 routing table and rules in `CLAUDE.md`, workbooks `incident`, `change`, `sync-component` with L1 `CONTEXT.md` load/do-not-load tables and L2 stage files, the shared `learn` stage, `journal/YYYY-MM.md`, `journal/runs/` with the report template, `infra/README.md`, component READMEs and inventories, `TODO.md`. No customer facts, hosts or names were copied.
 
 ### Fake tools
 

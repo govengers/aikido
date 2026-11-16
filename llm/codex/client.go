@@ -51,7 +51,7 @@ type Options struct {
 	// Tokens is required.
 	Tokens *TokenSource
 	// Originator is required: OpenAI asks third-party clients to identify
-	// themselves (e.g. "casa-mapa").
+	// themselves (e.g. "todo-app").
 	Originator string
 	// UserAgent defaults to Originator + "/aikido".
 	UserAgent string

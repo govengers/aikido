@@ -135,11 +135,11 @@ Additive; nothing to migrate, listed so you know it exists.
 | `voice.Handler` behind a wrapper without `Flush` | a `ResponseWriter` without `Flush` or `Unwrap` (logging or gzip middleware) got one NDJSON line and never `done` | every line, unflushed; the per-line write deadline is cleared after each line, so a long tool call between lines does not reset the stream |
 | `voice.New` options | the Pipeline kept your `Speed` pointer and `*llm.Vocabulary`; changing them later changed running turns | both are copied; build a new Pipeline to change them |
 
-## Coming from v0.3.x (ASO Nexus Hub)
+## Coming from v0.3.x
 
-The Hub pins v0.3.2. Everything above applies, and between v0.3.2 and v0.12.0 the default tool set grew from `read_file`, `write_file`, `list_files`, `delete_file`, `search` to the ten names listed in [Tools](wiki/Tools.md#built-in-file-tools), and `read_file` gained `offset`/`limit` ranges. What the Hub touches:
+For an application on v0.3.2, everything above applies, and between v0.3.2 and v0.12.0 the default tool set grew from `read_file`, `write_file`, `list_files`, `delete_file`, `search` to the ten names listed in [Tools](wiki/Tools.md#built-in-file-tools), and `read_file` gained `offset`/`limit` ranges. What such an application typically touches:
 
-| Hub uses | Change to |
+| v0.3 uses | Change to |
 |---|---|
 | `vfs.FileMeta` | `vfs.FileMetadata` (in every `Storage` implementation: `ListFiles` and `ReadFile` signatures) |
 | `llm.ToolDef` | `llm.ToolDefinition` |
@@ -152,4 +152,4 @@ The Hub pins v0.3.2. Everything above applies, and between v0.3.2 and v0.12.0 th
 | a tool-name guard on the built-in set | add `grep`, `glob`, `edit_file`, `multi_edit`, `move_file`, or set `VFSToolOptions.DisableExtended: true` to keep the v0.3 set |
 | prompts or tests that read `read_file` content | expect line-number prefixes |
 
-Check the Hub's tests for tool results over 64 KiB and tool handlers that run longer than 2 minutes; set `MaximumToolResultBytes` or `ToolCallTimeout` (negative disables) where the old behaviour is wanted.
+Check the application's tests for tool results over 64 KiB and tool handlers that run longer than 2 minutes; set `MaximumToolResultBytes` or `ToolCallTimeout` (negative disables) where the old behaviour is wanted.

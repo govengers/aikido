@@ -26,7 +26,7 @@ func newClient(t *testing.T, handler http.HandlerFunc) *Client {
 	testServer := httptest.NewServer(handler)
 	t.Cleanup(testServer.Close)
 	source := newTokenSource(t, &TokenSourceOptions{Tokens: Tokens{AccessToken: "at", RefreshToken: "rt", AccountID: "acct", ExpiresAt: time.Now().Add(time.Hour)}})
-	client, err := NewClient(&Options{Tokens: source, Originator: "casa-mapa", BaseURL: testServer.URL})
+	client, err := NewClient(&Options{Tokens: source, Originator: "todo-app", BaseURL: testServer.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func sse(events ...string) string {
 func TestComplete_RequestShapeAndText(t *testing.T) {
 	t.Parallel()
 	client := newClient(t, func(writer http.ResponseWriter, request *http.Request) {
-		for header, want := range map[string]string{"Authorization": "Bearer at", "ChatGPT-Account-ID": "acct", "originator": "casa-mapa", "Accept": "text/event-stream", "User-Agent": "casa-mapa/aikido"} {
+		for header, want := range map[string]string{"Authorization": "Bearer at", "ChatGPT-Account-ID": "acct", "originator": "todo-app", "Accept": "text/event-stream", "User-Agent": "todo-app/aikido"} {
 			if got := request.Header.Get(header); got != want {
 				t.Errorf("header %s = %q, want %q", header, got, want)
 			}
@@ -229,7 +229,7 @@ func TestNewClient_Validates(t *testing.T) {
 	source := newTokenSource(t, &TokenSourceOptions{Tokens: Tokens{RefreshToken: "rt"}})
 	for name, options := range map[string]*Options{
 		"nil":           nil,
-		"no tokens":     {Originator: "casa-mapa"},
+		"no tokens":     {Originator: "todo-app"},
 		"no originator": {Tokens: source},
 	} {
 		if _, err := NewClient(options); err == nil {

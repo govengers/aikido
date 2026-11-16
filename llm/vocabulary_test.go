@@ -9,13 +9,13 @@ import (
 )
 
 var bathroomVocabulary = &llm.Vocabulary{
-	Terms: []string{"Liv", "PFEIFFER & MAY", "LIV60G", "Waschtisch", "Duschtasse", "Unterschrank"},
+	Terms: []string{"Vok", "VARNOTH & ZELBIG", "VOK60G", "Waschtisch", "Duschtasse", "Unterschrank"},
 	Replacements: map[string]string{
-		"pfeifer und mai":  "PFEIFFER & MAY",
-		"pfeiffer und may": "PFEIFFER & MAY",
-		"liv sechzig g":    "LIV60G",
-		"lieb":             "Liv",
-		"lieb sechzig":     "LIV60",
+		"warnot und selbig":  "VARNOTH & ZELBIG",
+		"warnoth und zelbig": "VARNOTH & ZELBIG",
+		"vok sechzig g":      "VOK60G",
+		"fock":               "Vok",
+		"fock sechzig":       "VOK60",
 	},
 	Fuzzy: true,
 }
@@ -24,12 +24,12 @@ func TestVocabulary_Correct(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct{ input, want string }{
 		// Replacements, case-insensitive, whole word, longest first.
-		{"Ich will was von Pfeifer und Mai.", "Ich will was von PFEIFFER & MAY."},
-		{"Den liv sechzig G bitte.", "Den LIV60G bitte."},
-		{"Die Serie Lieb sechzig gefällt mir.", "Die Serie LIV60 gefällt mir."},
-		{"Lieb ist schön, aber lieber nicht.", "Liv ist schön, aber lieber nicht."},
+		{"Ich will was von Warnot und Selbig.", "Ich will was von VARNOTH & ZELBIG."},
+		{"Den vok sechzig G bitte.", "Den VOK60G bitte."},
+		{"Die Serie Fock sechzig gefällt mir.", "Die Serie VOK60 gefällt mir."},
+		{"Fock ist schön, aber Focksegel nicht.", "Vok ist schön, aber Focksegel nicht."},
 		// Exact term with separators and case ignored.
-		{"Nimm den Liv 60 g.", "Nimm den LIV60G."},
+		{"Nimm den Vok 60 g.", "Nimm den VOK60G."},
 		{"Ein wasch tisch aus Keramik", "Ein Waschtisch aus Keramik"},
 		{"Ein Waschtisch und ein Unterschrank", "Ein Waschtisch und ein Unterschrank"},
 		// Fuzzy near misses.
@@ -59,7 +59,7 @@ func TestVocabulary_Correct(t *testing.T) {
 
 func TestTranscribeDetailed_Vocabulary(t *testing.T) {
 	t.Parallel()
-	stub := llmtest.NewStubClient(textTurn("Ich hätte gern einen wasch tisch von Pfeifer und Mai."))
+	stub := llmtest.NewStubClient(textTurn("Ich hätte gern einen wasch tisch von Warnot und Selbig."))
 	got, err := llm.TranscribeDetailed(t.Context(), stub, llm.TranscribeRequest{
 		Audio:      []byte("RIFF"),
 		Format:     "wav",
@@ -69,11 +69,11 @@ func TestTranscribeDetailed_Vocabulary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Raw != "Ich hätte gern einen wasch tisch von Pfeifer und Mai." || got.Text != "Ich hätte gern einen Waschtisch von PFEIFFER & MAY." {
+	if got.Raw != "Ich hätte gern einen wasch tisch von Warnot und Selbig." || got.Text != "Ich hätte gern einen Waschtisch von VARNOTH & ZELBIG." {
 		t.Errorf("got %+v", got)
 	}
 	prompt := stub.Requests()[0].Messages[0].Content
-	if !strings.Contains(prompt, "spell it exactly like this: Liv, PFEIFFER & MAY, LIV60G, Waschtisch") {
+	if !strings.Contains(prompt, "spell it exactly like this: Vok, VARNOTH & ZELBIG, VOK60G, Waschtisch") {
 		t.Errorf("prompt lacks the terms:\n%s", prompt)
 	}
 	if strings.Index(prompt, "Expected terms") > strings.Index(prompt, "The speaker speaks German.") {

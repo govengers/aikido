@@ -11,11 +11,11 @@ import (
 func ExampleStubClient() {
 	stub := llmtest.NewStubClient(
 		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "weather", Arguments: `{"city":"Stuttgart"}`}},
+			{Kind: llm.EventToolCall, Tool: &llm.ToolCall{ID: "call-1", Name: "weather", Arguments: `{"city":"Lisbon"}`}},
 			{Kind: llm.EventEnd, FinishReason: "tool_calls"},
 		}},
 		llmtest.TurnScript{Events: []llm.Event{
-			{Kind: llm.EventTextDelta, Text: "It is sunny in Stuttgart."},
+			{Kind: llm.EventTextDelta, Text: "It is sunny in Lisbon."},
 			{Kind: llm.EventEnd, FinishReason: "stop"},
 		}},
 	)
@@ -30,7 +30,7 @@ func ExampleStubClient() {
 	fmt.Println(len(stub.Requests()), "requests recorded")
 	// Output:
 	// weather tool_calls
-	// It is sunny in Stuttgart.
+	// It is sunny in Lisbon.
 	// aikido/llmtest: stub client: script exhausted
 	// 2 requests recorded
 }

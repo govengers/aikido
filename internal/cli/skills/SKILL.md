@@ -80,7 +80,7 @@ file written back to the user.**
 
 | Model id                                  | Use for                                                                  |
 |-------------------------------------------|--------------------------------------------------------------------------|
-| `openai/gpt-image-2.5-flare`              | **Default.** Best product shots; the model-arena human-ranked winner.    |
+| `openai/gpt-image-2.5-flare`              | **Default.** Best product shots; the human-ranked winner in an image-model comparison.    |
 | `openai/gpt-image-2.5-sunburst`           | Precision tier, same price as flare, noticeably slower.                  |
 | `google/gemini-3.1-flash-image-preview`   | Fast. Good quality, quick iteration loops.                               |
 | `google/gemini-3-pro-image-preview`       | Higher fidelity, slower. Use when quality matters more than speed.       |

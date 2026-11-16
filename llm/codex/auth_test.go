@@ -400,7 +400,7 @@ func TestTokenSource_InterruptedRefreshIsNotReplayed(t *testing.T) {
 				Tokens: Tokens{AccessToken: "old", RefreshToken: "rt.old", ExpiresAt: time.Now()},
 				Login:  LoginOptions{Issuer: tokenServer.URL},
 			})
-			client, err := NewClient(&Options{Tokens: source, Originator: "casa-mapa", BaseURL: tokenServer.URL})
+			client, err := NewClient(&Options{Tokens: source, Originator: "todo-app", BaseURL: tokenServer.URL})
 			if err != nil {
 				t.Fatal(err)
 			}

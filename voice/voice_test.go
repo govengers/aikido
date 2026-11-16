@@ -366,15 +366,15 @@ func TestRun_NoSpeechSkipsTheAgent(t *testing.T) {
 
 func TestRun_VocabularyCorrectsTheTranscript(t *testing.T) {
 	t.Parallel()
-	transcriber := llmtest.NewStubClient(transcriptTurn("Passt der wasch tisch von Pfeifer und Mai?"))
+	transcriber := llmtest.NewStubClient(transcriptTurn("Passt der wasch tisch von Warnot und Selbig?"))
 	chat := llmtest.NewStubClient(replyTurn(0, "Ja."))
 	pipeline := newPipeline(t, &Options{Transcriber: transcriber, Vocabulary: &llm.Vocabulary{
-		Terms:        []string{"Waschtisch", "PFEIFFER & MAY"},
-		Replacements: map[string]string{"pfeifer und mai": "PFEIFFER & MAY"},
+		Terms:        []string{"Waschtisch", "VARNOTH & ZELBIG"},
+		Replacements: map[string]string{"warnot und selbig": "VARNOTH & ZELBIG"},
 	}})
 	session, _ := newSession(t, chat)
 	events := runTurn(t, pipeline, session, Input{Audio: []byte("x"), ContentType: "audio/webm"})
-	if events[0].Text != "Passt der Waschtisch von PFEIFFER & MAY?" || events[0].Raw != "Passt der wasch tisch von Pfeifer und Mai?" {
+	if events[0].Text != "Passt der Waschtisch von VARNOTH & ZELBIG?" || events[0].Raw != "Passt der wasch tisch von Warnot und Selbig?" {
 		t.Errorf("transcript = %+v", events[0])
 	}
 	if got := chat.Requests()[0].Messages[1].Content; got != events[0].Text {
@@ -564,8 +564,8 @@ func TestSpeakable(t *testing.T) {
 	for markdown, want := range map[string]string{
 		"**Wichtig:** die _Duschtasse_ ist `flach`.": "Wichtig: die _Duschtasse_ ist flach.",
 		"## Ergebnis": "Ergebnis",
-		"- Die [Serie Liv](https://example.com/liv) passt.":              "Die Serie Liv passt.",
-		"Mehr unter https://pfeiffer-may.de/katalog?x=1 oder www.liv.de": "Mehr unter oder",
+		"- Die [Serie Vok](https://example.com/vok) passt.":                          "Die Serie Vok passt.",
+		"Mehr unter https://varnoth-zelbig.example/katalog?x=1 oder www.vok.example": "Mehr unter oder",
 		"| Breite | 90 cm |":        "Breite, 90 cm",
 		"|---|---|":                 "",
 		"```go\nfmt.Println()\n```": "",

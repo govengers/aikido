@@ -314,8 +314,8 @@ func TestGenerateImage_5xxRetryThenSuccess(t *testing.T) {
 	}
 }
 
-// TestGenerateImage_201IsError pins the 200-only rule (ADR-029): model-arena
-// accepts any 2xx, aikido does not, so an unexpected 201 surfaces as a
+// TestGenerateImage_201IsError pins the 200-only rule (ADR-029): other clients
+// accept any 2xx, aikido does not, so an unexpected 201 surfaces as a
 // retried server error rather than being silently parsed.
 func TestGenerateImage_201IsError(t *testing.T) {
 	t.Parallel()
