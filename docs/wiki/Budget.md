@@ -43,7 +43,7 @@ then `client, err := spending.Wrap(provider)` and use `client` wherever a model 
 - `Stream`: the cost of the stream's `EventUsage`, charged before the channel closes, so the next call of the same caller sees it. `Complete`: the response's `Usage`.
 - `GenerateImage`, `GenerateVideo`, `Decide`: their response's `Usage`, also when the call returned an error with a usage.
 - `Speak` is checked but never charged: the speech endpoint reports no cost.
-- A call that reports no cost is not charged. A call whose context ended before the provider reported its cost (a stream stopped before its usage event, a timeout) is charged `CancelledCostUSD`, or nothing without it. A usage event the provider had already queued when the stream was stopped is charged as reported.
+- A call that reports no cost is not charged. A call whose context ended before the provider reported its cost (a stream stopped before its usage event, a timeout) is charged `CancelledCostUSD`, or nothing without it. A usage event the provider had already queued when the stream was stopped is charged as reported, as long as the budget wraps the provider or an `ObservedClient` directly: any other decorator in between (a struct embedding `llm.Client`, a retry or fallback client, a second budget) can hide it, and the call may be charged only `CancelledCostUSD` or nothing.
 - The charge runs after the call with the caller's context values but not its cancellation (at most 10 s): a call the caller gave up on was billed anyway.
 
 The cap is checked before a call and charged after it, so calls admitted at the same time can end above the cap by what they cost.

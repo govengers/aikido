@@ -18,7 +18,10 @@ import (
 //
 // With llm.NewObservedClient, wrap the observed client: Wrap(observed). Refused calls then never
 // reach the provider or its metrics, and the capabilities behind the observed client stay
-// reachable.
+// reachable. A usage event already queued when a stream is stopped is charged only when client is
+// the provider or an *llm.ObservedClient itself; any other decorator in between (a struct
+// embedding llm.Client, a retry client, another budget) can hide it, and such a call may be
+// charged only Options.CancelledCostUSD or nothing.
 func (b *Budget) Wrap(client llm.Client) (llm.Client, error) {
 	if client == nil {
 		return nil, errors.New("aikido/llm/budget: Wrap needs a client")
