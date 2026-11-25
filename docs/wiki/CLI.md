@@ -41,7 +41,9 @@ A `.env` in the working directory is loaded first; variables already set in the 
 - `--apply` without `--dir` or `--mount` is an error.
 - `--shell` adds the virtual `bash` tool ([Shell](Shell.md)). `--direct` (needs `--dir`) writes every change to disk as it happens instead of through an overlay; the shell then shows the directory at its absolute host path (`shell.Options.MountPoint`), so `pwd`, `$PWD` and every absolute path a script hands to a host program are host paths, and `/`, or any path outside the directory except `/tmp` and `/dev`, does not exist. `--allow name` or `--allow name=path` (needs `--shell` and `--direct`) lets the script run that host program in the directory the script `cd`'d to (not combinable with `--mount`: the mounts do not exist on disk); `--env NAME` or `--env NAME=value` passes variables to those programs only.
 - **`--allow` gives the agent everything that program can do.** git runs programs named in its configuration and options (`core.sshCommand`, `diff.external`, `core.fsmonitor`, `--upload-pack`), kubectl runs plugins. For an allowed `git` the CLI refuses `-c`, `--config-env`, `--exec-path`, `-C`/`--git-dir`/`--work-tree` outside `--dir`, and `--upload-pack`, `--receive-pack`, `--exec`, `--config`, `--template` (and `clone -u`/`-c`); with `--hide-hidden` the shell cannot write `.git/config` or hooks. A repository's own configuration is trusted. Allow only programs whose every option you would let the agent use.
-- `--apply` writes only when the run ended with `stop`. After an error, a timeout, a cancel or `--max-turns` the changes are printed, nothing is written, and the command fails with `--apply refused: the run ended with <reason>`, also when there were no changes.
+- `--instructions path` (repeatable) reads an instruction file from the workspace, path relative to its root (`--instructions CLAUDE.md`, `--instructions AGENTS.md`), and puts it in front of the first message (`SessionOptions.Instructions`, [Agent](Agent.md#project-instructions)); a missing file is an error. `--system-file path` instead reads a host file and appends it to the system prompt. With either and no `--system`, the system prompt is the unattended-worker prompt.
+- A run that reaches `--max-turns`, or keeps repeating a refused tool call (`repeated_tool_calls`), gets one more model call that asks for an answer without tools ([Agent](Agent.md#limits)).
+- `--apply` writes only when the run ended with `stop`. After an error, a timeout, a cancel, `--max-turns` or `repeated_tool_calls` the changes are printed, nothing is written, and the command fails with `--apply refused: the run ended with <reason>`, also when there were no changes.
 - A run that ended with an error, a timeout or a cancel exits non-zero (`the run ended with <reason>: <cause>`), with or without `--apply`; an interrupt exits 130. A run that hit `--max-turns` without `--apply` exits zero.
 
 | Flag | Default |
@@ -57,12 +59,15 @@ A `.env` in the working directory is loaded first; variables already set in the 
 | `--dir` | none |
 | `--apply` | off |
 | `--mount` (repeatable) | none |
+| `--instructions` (repeatable) | none |
+| `--system-file` | none |
 
 ```bash
 aikido agent "Create plan.md with one bullet, then list files."
 aikido agent --dir ./docs "Fix the spelling in every file."            # dry run: changes and diff
 aikido agent --dir ./docs --apply "Fix the spelling in every file."    # writes them
 aikido agent --dir . --mount spec=../spec:ro "Implement what spec/api.md describes."
+aikido agent --dir ~/worker --shell --instructions CLAUDE.md "Handle the alert: ..."   # the repo's routing table opens the first message
 ```
 
 ## image

@@ -17,6 +17,11 @@ const (
 	defaultMaximumTokens          = 16384
 	defaultToolCallTimeout        = 2 * time.Minute
 	defaultMaximumToolResultBytes = 64 << 10
+	defaultRepeatedToolCallLimit  = 3
+	// DefaultWrapUpPrompt is the instruction of the wrap-up call a run makes
+	// when it ran out of model calls; %d is SessionOptions.MaximumTurns.
+	DefaultWrapUpPrompt = "You have used all %d model calls of this turn, so no tool will run any more. Do not call tools. " +
+		"Answer now with what you found so far, and say plainly what is left undone."
 )
 
 // SessionOptions configure a Session. NewSession copies them, including the
@@ -39,6 +44,13 @@ type SessionOptions struct {
 	// SystemPrompt is sent as the first message of every model call. Empty
 	// sends none. It is never written to History.
 	SystemPrompt string
+	// Instructions open the first user message of a conversation (a Run
+	// whose History is still empty) and are stored with it: the project's
+	// own instructions, e.g. a directory's CLAUDE.md or AGENTS.md read with
+	// ReadProjectInstructions. Unlike SystemPrompt they stay out of the
+	// system prompt, so one cached system prompt serves every directory.
+	// RunWithMessages ignores them; the caller owns those messages.
+	Instructions string
 
 	// MaximumTurns caps the model calls of one run; zero or negative means 20.
 	MaximumTurns int
@@ -79,6 +91,25 @@ type SessionOptions struct {
 	// or not at all (OpenAI, most open models) ignore them; the Anthropic
 	// and Gemini models on OpenRouter honour them.
 	DisablePromptCaching bool
+
+	// RepeatedToolCallLimit is how often one tool call (same name, same
+	// arguments), or a cycle of up to 4 calls (A, B, A, B), may return the
+	// same results back to back. The next call that would continue the cycle
+	// is not run: the model gets an error telling it so. After
+	// RepeatedToolCallLimit refusals the run makes the wrap-up call and ends
+	// with EndReasonRepeatedToolCalls. A call whose result changes (polling a
+	// process, a test after an edit) breaks a cycle. Zero means 3, negative
+	// means no limit.
+	RepeatedToolCallLimit int
+	// DisableWrapUp ends a run that reached MaximumTurns (or
+	// RepeatedToolCallLimit) right away. By default the run makes one more
+	// model call that asks for an answer without tools, so a cut run still
+	// ends with an answer; tool calls in that reply are dropped. The end
+	// reason stays EndReasonMaximumTurns (EndReasonRepeatedToolCalls).
+	DisableWrapUp bool
+	// WrapUpPrompt is the user message of the wrap-up call; a %d in it is
+	// replaced by MaximumTurns. Empty means DefaultWrapUpPrompt.
+	WrapUpPrompt string
 }
 
 // Session bundles a session ID, a model + system prompt, a tool registry, a
@@ -136,6 +167,12 @@ func validateSessionOptions(options *SessionOptions) error {
 func withSessionDefaults(options SessionOptions) SessionOptions {
 	if options.MaximumTurns <= 0 {
 		options.MaximumTurns = defaultMaximumTurns
+	}
+	if options.RepeatedToolCallLimit == 0 {
+		options.RepeatedToolCallLimit = defaultRepeatedToolCallLimit
+	}
+	if options.WrapUpPrompt == "" {
+		options.WrapUpPrompt = DefaultWrapUpPrompt
 	}
 	if options.RunTimeout == 0 {
 		options.RunTimeout = defaultRunTimeout

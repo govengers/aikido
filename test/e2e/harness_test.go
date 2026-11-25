@@ -73,15 +73,12 @@ func TestToolResultsOverTheCapReachTheModelTruncatedButTheCallerInFull(t *testin
 	if sent != full.ModelContent {
 		t.Errorf("tool message = %q; want EventToolResult.ModelContent %q", sent, full.ModelContent)
 	}
-	var truncated struct {
-		Truncated  bool `json:"truncated"`
-		TotalBytes int  `json:"total_bytes"`
+	// read_file answers in text: the model gets the first lines and a notice naming the full size.
+	if len(sent) > resultCap || !strings.HasPrefix(strings.TrimLeft(sent, " "), "1\tline 1 of the report") {
+		t.Fatalf("tool message (%d bytes) is not the numbered text within %d bytes: %.300s", len(sent), resultCap, sent)
 	}
-	if len(sent) > resultCap || json.Unmarshal([]byte(sent), &truncated) != nil {
-		t.Fatalf("tool message (%d bytes) is not JSON within %d bytes: %.300s", len(sent), resultCap, sent)
-	}
-	if !truncated.Truncated || truncated.TotalBytes <= resultCap || strings.Contains(sent, lastLine) {
-		t.Errorf("tool message = %s; want truncated:true, total_bytes over the cap and the tail cut", sent)
+	if !strings.Contains(sent, "[result cut to its first") || strings.Contains(sent, lastLine) {
+		t.Errorf("tool message = %s; want a cut notice and the tail cut", sent)
 	}
 }
 

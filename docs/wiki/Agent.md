@@ -91,7 +91,8 @@ You own everything an event points to, image bytes included: changing it never a
 | Value | When | History |
 |---|---|---|
 | `EndReasonStop` (`stop`) | the model replied without tool calls | appended |
-| `EndReasonMaximumTurns` (`max_turns`) | `MaximumTurns` model calls without a final reply | appended |
+| `EndReasonMaximumTurns` (`max_turns`) | `MaximumTurns` model calls without a final reply (the wrap-up call may still have answered) | appended |
+| `EndReasonRepeatedToolCalls` (`repeated_tool_calls`) | the model kept repeating tool calls the run refused (`RepeatedToolCallLimit`); the wrap-up call may have answered | appended |
 | `EndReasonTimeout` (`timeout`) | the caller's deadline, `RunTimeout` or `LLMCallTimeout` expired | not touched |
 | `EndReasonCancelled` (`cancelled`) | the caller cancelled `ctx` | not touched |
 | `EndReasonError` (`error`) | provider error, `History` or `Locker` failure, a panic in the run | not touched |
@@ -108,9 +109,13 @@ Every run is bounded by default.
 | `RunTimeout` | 10 min | whole run; negative is an error |
 | `LLMCallTimeout` | 180 s | one model call; negative is an error |
 | `ToolCallTimeout` | 2 min | one tool call, negative means no cap; a timed-out tool is a tool error (`tool X timed out after ...`) and the run goes on. The cap reaches the handler as its context deadline, so it binds only handlers that honour `ctx` |
-| `MaximumToolResultBytes` | 64 KiB | JSON of one tool result as the model sees it and History stores it, negative means no cap; a longer result becomes `{"truncated":true,"total_bytes":N,"notice":"...","content":"<prefix>"}`. `EventToolResult` keeps the full result in `Content` and the capped one in `ModelContent` |
+| `MaximumToolResultBytes` | 64 KiB | one tool result as the model sees it and History stores it, negative means no cap; a longer JSON result becomes `{"truncated":true,"total_bytes":N,"notice":"...","content":"<prefix>"}`, a longer text result its prefix plus a bracketed notice. `EventToolResult` keeps the full result in `Content` and the capped one in `ModelContent` |
+| `RepeatedToolCallLimit` | 3 | how often one call (same name, same arguments), or a cycle of up to 4 calls (A, B, A, B), may return the same results back to back; a further call of the cycle is refused with `ErrRepeatedToolCall`, and after as many refusals the run makes the wrap-up and ends with `repeated_tool_calls`. A call whose result changes (polling, a test after a different edit) breaks the cycle. Negative means no limit |
+| `DisableWrapUp` / `WrapUpPrompt` | wrap-up on | at `MaximumTurns` (or the repeat limit) the run makes one more model call that asks for an answer without tools (`DefaultWrapUpPrompt`, `%d` = `MaximumTurns`); tool calls in that reply are dropped, an empty reply is dropped with its prompt. The end reason stays `max_turns` |
 | `MaximumTokens` | 16384 | one reply |
 | `Temperature` | model default | `*float32`, e.g. `new(float32(0.2))` |
+
+`LLMCallTimeout`'s 180 s is set for hosted models: a local model server that reads a long prompt first needs it raised, or long calls fail as timeouts.
 
 A failing, panicking or timed-out tool is reported to the model and the run continues; only provider errors, History or Locker failures, panics outside tools, timeouts and cancellation end a run.
 
@@ -121,6 +126,22 @@ By default every model request marks the system prompt and its last message (whe
 ## Thinking
 
 `SessionOptions.Thinking` sets the reasoning of every model call: `llm.ThinkingByEffort(llm.ThinkingEffortLow|Medium|High)` or `llm.ThinkingByBudget(tokens)`; nil leaves the model default. `RunOptions.Thinking` replaces it for one run. Reasoning arrives as `EventThinking` and is never stored. `llm/codex` rejects `Thinking` with `llm.ErrInvalidRequest`.
+
+## Tool results the model reads
+
+A handler's `tools.Result.Content` is sent to the model as JSON unless `tools.Result.Text` is set: then the model reads that text, and `Content` still reaches the caller's `EventToolResult`. The built-in `read_file`, `grep`, `glob` and the shell return text (numbered lines, `path:line:text`, one path per line, output plus `[exit code N]`), which costs fewer tokens than an escaped JSON string and reads like a terminal. A failed call reads `error: <message>`.
+
+## Project instructions
+
+An instruction repository (a routing table in `CLAUDE.md` that points to workbooks) only works when the model reads its entry file first. Bootstrap a session over a directory with it:
+
+```go
+instructions, err := agent.ReadProjectInstructions(ctx, storage, nil) // AGENTS.md, then CLAUDE.md, missing ones skipped
+// ...
+session, err := agent.NewLocalSession(&agent.SessionOptions{ /* ... */ Instructions: instructions})
+```
+
+`ReadProjectInstructions` returns the files, each under a line naming it, a repeated content once; `ProjectInstructionsOptions` sets other names (paths in the storage), `MissingIsError` for names a user gave, and the 32 KiB cap. `SessionOptions.Instructions` opens the first user message of a conversation (a `Run` on an empty History) and is stored with it; later runs do not repeat it, and `RunWithMessages` ignores it. Keeping it out of the system prompt lets one cached system prompt serve every directory. Measured on an instruction-repository task with a small local model: 30 % fewer input tokens than letting the model find the file.
 
 ## History and Locker
 

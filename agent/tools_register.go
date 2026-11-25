@@ -19,9 +19,13 @@ type VFSToolOptions struct {
 	// Storage is the file store the tools work on. Required; multi-tenant
 	// callers pass a store already bound to the tenant's scope.
 	Storage vfs.Storage
-	// HideHiddenPaths hides paths with a segment beginning with "_" or "."
-	// from listings and rejects them as tool arguments.
+	// HideHiddenPaths hides the paths HiddenPath names from listings and
+	// rejects them as tool arguments.
 	HideHiddenPaths bool
+	// HiddenPath says which paths HideHiddenPaths hides; nil means
+	// vfs.IsHiddenPath (a segment beginning with "." or "_"). vfs.IsDotPath
+	// keeps "_" folders visible.
+	HiddenPath func(path string) bool
 	// AllowedExtensions limits the tools to files with these extensions
 	// (".md", compared case-insensitively). Nil allows every file.
 	AllowedExtensions []string

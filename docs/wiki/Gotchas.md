@@ -13,6 +13,8 @@ The rules agents and humans get wrong most often, one line each with the page th
 - On `EventToolResult`, `ToolResult.Content` is the full result, `ModelContent` the capped JSON the model saw; store `ModelContent` (as `Drain` does) to replay what the model saw. [Agent](Agent.md#limits)
 - All `EventToolCall`s of one model reply arrive before the first tool runs, then the `EventToolResult`s follow in the same order; pair them by `ToolResult.CallID`, not by position. [Agent](Agent.md#events)
 - Negative `RunTimeout` or `LLMCallTimeout` is an error; negative `ToolCallTimeout` or `MaximumToolResultBytes` disables the cap. [Agent](Agent.md#limits)
+- A run that reaches `MaximumTurns` makes one more call without tools (the wrap-up), so expect `MaximumTurns + 1` model calls; `DisableWrapUp` restores the old end. [Agent](Agent.md#limits)
+- The default hidden rule hides `_` folders too: an instruction repository with `workbooks/_shared/` needs `HiddenPath: vfs.IsDotPath` on the file tools and the shell. [Tools](Tools.md#built-in-file-tools)
 - Prompt caching is on by default and adds `Cache` to the request, never to History; a message that already has a breakpoint switches the automatic ones off. [Agent](Agent.md#prompt-caching)
 - `llm/codex` cannot run tools: an agent session over a Codex client fails as soon as tools are offered. [Models](Models.md#codex-chatgpt-subscription)
 - `postgresadapter.Locker` holds up to `MaximumConnections` (default 20) database connections, one per running or waiting session, outside your pool, and does not work behind a transaction-mode pooler. [Postgres](Postgres.md#locker)

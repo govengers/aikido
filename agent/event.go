@@ -45,6 +45,10 @@ const (
 	// EndReasonMaximumTurns means SessionOptions.MaximumTurns model calls ran
 	// without a final reply. History is still updated.
 	EndReasonMaximumTurns EndReason = "max_turns"
+	// EndReasonRepeatedToolCalls means the model kept repeating a tool call
+	// the run had refused (SessionOptions.RepeatedToolCallLimit). History is
+	// still updated.
+	EndReasonRepeatedToolCalls EndReason = "repeated_tool_calls"
 	// EndReasonError means the run failed; EventError carries the cause.
 	EndReasonError EndReason = "error"
 	// EndReasonTimeout means the caller's deadline, RunTimeout or
@@ -65,10 +69,14 @@ type ToolResult struct {
 	// Content is the tool's full result when OK. The model gets it as JSON,
 	// cut at SessionOptions.MaximumToolResultBytes.
 	Content any
+	// Text is the tool's plain-text form of Content for the model, empty
+	// when the tool gave none (tools.Result.Text).
+	Text string
 	// Error is the failure message when not OK.
 	Error string
-	// ModelContent is the tool message content the model received: the JSON
-	// of Content or Error, cut at SessionOptions.MaximumToolResultBytes. Drain
+	// ModelContent is the tool message content the model received: Text, or
+	// else the JSON of Content, or "error: " and Error, cut at
+	// SessionOptions.MaximumToolResultBytes. Drain
 	// stores this copy, so a history rebuilt from events matches what the
 	// model saw.
 	ModelContent string

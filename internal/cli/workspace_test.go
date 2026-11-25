@@ -341,3 +341,37 @@ func readDiskFile(t *testing.T, directory, name string) string {
 	}
 	return string(content)
 }
+
+func TestRunAgent_InstructionsFromTheDirectoryOpenTheFirstMessage(t *testing.T) {
+	directory := newProjectDirectory(t)
+	writeDiskFile(t, directory, "CLAUDE.md", "# Routing\nincident -> workbooks/incident\n")
+	stub := editingStub()
+	options := agentTestOptions()
+	options.directory = directory
+	options.instructions = []string{"CLAUDE.md"}
+	options.system = "worker"
+	var out bytes.Buffer
+	if err := runAgent(context.Background(), options, &out, stub); err != nil {
+		t.Fatalf("runAgent: %v", err)
+	}
+	first := stub.Requests()[0].Messages
+	user := first[len(first)-1]
+	if user.Role != llm.RoleUser || !strings.HasPrefix(user.Content, "Project instructions from CLAUDE.md:\n\n# Routing\nincident -> workbooks/incident") ||
+		!strings.HasSuffix(user.Content, options.prompt) {
+		t.Errorf("first user message = %q; want the instructions, then the prompt", user.Content)
+	}
+	if first[0].Role != llm.RoleSystem || strings.Contains(first[0].Content, "Routing") {
+		t.Errorf("system prompt holds the instructions: %q", first[0].Content)
+	}
+}
+
+func TestRunAgent_AMissingInstructionsFileIsAnError(t *testing.T) {
+	options := agentTestOptions()
+	options.directory = newProjectDirectory(t)
+	options.instructions = []string{"AGENTS.md"}
+	var out bytes.Buffer
+	err := runAgent(context.Background(), options, &out, editingStub())
+	if err == nil || !strings.Contains(err.Error(), "--instructions") {
+		t.Fatalf("runAgent = %v; want an --instructions error", err)
+	}
+}
