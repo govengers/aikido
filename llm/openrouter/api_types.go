@@ -26,6 +26,9 @@ type chatRequest struct {
 	Modalities         []string               `json:"modalities,omitempty"`
 	ImageConfiguration *apiImageConfiguration `json:"image_config,omitempty"`
 	Usage              *apiUsageOptions       `json:"usage,omitempty"`
+	// StreamOptions asks a streamed reply for its usage the OpenAI way;
+	// OpenAI-compatible servers (llama.cpp, vLLM) ignore Usage.
+	StreamOptions *apiStreamOptions `json:"stream_options,omitempty"`
 	// ResponseFormat carries structured-output requests (llm.JSONSchema).
 	ResponseFormat *apiResponseFormat `json:"response_format,omitempty"`
 }
@@ -49,6 +52,10 @@ type apiJSONSchema struct {
 // meters money with nothing to meter.
 type apiUsageOptions struct {
 	Include bool `json:"include"`
+}
+
+type apiStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // apiImageConfiguration mirrors llm.ImageConfiguration on the OpenRouter
