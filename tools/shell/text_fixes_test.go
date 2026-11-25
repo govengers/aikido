@@ -205,7 +205,8 @@ func TestInputBudget(t *testing.T) {
 		{name: "sed streams", files: big, script: `cat big | sed -n '$p'`, want: "end\n"},
 		{name: "sed N across the stream", files: big, script: `cat big | sed -n '$!N;$p'`, want: "end\n"},
 		{name: "uniq streams", files: big, script: `cat big | uniq -c | cut -c1-12`, want: "  70000 xxxx\n      1 end\n"},
-	}, nil)
+		// 70 MB through pipes takes over a minute under -race on a small CI runner; the default timeout is one minute.
+	}, &Options{Timeout: 5 * time.Minute})
 }
 
 // TestGrepBeforeContextBudget: -B holds its context within the input
