@@ -64,7 +64,10 @@ var uniqCases = []textCase{
 	{name: "uniq bad field count", files: uniqFiles, script: "uniq -f x f.txt", stderr: "uniq: x: invalid number of fields to skip\n", exit: 1},
 	{name: "uniq extra operand", script: "uniq a b c", stderr: "uniq: extra operand 'c'\nTry 'uniq --help' for more information.\n", exit: 1},
 	{name: "uniq missing file", script: "uniq nope", stderr: "uniq: nope: No such file or directory\n", exit: 1},
-	{name: "uniq directory", files: uniqFiles, script: "uniq d", stderr: "uniq: error reading 'd'\n", exit: 1},
+	{
+		name: "uniq directory", files: uniqFiles, script: "uniq d", stderr: "uniq: error reading 'd': Is a directory\n", exit: 1,
+		gnuSkip: "the wording depends on the coreutils version: 9.4+ adds the reason, Debian 12's 9.1 does not",
+	},
 }
 
 var cutFiles = map[string]string{"c.txt": "a:b:c\nd:e\nnodelim\n", "tab.txt": "a\tb\tc\n", "d/f": "f\n"}

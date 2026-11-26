@@ -70,7 +70,8 @@ func runUniq(ctx context.Context, invocation *Invocation) error {
 	reader, err := openOperand(ctx, invocation, input)
 	if reason, ok := operandReason(err); ok {
 		if reason == reasonIsDirectory {
-			return uniqTool.fatal(invocation, 1, "error reading '%s'", input)
+			// coreutils 9.4+ wording, as head's; older GNU leaves out the reason
+			return uniqTool.fatal(invocation, 1, "error reading '%s': %s", input, reason)
 		}
 		return uniqTool.fatal(invocation, 1, "%s: %s", input, reason)
 	}
