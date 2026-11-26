@@ -295,7 +295,11 @@ func TestRun_MaximumTurnsHitsCap(t *testing.T) {
 	}
 	stub := llmtest.NewStubClient(turns...)
 	history := memory.New()
-	session := newTestSession(t, stub, registry, history, func(options *SessionOptions) { options.MaximumTurns = 3 })
+	session := newTestSession(t, stub, registry, history, func(options *SessionOptions) {
+		options.MaximumTurns = 3
+		options.DisableWrapUp = true
+		options.RepeatedToolCallLimit = -1
+	})
 
 	events := runToEnd(t, session, "go")
 
@@ -777,7 +781,7 @@ func TestResolveEndReason(t *testing.T) {
 	}
 }
 
-func TestToolResultJSON(t *testing.T) {
+func TestToolResultContent(t *testing.T) {
 	testCases := []struct {
 		name       string
 		toolResult ToolResult
@@ -785,15 +789,33 @@ func TestToolResultJSON(t *testing.T) {
 	}{
 		{"content", ToolResult{OK: true, Content: map[string]any{"a": 1}}, `{"a":1}`},
 		{"nil content", ToolResult{OK: true}, "null"},
-		{"failure", ToolResult{Error: `bad "path"`}, `{"error":"bad \"path\""}`},
-		{"unencodable content", ToolResult{OK: true, Content: make(chan int)}, `{"error":"content marshal failed: json: unsupported type: chan int"}`},
+		{"text wins over content", ToolResult{OK: true, Content: map[string]any{"a": 1}, Text: "1\tline"}, "1\tline"},
+		{"failure", ToolResult{Error: `bad "path"`, Text: "ignored"}, `error: bad "path"`},
+		{"unencodable content", ToolResult{OK: true, Content: make(chan int)}, "error: content marshal failed: json: unsupported type: chan int"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := toolResultJSON(testCase.toolResult); got != testCase.want {
-				t.Errorf("toolResultJSON = %s; want %s", got, testCase.want)
+			if got := toolResultContent(testCase.toolResult); got != testCase.want {
+				t.Errorf("toolResultContent = %s; want %s", got, testCase.want)
 			}
 		})
+	}
+}
+
+func TestBoundedContentCutsTextWithANotice(t *testing.T) {
+	text := strings.Repeat("abcdefghij\n", 100)
+	got := boundedContent(text, 200)
+	if len(got) > 200 {
+		t.Fatalf("len = %d; want at most 200", len(got))
+	}
+	if !strings.HasPrefix(got, "abcdefghij") || !strings.Contains(got, "of 1100 bytes") {
+		t.Errorf("cut text = %q; want a prefix and a notice naming the full size", got)
+	}
+	if json := boundedContent(`{"a":"`+strings.Repeat("x", 300)+`"}`, 200); !strings.HasPrefix(json, `{"truncated":true`) {
+		t.Errorf("cut JSON = %q; want the truncatedResult shape", json)
+	}
+	if short := boundedContent("short", 200); short != "short" {
+		t.Errorf("short text = %q; want it unchanged", short)
 	}
 }
 

@@ -18,10 +18,10 @@ const defaultAgentSystemPrompt = "You are a focused assistant working in a virtu
 	"file system. Use your tools to read, write, list, delete, and search files. Files " +
 	"are markdown by default. Be concise."
 
-// workerSystemPrompt opens the system prompt when --system-file supplies the
-// instructions and --system is not set.
+// workerSystemPrompt opens the system prompt when --system-file or
+// --instructions supply the instructions and --system is not set.
 const workerSystemPrompt = "You are an autonomous agent working unattended in the repository that is your " +
-	"workspace. Nobody answers questions during the run: decide from the repository's instructions below, " +
+	"workspace. Nobody answers questions during the run: decide from the repository's instructions, " +
 	"use your tools to inspect and change files and to run commands, and finish the task end to end. " +
 	"When the repository prescribes a template or format (reports, journal lines, generated files), " +
 	"reproduce it exactly: every heading of the template in its order, writing \"none\" under a heading " +
@@ -48,7 +48,7 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 				return err
 			}
 			system := command.String("system")
-			if command.String("system-file") != "" && !command.IsSet("system") {
+			if (command.String("system-file") != "" || len(command.StringSlice("instructions")) > 0) && !command.IsSet("system") {
 				system = workerSystemPrompt
 			}
 			system, err = systemPrompt(system, command.String("system-file"))
@@ -71,6 +71,7 @@ func agentCommand(factory ClientFactory) *urfavecli.Command {
 				directory:     command.String("dir"),
 				apply:         command.Bool("apply"),
 				mounts:        mounts,
+				instructions:  command.StringSlice("instructions"),
 				worker: workerOptions{
 					shell:       command.Bool("shell"),
 					direct:      command.Bool("direct"),
@@ -100,6 +101,7 @@ func agentFlags() []urfavecli.Flag {
 		&urfavecli.StringSliceFlag{Name: "allow", Usage: "Host program the bash tool may run, as name (from PATH) or name=path; gives the agent everything that program can do (git: config and program options refused); needs --shell and --direct (repeatable)"},
 		&urfavecli.StringSliceFlag{Name: "env", Usage: "Variable for the allowed host programs, as NAME (copied from this environment) or NAME=value (repeatable)"},
 		&urfavecli.StringFlag{Name: "system-file", Usage: "Read the instructions from this file (e.g. the repo's CLAUDE.md) and append them to the system prompt"},
+		&urfavecli.StringSliceFlag{Name: "instructions", Usage: "Instruction file in the workspace (e.g. CLAUDE.md or AGENTS.md of --dir), path relative to its root, put in front of the first message; keeps the system prompt the same for every directory (repeatable)"},
 	}
 }
 
@@ -115,6 +117,7 @@ type agentOptions struct {
 	directory     string // empty: in-memory workspace
 	apply         bool
 	mounts        []mountSpec
+	instructions  []string // workspace paths of instruction files
 	worker        workerOptions
 }
 
@@ -133,7 +136,14 @@ func runAgent(ctx context.Context, options agentOptions, out io.Writer, client l
 		return err
 	}
 	defer workspace.close()
-	session, err := newAgentSession(options, workspace.storage, client)
+	instructions := ""
+	if len(options.instructions) > 0 {
+		instructions, err = agent.ReadProjectInstructions(ctx, workspace.storage, &agent.ProjectInstructionsOptions{Names: options.instructions, MissingIsError: true})
+		if err != nil {
+			return fmt.Errorf("--instructions: %w", err)
+		}
+	}
+	session, err := newAgentSession(options, workspace.storage, client, instructions)
 	if err != nil {
 		return err
 	}
@@ -195,7 +205,7 @@ type commitDecision struct {
 	refusedReason string
 }
 
-func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Client) (*agent.Session, error) {
+func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Client, instructions string) (*agent.Session, error) {
 	registry := tools.NewRegistry()
 	if err := agent.RegisterVFSTools(registry, &agent.VFSToolOptions{
 		Storage:         storage,
@@ -212,6 +222,7 @@ func newAgentSession(options agentOptions, storage vfs.Storage, client llm.Clien
 		Tools:         registry,
 		Model:         options.model,
 		SystemPrompt:  options.system,
+		Instructions:  instructions,
 		MaximumTokens: options.maximumTokens,
 		MaximumTurns:  options.maximumTurns,
 	}

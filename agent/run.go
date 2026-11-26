@@ -159,6 +159,8 @@ func (s *Session) execute(userContext, runContext context.Context, sink eventSin
 	if err != nil {
 		return failedRun(userContext, runContext, nil, err)
 	}
+	repeats := newRepeatGuard(s.options.RepeatedToolCallLimit)
+	endReason := EndReasonMaximumTurns
 	for range s.options.MaximumTurns {
 		reply, callContextError, err := s.callModel(runContext, sink, state)
 		if err != nil {
@@ -173,9 +175,42 @@ func (s *Session) execute(userContext, runContext context.Context, sink eventSin
 		if len(reply.ToolCalls) == 0 {
 			return s.finishRun(userContext, runContext, state, plan, EndReasonStop)
 		}
-		s.runToolCalls(runContext, sink, state, reply.ToolCalls)
+		s.runToolCalls(runContext, sink, state, reply.ToolCalls, repeats)
+		if repeats.exhausted() {
+			endReason = EndReasonRepeatedToolCalls
+			break
+		}
 	}
-	return s.finishRun(userContext, runContext, state, plan, EndReasonMaximumTurns)
+	if !s.options.DisableWrapUp {
+		if callContextError, err := s.wrapUp(runContext, sink, state); err != nil {
+			return failedRun(userContext, runContext, callContextError, err)
+		}
+	}
+	return s.finishRun(userContext, runContext, state, plan, endReason)
+}
+
+// wrapUp asks the model for an answer without tools after the run ran out of
+// model calls. Tool calls in the reply are dropped, as no tool runs any more;
+// a reply that is left empty is dropped with its instruction, so History
+// never ends on a message nobody answered.
+func (s *Session) wrapUp(runContext context.Context, sink eventSink, state *runState) (callContextError, err error) {
+	prompt := s.options.WrapUpPrompt
+	if strings.Contains(prompt, "%d") {
+		prompt = fmt.Sprintf(prompt, s.options.MaximumTurns)
+	}
+	state.record(llm.Message{Role: llm.RoleUser, Content: prompt})
+	reply, callContextError, err := s.callModel(runContext, sink, state)
+	if err != nil {
+		return callContextError, err
+	}
+	reply.ToolCalls = nil
+	if isEmptyReply(reply) {
+		state.messages = state.messages[:len(state.messages)-1]
+		state.produced = state.produced[:len(state.produced)-1]
+		return nil, nil
+	}
+	state.record(reply)
+	return nil, nil
 }
 
 // startRun builds the first model request's conversation: system prompt,
@@ -202,12 +237,21 @@ func (s *Session) startRun(ctx context.Context, plan runPlan) (*runState, error)
 	}
 	state.messages = append(state.messages, earlier...)
 	if plan.persistToHistory {
-		state.record(llm.Message{Role: llm.RoleUser, Content: plan.userText})
+		state.record(llm.Message{Role: llm.RoleUser, Content: firstMessage(s.options.Instructions, earlier, plan.userText)})
 	}
 	if s.options.Tools != nil {
 		state.toolDefinitions = s.options.Tools.Definitions()
 	}
 	return state, nil
+}
+
+// firstMessage is the user text of a run, opened by the session's
+// instructions when the conversation has no earlier message.
+func firstMessage(instructions string, earlier []llm.Message, userText string) string {
+	if instructions == "" || len(earlier) > 0 {
+		return userText
+	}
+	return instructions + "\n\n" + userText
 }
 
 // systemPrompt joins the session prompt and a run's suffix with a blank line.
@@ -335,15 +379,23 @@ func (b *replyBuilder) message() llm.Message {
 // boundary for Drain. A failing tool does not end the run: the model sees the
 // error and can self-correct on the next turn. The model's copy of a result
 // is bounded by MaximumToolResultBytes; the caller's EventToolResult is not.
-func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall) {
+func (s *Session) runToolCalls(ctx context.Context, sink eventSink, state *runState, calls []llm.ToolCall, repeats *repeatGuard) {
 	for _, call := range calls {
 		sink.send(Event{Kind: EventToolCall, ToolCall: &call})
 	}
 	environment := tools.Environment{SessionID: s.options.ID, TurnID: uuid.New()}
 	for _, call := range calls {
-		result, err := s.dispatch(ctx, call, environment)
+		var result tools.Result
+		refusal := repeats.refusal(call)
+		err := refusal
+		if refusal == nil {
+			result, err = s.dispatch(ctx, call, environment)
+		}
 		toolResult := buildToolResult(call, result, err)
-		toolResult.ModelContent = boundedJSON(toolResultJSON(toolResult), s.options.MaximumToolResultBytes)
+		toolResult.ModelContent = boundedContent(toolResultContent(toolResult), s.options.MaximumToolResultBytes)
+		if refusal == nil {
+			repeats.observe(call, toolResult.ModelContent)
+		}
 		// The caller owns what the event points to, so the conversation keeps
 		// its own copy, taken before it is sent.
 		message := llm.Message{Role: llm.RoleTool, ToolCallID: call.ID, Content: toolResult.ModelContent}

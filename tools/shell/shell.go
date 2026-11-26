@@ -44,6 +44,9 @@ type Options struct {
 	// links, a visible link (public -> .env) reaches a hidden file, so pair
 	// it with osfs.Options.RefuseSymlinks (the CLI does).
 	HideHiddenPaths bool
+	// HiddenPath says which paths HideHiddenPaths hides; nil means
+	// vfs.IsHiddenPath. Pass the same rule as agent.VFSToolOptions.HiddenPath.
+	HiddenPath func(path string) bool
 	// Commands are added to the built-in commands (Builtins); a Command with
 	// the name of a built-in replaces it. Names must be unique, and must not
 	// be shell builtins (cd, echo, test, ...), which the interpreter runs
@@ -270,7 +273,11 @@ func (s *Shell) run(ctx context.Context, script string, stdout, stderr io.Writer
 func (s *Shell) newSession() (*session, error) {
 	workspace := s.options.Storage
 	if s.options.HideHiddenPaths {
-		workspace = hiddenFilter{workspace}
+		hidden := s.options.HiddenPath
+		if hidden == nil {
+			hidden = vfs.IsHiddenPath
+		}
+		workspace = hiddenFilter{Storage: workspace, hidden: hidden}
 	}
 	processFiles := processFileStorage{newScratchStorage(s.budget)}
 	storage, err := mount.New(&mount.Options{Mounts: []mount.Mount{

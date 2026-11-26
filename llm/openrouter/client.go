@@ -227,6 +227,11 @@ func (c *Client) buildBody(ctx context.Context, request llm.Request, stream bool
 		// not want it simply ignores Usage.CostUSD.
 		Usage: &apiUsageOptions{Include: true},
 	}
+	if stream {
+		// OpenRouter reports usage from Usage alone; a local OpenAI-compatible
+		// server (llama.cpp) sends none without this.
+		body.StreamOptions = &apiStreamOptions{IncludeUsage: true}
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("encode chat request: %w", err)

@@ -181,7 +181,7 @@ func TestMoveFile(t *testing.T) {
 		{"existing destination", `{"source":"b.md","destination":"docs/a.txt"}`, "destination docs/a.txt exists; set overwrite"},
 		{"same path", `{"source":"b.md","destination":"b.md"}`, "same path"},
 		{"missing source", `{"source":"gone.md","destination":"c.md"}`, "file not found"},
-		{"hidden destination", `{"source":"b.md","destination":".secret.md"}`, "hidden path"},
+		{"hidden destination", `{"source":"b.md","destination":".secret.md"}`, "hidden from the tools"},
 		{"invalid source", `{"source":"/b.md","destination":"c.md"}`, "invalid path"},
 		{"missing destination argument", `{"source":"b.md"}`, `missing required argument "destination"`},
 	}

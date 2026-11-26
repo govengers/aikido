@@ -172,7 +172,7 @@ aikido chat "Give me one fun fact about Go."
 aikido agent --dir ./notes "Fix the spelling in every file."   # prints changes and diff; --apply writes
 aikido agent --dir ./notes --shell "Replace http:// with https:// in every markdown file."   # adds the virtual bash
 # an unattended worker on a repo: virtual bash, real git and kubectl, the repo's own instructions
-aikido agent --dir ~/worker --direct --shell --allow git --allow kubectl --env KUBECONFIG --system-file ~/worker/CLAUDE.md "Handle the alert: ..."
+aikido agent --dir ~/worker --direct --shell --allow git --allow kubectl --env KUBECONFIG --instructions CLAUDE.md "Handle the alert: ..."
 aikido video -d 4 -r 720p -a 16:9 --audio=false "A paper boat drifts across a pond."
 aikido decide --noul 'is_bug=Is this a bug report?' 'Checkout shows a blank page after I click Pay.'
 aikido models anthropic/claude-haiku-4.5

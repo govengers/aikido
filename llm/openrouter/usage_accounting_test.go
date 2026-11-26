@@ -68,6 +68,11 @@ func TestUsageAccounting_RequestedOnBothPaths(t *testing.T) {
 			if !ok || usage["include"] != true {
 				t.Errorf("usage block = %v, want {include:true}", decoded["usage"])
 			}
+			// A stream also asks the OpenAI way, which llama.cpp and vLLM honour; a completion has no stream options.
+			options, hasOptions := decoded["stream_options"].(map[string]any)
+			if streamed := testCase.name == "stream"; streamed != hasOptions || streamed && options["include_usage"] != true {
+				t.Errorf("stream_options = %v on %s, want include_usage only on a stream", decoded["stream_options"], testCase.name)
+			}
 		})
 	}
 }

@@ -95,10 +95,10 @@ func (d *drainTranscript) flush() {
 }
 
 // modelContent is the tool message the model received; events built by hand
-// without ModelContent fall back to the full result's JSON.
+// without ModelContent fall back to the full result.
 func modelContent(toolResult ToolResult) string {
 	if toolResult.ModelContent != "" {
 		return toolResult.ModelContent
 	}
-	return toolResultJSON(toolResult)
+	return toolResultContent(toolResult)
 }

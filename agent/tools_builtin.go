@@ -32,7 +32,7 @@ const (
 func readFileDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines (%d KiB) from offset, each prefixed with its line number and a tab that are not part of the file, plus content_type, size, total_lines and truncated (true when lines follow; continue at the next line number). A line too long for one call is cut with a notice naming the offset and column to continue at.", defaultReadLimit, readMaximumBytes>>10),
+		Description: fmt.Sprintf("Read a file by path. Returns up to %d lines (%d KiB) from offset, each prefixed with its line number and a tab that are not part of the file; when more lines follow, a last line in brackets names the offset to continue at. A line too long for one call is cut with a notice naming the offset and column to continue at. Use this rather than cat, sed or grep -n in a shell to read a file: the lines are numbered already.", defaultReadLimit, readMaximumBytes>>10),
 		Parameters: tools.Object(map[string]any{
 			"path":   tools.String("Relative file path within the workspace."),
 			"offset": tools.Integer("Optional 1-based line to start reading at."),
@@ -123,7 +123,21 @@ func readFileHandler(options VFSToolOptions) tools.Handler {
 				"total_lines":  len(lines),
 				"truncated":    end < len(lines),
 			},
+			Text: readFileText(numbered, offset, end, len(lines)),
 		}, nil
+	}
+}
+
+// readFileText is read_file's result for the model: the numbered lines and,
+// when lines follow, where to continue.
+func readFileText(numbered string, offset, end, total int) string {
+	switch {
+	case total == 0:
+		return "(empty file)"
+	case end < total:
+		return fmt.Sprintf("%s\n[lines %d-%d of %d; continue with offset %d]", strings.TrimRight(numbered, "\n"), offset, end, total, end+1)
+	default:
+		return numbered
 	}
 }
 
@@ -337,8 +351,8 @@ func validatePolicyPath(options VFSToolOptions, filePath string) error {
 	if !extensionAllowed(options, filePath) {
 		return fmt.Errorf("%w: extension %q not in AllowedExtensions", vfs.ErrPathInvalid, strings.ToLower(path.Ext(filePath)))
 	}
-	if options.HideHiddenPaths && isHidden(filePath) {
-		return fmt.Errorf("%w: hidden path %q is not addressable when HideHiddenPaths is set", vfs.ErrPathInvalid, filePath)
+	if options.HideHiddenPaths && options.hidden(filePath) {
+		return fmt.Errorf("%w: %q is hidden from the tools on purpose; do not try to reach it another way", vfs.ErrPathInvalid, filePath)
 	}
 	return nil
 }
@@ -353,7 +367,7 @@ func checkFileSize(options VFSToolOptions, size int) error {
 // visible reports whether a path listed by the storage may be shown to the
 // model under the caller policy (hidden paths, allowed extensions).
 func visible(options VFSToolOptions, filePath string) bool {
-	return (!options.HideHiddenPaths || !isHidden(filePath)) && extensionAllowed(options, filePath)
+	return (!options.HideHiddenPaths || !options.hidden(filePath)) && extensionAllowed(options, filePath)
 }
 
 func extensionAllowed(options VFSToolOptions, filePath string) bool {
@@ -385,13 +399,12 @@ func isBinary(content []byte) bool {
 	return bytes.IndexByte(content[:min(len(content), binarySniffBytes)], 0) >= 0 || !utf8.Valid(content)
 }
 
-func isHidden(filePath string) bool {
-	for _, segment := range strings.Split(filePath, "/") {
-		if segment != "" && (segment[0] == '_' || segment[0] == '.') {
-			return true
-		}
+// hidden applies HiddenPath, vfs.IsHiddenPath when unset.
+func (options VFSToolOptions) hidden(filePath string) bool {
+	if options.HiddenPath != nil {
+		return options.HiddenPath(filePath)
 	}
-	return false
+	return vfs.IsHiddenPath(filePath)
 }
 
 func inferContentType(filePath string) string {

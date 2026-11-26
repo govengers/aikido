@@ -60,7 +60,23 @@ func (s *Shell) handle(ctx context.Context, arguments json.RawMessage, _ tools.E
 	if err != nil {
 		return tools.Result{}, err
 	}
-	return tools.Result{Content: toolOutput(result)}, nil
+	return tools.Result{Content: toolOutput(result), Text: result.ModelText()}, nil
+}
+
+// ModelText is a run's result for the model as plain text: the output, a
+// notice when it was cut, and the exit code when it is not 0.
+func (r Result) ModelText() string {
+	text := r.Output
+	if r.Truncated {
+		text += "\n[the middle of the output was cut; filter it, e.g. with head, grep or sed -n]"
+	}
+	if r.ExitCode != 0 {
+		text += fmt.Sprintf("\n[exit code %d]", r.ExitCode)
+	}
+	if text == "" {
+		return "(no output)"
+	}
+	return text
 }
 
 // description is the tool description the model reads: what the shell is,

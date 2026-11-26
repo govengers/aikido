@@ -5,15 +5,15 @@
 - Module: `github.com/govengers/aikido` (v1, moved from `github.com/mxcd/aikido` v0.12), Go 1.26, Apache 2.0.
 - Packages: `llm`, `llm/openrouter`, `llm/codex`, `llm/llmtest`, `llm/prometheusadapter`, `llm/oteladapter`, `llm/wideeventadapter`, `llm/budget`, `llm/budget/ledgertest`, `retry`, `tools`, `tools/shell`, `agent`, `agent/history/memory`, `agent/history/historytest`, `agent/lockertest`, `vfs`, `vfs/memory`, `vfs/osfs`, `vfs/embedfs`, `vfs/overlay`, `vfs/mount`, `vfs/vfstest`, `voice`; binary `cmd/aikido`; nested module `postgresadapter`.
 - Construction: components with settings are `New(options *Options) (*X, error)` or `NewX(options *XOptions) (*X, error)` (`openrouter.NewClient`, `agent.NewSession`, `osfs.New`, `overlay.New`, `voice.New`); they validate at startup and copy the options. Components without settings take none (`memory.New()`, `tools.NewRegistry()`, `agent.NewLocalLocker()`). Tool handlers capture their dependencies by closure; `tools.Environment` carries only `SessionID` and `TurnID`.
-- Errors: match with `errors.Is` on `llm.ErrAuthentication`, `ErrRateLimited`, `ErrServerError`, `ErrInvalidRequest`, `ErrInvalidResponse`, `ErrContentFiltered`, `codex.ErrRefreshInterrupted`; `errors.As` on `*openrouter.APIError`; `tools.ErrUnknownTool`, `ErrInvalidArguments`, `ErrToolPanicked`; `vfs.ErrPathInvalid`, `ErrFileNotFound`, `ErrFileTooLarge`, `ErrReadOnly`. Cancellation is `context.Canceled`/`DeadlineExceeded`. Agent runs report failures as `EventError` plus `EventEnd` with an `agent.EndReason`; tool errors never end a run.
+- Errors: match with `errors.Is` on `llm.ErrAuthentication`, `ErrRateLimited`, `ErrServerError`, `ErrInvalidRequest`, `ErrInvalidResponse`, `ErrContentFiltered`, `codex.ErrRefreshInterrupted`; `errors.As` on `*openrouter.APIError`; `tools.ErrUnknownTool`, `ErrInvalidArguments`, `ErrToolPanicked`; `agent.ErrRepeatedToolCall` (a refused repeated call, the model sees it); `vfs.ErrPathInvalid`, `ErrFileNotFound`, `ErrFileTooLarge`, `ErrReadOnly`. Cancellation is `context.Canceled`/`DeadlineExceeded`. Agent runs report failures as `EventError` plus `EventEnd` with an `agent.EndReason`; tool errors never end a run.
 - Standards: govengers/standards, `library` profile (`.govengers.yml`: DES-001 for `agent.NewLocalSession` and `llmtest.NewStubClient`, RES-005 for `llm.CollectWithRetry`, DES-004 for `budget.Budget.Wrap`).
 
 ## Docs
 
 - [Home](docs/wiki/Home.md): model, package map, which package for which need, wiring order.
-- [Agent](docs/wiki/Agent.md): `Session`, `Run`/`RunWithOptions`/`RunWithMessages`, events, end reasons, limits, prompt caching, thinking, `History`, `Locker`, `Drain`, files as the authority.
+- [Agent](docs/wiki/Agent.md): `Session`, `Run`/`RunWithOptions`/`RunWithMessages`, events, end reasons, limits (repeated-call guard, wrap-up), text tool results, project instructions (`ReadProjectInstructions`, `SessionOptions.Instructions`), prompt caching, thinking, `History`, `Locker`, `Drain`, files as the authority.
 - [Tools](docs/wiki/Tools.md): `tools.Registry`, schema helpers, handlers, `Dispatch` argument checks and panics, the built-in file tools with their parameters, `todo_write`.
-- [Shell](docs/wiki/Shell.md): `tools/shell`: `Options`, `Register` (the `bash` tool, `{"output","exit_code","truncated"}`), built-in commands and their GNU flags, `External` (Directory, Environment, Allow, Timeout), `/` as the workspace root, implied directories, buffered writes, `/tmp` scratch, security, differential tests against GNU.
+- [Shell](docs/wiki/Shell.md): `tools/shell`: `Options`, `Register` (the `bash` tool, output as text plus `[exit code N]`), built-in commands and their GNU flags, `External` (Directory, Environment, Allow, Timeout), `/` as the workspace root, implied directories, buffered writes, `/tmp` scratch, security, differential tests against GNU.
 - [Files](docs/wiki/Files.md): the `vfs.Storage` contract, `Searchable`, `ScopedStorage`, memory, osfs, embedfs, overlay, mount, own backends with `vfstest`.
 - [Models](docs/wiki/Models.md): `Request`, `Response`, `Collect`, streaming, `Usage`, OpenRouter options, provider routing, catalogue, `APIError`, Codex login and `TokenSource`.
 - [Media](docs/wiki/Media.md): images (both endpoints), video, speech, transcription and `Vocabulary`, decision models.
@@ -23,7 +23,7 @@
 - [Observability](docs/wiki/Observability.md): `NewObservedClient`, `Observer`, the metrics, spans and wide-event fields, wiring order.
 - [Errors-and-Retry](docs/wiki/Errors-and-Retry.md): sentinels, retry per call path, `retry.Do` and `Policy`.
 - [Testing](docs/wiki/Testing.md): `llmtest.StubClient`, conformance suites (`historytest`, `lockertest`, `ledgertest`, `vfstest`), testing an agent offline, the e2e suite.
-- [CLI](docs/wiki/CLI.md): `chat`, `agent` (`--dir`, `--apply`, `--mount`), `image`, `video`, `decide`, `models`, `skill`, environment variables.
+- [CLI](docs/wiki/CLI.md): `chat`, `agent` (`--dir`, `--apply`, `--mount`, `--instructions`), `image`, `video`, `decide`, `models`, `skill`, environment variables.
 - [Security](docs/wiki/Security.md): guarantees (no OS access by default, path validation, `os.Root`, overlay dry runs, bounds, secrets) and known limits.
 - [Gotchas](docs/wiki/Gotchas.md): the non-obvious rules, one line each.
 

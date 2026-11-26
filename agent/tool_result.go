@@ -20,32 +20,54 @@ func buildToolResult(call llm.ToolCall, result tools.Result, err error) ToolResu
 		toolResult.Error = err.Error()
 	} else {
 		toolResult.Content = result.Content
+		toolResult.Text = result.Text
 	}
 	return toolResult
 }
 
-// toolResultJSON serializes a tool result for the model's tool message.
-func toolResultJSON(toolResult ToolResult) string {
+// errorPrefix starts the model's copy of a failed tool call.
+const errorPrefix = "error: "
+
+// toolResultContent is a tool result as the model's tool message: the
+// tool's text, else its content as JSON; a failure is its message after
+// errorPrefix.
+func toolResultContent(toolResult ToolResult) string {
 	if !toolResult.OK {
-		return errorJSON(toolResult.Error)
+		return errorPrefix + toolResult.Error
 	}
+	if toolResult.Text != "" {
+		return toolResult.Text
+	}
+	return toolResultJSON(toolResult)
+}
+
+// toolResultJSON serializes a successful tool result's content.
+func toolResultJSON(toolResult ToolResult) string {
 	if toolResult.Content == nil {
 		return "null"
 	}
 	content, err := json.Marshal(toolResult.Content)
 	if err != nil {
-		return errorJSON("content marshal failed: " + err.Error())
+		return errorPrefix + "content marshal failed: " + err.Error()
 	}
 	return string(content)
 }
 
-// errorJSON renders {"error": message}.
-func errorJSON(message string) string {
-	// Marshalling a struct with one string field cannot fail.
-	encoded, _ := json.Marshal(struct {
-		Error string `json:"error"`
-	}{Error: message})
-	return string(encoded)
+// boundedContent cuts a tool message to maximumBytes: JSON into a
+// truncatedResult (boundedJSON), anything else as text with a notice at its
+// end, the notice included in the bytes.
+func boundedContent(content string, maximumBytes int) string {
+	if maximumBytes < 0 || len(content) <= maximumBytes {
+		return content
+	}
+	if json.Valid([]byte(content)) {
+		return boundedJSON(content, maximumBytes)
+	}
+	notice := func(prefixBytes int) string {
+		return fmt.Sprintf("\n[result cut to its first %d of %d bytes; request less, e.g. a smaller range or a narrower pattern]", prefixBytes, len(content))
+	}
+	prefix := utf8Prefix(content, max(maximumBytes-len(notice(maximumBytes)), 0))
+	return prefix + notice(len(prefix))
 }
 
 // truncatedResult is what the model sees instead of a tool result over

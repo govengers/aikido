@@ -37,10 +37,10 @@ func grepDefinition() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "grep",
 		Description: fmt.Sprintf("Search file contents with a regular expression (Go RE2 syntax, no backreferences or lookaround). "+
-			"output_mode content (default) returns `path:line:text` for matches and `path-line-text` for context lines; "+
-			"files_with_matches returns matching paths; count returns matches per file. "+
-			"Returns at most %d entries, lines cut at %d characters; truncated is true when results were cut or the scan stopped early. "+
-			"Binary files are skipped, and so are files over the workspace's size limit (truncated is then true). %s", grepMaximumLines, grepMaximumLineChars, globSyntax),
+			"output_mode content (default) returns one line per hit, `path:line:text` for matches and `path-line-text` for context lines; "+
+			"files_with_matches returns one matching path per line; count returns `path: matches` per file. "+
+			"Returns at most %d entries, lines cut at %d characters; a last line in brackets says when results were cut or the scan stopped early. "+
+			"Binary files are skipped, and so are files over the workspace's size limit (the result then says it was cut). %s", grepMaximumLines, grepMaximumLineChars, globSyntax),
 		Parameters: tools.Object(map[string]any{
 			"pattern":          tools.String("Regular expression to search for."),
 			"path_glob":        tools.String("Optional glob limiting which files are searched, e.g. `docs/**/*.md`."),
@@ -91,6 +91,7 @@ func globHandler(options VFSToolOptions) tools.Handler {
 		}
 		return tools.Result{
 			Content: map[string]any{"paths": paths, "truncated": truncated},
+			Text:    linesText(paths, truncated, "no file matches"),
 		}, nil
 	}
 }
@@ -109,7 +110,7 @@ func grepHandler(options VFSToolOptions) tools.Handler {
 		if err != nil {
 			return tools.Result{}, err
 		}
-		return tools.Result{Content: result.content(query.mode)}, nil
+		return tools.Result{Content: result.content(query.mode), Text: result.text(query.mode)}, nil
 	}
 }
 
@@ -276,6 +277,31 @@ func (r *grepResult) content(mode grepMode) map[string]any {
 		content["matches"] = r.lines
 	}
 	return content
+}
+
+// text is the result for the model: one line per hit, file or count.
+func (r *grepResult) text(mode grepMode) string {
+	lines := r.lines
+	if mode == grepModeCount {
+		lines = make([]string, 0, len(r.counts))
+		for _, count := range r.counts {
+			lines = append(lines, fmt.Sprintf("%s: %d", count["path"], count["count"]))
+		}
+	}
+	return linesText(lines, r.truncated, "no match")
+}
+
+// linesText joins a search's result lines, says when it found nothing, and
+// ends with a notice when the result was cut.
+func linesText(lines []string, truncated bool, none string) string {
+	text := strings.Join(lines, "\n")
+	if len(lines) == 0 {
+		text = "(" + none + ")"
+	}
+	if truncated {
+		text += "\n[more results were cut; narrow the pattern or the glob]"
+	}
+	return text
 }
 
 // matchingLines returns the indexes of the lines pattern matches, and per

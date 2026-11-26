@@ -20,6 +20,11 @@ type Environment struct {
 // nil is sent as JSON null.
 type Result struct {
 	Content any
+	// Text, when not empty, is what the model reads instead of Content as
+	// JSON: file contents, command output and search hits read better and
+	// cost fewer tokens as plain text than as an escaped JSON string. Content
+	// still reaches the caller's EventToolResult.
+	Text string
 }
 
 // Handler is the function signature every tool implements. arguments holds
